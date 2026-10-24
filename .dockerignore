@@ -1,0 +1,9 @@
+**/node_modules
+**/.metro-cache
+**/.expo
+**/__pycache__
+**/*.env
+**/.env
+backend/web
+backend/tests
+.git

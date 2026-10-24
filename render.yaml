@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: boodschappenlijstje
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        value: boodschappenlijstje
+      - key: FRONTEND_URL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM_ADDRESS
+        sync: false
+      - key: EMAIL_FROM_NAME
+        value: Boodschappenlijstje

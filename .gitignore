@@ -1,0 +1,10 @@
+node_modules/
+.metro-cache/
+.expo/
+__pycache__/
+*.pyc
+.env
+*.env
+backend/web/
+dist/
+.DS_Store
