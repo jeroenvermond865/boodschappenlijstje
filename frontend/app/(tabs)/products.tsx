@@ -88,7 +88,7 @@ export default function ProductsScreen() {
         <Text style={styles.subtitle}>{s.sub_products}</Text>
         <Pressable testID="store-selector" onPress={() => setStoreOpen(true)} style={styles.storeRow}>
           <Icon name="storefront-outline" size={16} color={colors.brandPrimary} />
-          <Text style={styles.storeText}>Prijzen van {user?.store ?? "Albert Heijn"}</Text>
+          <Text style={styles.storeText}>{user?.store ?? "Albert Heijn"}</Text>
           <Icon name="chevron-down" size={16} color={colors.brandPrimary} />
         </Pressable>
         <View style={styles.searchBox}>
