@@ -2228,7 +2228,12 @@ async def _refresh_dirk_prices(mults: dict) -> int:
     fetched = {}
     async with httpx.AsyncClient(timeout=30, headers=DIRK_HEADERS) as c:
         for i in range(0, len(ids), 25):
-            for p in await _dirk_fetch_products(c, ids[i:i + 25]):
+            try:
+                batch = await _dirk_fetch_products(c, ids[i:i + 25])
+            except Exception as e:
+                logger.warning("Dirk-prijzen ophalen mislukt: %s", e)
+                continue
+            for p in batch:
                 n = _dirk_normalize(p)
                 if n:
                     fetched[str(n["dirk_id"])] = n
