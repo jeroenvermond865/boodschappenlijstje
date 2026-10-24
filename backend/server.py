@@ -9,6 +9,9 @@ import asyncio
 import uuid
 import re
 import secrets
+import base64
+from email.message import EmailMessage
+from email.utils import formataddr, make_msgid
 from urllib.parse import urlencode
 import bcrypt
 import httpx
@@ -212,9 +215,42 @@ async def is_opted_out(email: str) -> bool:
     return bool(doc and doc.get("opted_out"))
 
 
+async def gmail_sender() -> Optional[dict]:
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return None
+    return await db.settings.find_one({"key": "gmail_sender"})
+
+
+async def _send_gmail(sender: dict, to: str, subject: str, html: str) -> Optional[str]:
+    msg = EmailMessage()
+    msg["From"] = formataddr((EMAIL_FROM_NAME, sender["email"]))
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg["Message-ID"] = make_msgid()
+    msg.set_content("Open deze e-mail in een programma dat HTML kan tonen.")
+    msg.add_alternative(html, subtype="html")
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    async with httpx.AsyncClient(timeout=30) as c:
+        tok = await c.post("https://oauth2.googleapis.com/token", data={
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": sender["refresh_token"],
+            "grant_type": "refresh_token",
+        })
+        tok.raise_for_status()
+        resp = await c.post(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+            headers={"Authorization": f"Bearer {tok.json()['access_token']}"},
+            json={"raw": raw},
+        )
+        resp.raise_for_status()
+        return resp.json().get("id")
+
+
 async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool = True) -> Optional[str]:
-    if not RESEND_API_KEY and not EMAIL_KEY:
-        logger.warning("Geen e-maildienst ingesteld (RESEND_API_KEY); e-mail overgeslagen")
+    sender = await gmail_sender()
+    if not sender and not RESEND_API_KEY and not EMAIL_KEY:
+        logger.warning("Geen e-maildienst ingesteld (Gmail koppelen of RESEND_API_KEY); e-mail overgeslagen")
         return None
     if allow_unsubscribe:
         if await is_opted_out(to):
@@ -228,6 +264,12 @@ async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool =
             f'Geen e-mails meer ontvangen? <a href="{escape(link)}" style="color:#999">Afmelden</a>.</p>'
         )
     _assert_safe_email(subject, html)
+    if sender:
+        try:
+            return await _send_gmail(sender, to, subject, html)
+        except Exception as e:
+            logger.error("Email send error: %s", e)
+            return None
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             if RESEND_API_KEY:
@@ -495,6 +537,26 @@ def allowed_redirect(url: str) -> bool:
     return "://" in url
 
 
+@api_router.get("/email/gmail/connect")
+async def gmail_connect():
+    # Eenmalig: koppel het Gmail-account van de beheerder als afzender
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=503, detail="Google is niet ingesteld")
+    state = secrets.token_urlsafe(24)
+    redirect = (FRONTEND_URL or "").rstrip("/") + "/"
+    await db.google_logins.insert_one({"state": state, "redirect": redirect, "purpose": "gmail", "expires_at": now_utc() + timedelta(minutes=10)})
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": google_callback_url(),
+        "response_type": "code",
+        "scope": "openid email https://www.googleapis.com/auth/gmail.send",
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+    return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
+
+
 @api_router.get("/auth/google/start")
 async def google_start(redirect: str = ""):
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
@@ -540,6 +602,18 @@ async def google_callback(state: str = "", code: str = "", error: str = ""):
     if info.status_code != 200 or not info.json().get("email_verified"):
         raise HTTPException(status_code=401, detail="Google inloggen mislukt")
     profile = info.json()
+    if rec.get("purpose") == "gmail":
+        await db.google_logins.delete_one({"_id": rec["_id"]})
+        email = (profile.get("email") or "").lower()
+        refresh_token = tok.json().get("refresh_token")
+        if email not in ADMIN_SEED_EMAILS or not refresh_token:
+            raise HTTPException(status_code=403, detail="Alleen de beheerder kan Gmail koppelen")
+        await db.settings.update_one(
+            {"key": "gmail_sender"},
+            {"$set": {"email": email, "refresh_token": refresh_token, "updated_at": now_utc()}},
+            upsert=True,
+        )
+        return HTMLResponse(f"<p style='font-family:sans-serif'>Gmail gekoppeld: e-mails worden nu verstuurd vanaf {escape(email)}.</p>")
     session_id = secrets.token_urlsafe(32)
     await db.google_logins.update_one(
         {"_id": rec["_id"]},
