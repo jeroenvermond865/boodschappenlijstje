@@ -606,8 +606,9 @@ async def google_callback(state: str = "", code: str = "", error: str = ""):
         await db.google_logins.delete_one({"_id": rec["_id"]})
         email = (profile.get("email") or "").lower()
         refresh_token = tok.json().get("refresh_token")
-        if email not in ADMIN_SEED_EMAILS or not refresh_token:
-            raise HTTPException(status_code=403, detail="Alleen de beheerder kan Gmail koppelen")
+        allowed = (os.environ.get("GMAIL_SENDER") or "").lower().strip()
+        if not allowed or email != allowed or not refresh_token:
+            raise HTTPException(status_code=403, detail="Dit Gmail-account is niet ingesteld als afzender (GMAIL_SENDER)")
         await db.settings.update_one(
             {"key": "gmail_sender"},
             {"$set": {"email": email, "refresh_token": refresh_token, "updated_at": now_utc()}},
