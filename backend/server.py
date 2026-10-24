@@ -1925,31 +1925,79 @@ DIRK_HEADERS = {
 }
 
 
+def _cat_tokens(s: str) -> list:
+    s = unicodedata.normalize("NFD", (s or "").lower())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return [t for t in re.split(r"[^a-z]+", s) if t]
+
+
+# Afdelingen herkennen aan hele woorden uit de categorie van Dirk/AH (geen stukjes woord,
+# anders wordt bijv. "rijst" diepvries door "ijs"). Volgorde = voorrang bij twijfel.
+AISLE_RULES = [
+    ("Diepvries", {"diepvries", "ijs", "ijsjes"}),
+    ("Kind & drogisterij", {"drogisterij", "drogist", "baby", "kind", "kinderen", "verzorging", "gezondheid", "sport", "beauty", "persoonlijke", "hygiene"}),
+    ("Huishoud & huisdieren", {"huishoud", "huishouden", "huishoudelijk", "huisdier", "huisdieren", "dier", "dieren", "schoonmaak", "wasmiddel", "wasmiddelen"}),
+    ("Non food", {"non", "nonfood", "koken", "tafelen", "vrije", "tijd", "tuin", "speelgoed", "elektronica", "seizoen"}),
+    ("Maaltijden, salades & tapas", {"maaltijd", "maaltijden", "salade", "salades", "tapas", "pizza", "pizzas", "kant", "klaar"}),
+    ("Aardappelen, groente & fruit", {"aardappel", "aardappelen", "groente", "groenten", "fruit", "aardappelproducten"}),
+    ("Vlees & vis", {"vlees", "vis", "kip", "gevogelte", "vega", "vegetarisch", "vegan", "vleesvervangers", "slager", "slagerij", "visafdeling"}),
+    ("Brood, beleg & koek", {"brood", "bakkerij", "banket", "beleg", "broodbeleg", "ontbijt", "ontbijtgranen", "koek", "koeken", "vleeswaren", "zoet", "smeerbaar"}),
+    ("Zuivel & kaas", {"zuivel", "kaas", "eieren", "ei", "melk", "yoghurt", "boter", "toetjes", "desserts", "kwark", "room"}),
+    ("Dranken, sap, koffie & thee", {"drank", "dranken", "frisdrank", "frisdranken", "sap", "sappen", "water", "koffie", "thee", "bier", "wijn", "wijnen", "aperitieven", "siropen", "alcohol", "alcoholvrij", "bubbels", "sterke"}),
+    ("Snacks & snoep", {"snoep", "chocolade", "chips", "noten", "snacks", "snack", "tussendoortjes", "popcorn", "toast", "borrel", "zoutjes"}),
+    ("Voorraadkast", {"pasta", "rijst", "wereldkeuken", "soep", "soepen", "saus", "sauzen", "kruiden", "specerijen", "olie", "azijn", "conserven", "voorraad", "voorraadkast", "houdbaar", "bakken", "bakproducten", "mix", "mixen"}),
+]
+_AISLE_EXACT = {" ".join(_cat_tokens(a)).replace(" en ", " "): a for a in AISLES}
+
+
+def _aisles_in(text: str) -> list:
+    toks = set(_cat_tokens(text))
+    return [aisle for aisle, words in AISLE_RULES if toks & words]
+
+
 def _dirk_aisle(department: str, webgroup: str) -> str:
-    t = f"{department} {webgroup}".lower()
-    if any(w in t for w in ["groente", "fruit", "aardappel"]):
-        return "Aardappelen, groente & fruit"
-    if any(w in t for w in ["vlees", "vis", "kip", "gevogelte", "vega"]):
-        return "Vlees & vis"
-    if any(w in t for w in ["brood", "gebak", "banket", "bakkerij", "beleg", "koek"]):
-        return "Brood, beleg & koek"
-    if any(w in t for w in ["zuivel", "kaas", "ei", "melk", "boter", "yoghurt"]):
-        return "Zuivel & kaas"
-    if any(w in t for w in ["drank", "fris", "sap", "water", "koffie", "thee", "bier", "wijn", "alcohol"]):
-        return "Dranken, sap, koffie & thee"
-    if any(w in t for w in ["maaltijd", "salade", "tapas", "vers"]):
-        return "Maaltijden, salades & tapas"
-    if any(w in t for w in ["diepvries", "vries", "ijs"]):
-        return "Diepvries"
-    if any(w in t for w in ["huishoud", "huisdier", "schoonmaak", "wasmiddel"]):
-        return "Huishoud & huisdieren"
-    if any(w in t for w in ["baby", "kind", "drogist", "verzorging", "gezondheid"]):
-        return "Kind & drogisterij"
-    if any(w in t for w in ["chips", "snoep", "snack", "chocolade", "noot", "borrel"]):
-        return "Snacks & snoep"
-    if any(w in t for w in ["non food", "non-food", "huis", "tuin"]):
-        return "Non food"
-    return "Voorraadkast"
+    # 1. Precies een van onze afdelingen (onze lijst volgt de indeling van Dirk)
+    key = " ".join(_cat_tokens(department)).replace(" en ", " ")
+    if key in _AISLE_EXACT:
+        return _AISLE_EXACT[key]
+    main = _aisles_in(department)
+    sub = _aisles_in(webgroup)
+    # 2. Hoofdcategorie is eenduidig
+    if len(main) == 1:
+        return main[0]
+    # 3. Hoofdcategorie is gemengd (bijv. "Kaas, vleeswaren, tapas"): subcategorie beslist
+    if sub:
+        both = [a for a in sub if a in main] if main else sub
+        return (both or sub)[0]
+    if main:
+        return main[0]
+    return "Overig"
+
+
+async def _log_category_sample() -> None:
+    # Controle: welke categorieën Dirk en AH geven en in welke afdeling ze bij ons landen
+    terms = ["melk", "kaas", "brood", "koek", "chips", "rijst", "ijs", "bier", "shampoo", "kip", "appel", "pizza", "ham", "hondenvoer", "afwasmiddel"]
+    seen: Dict[str, str] = {}
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
+            for t in terms:
+                ids = await _dirk_search_ids(c, t, limit=20)
+                for p in await _dirk_fetch_products(c, ids):
+                    info = p.get("productInformation") or {}
+                    k = f"Dirk: {info.get('department')} / {info.get('webgroup')}"
+                    seen[k] = _dirk_aisle(info.get("department") or "", info.get("webgroup") or "")
+        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
+            tok = await _ah_token(c)
+            for t in terms:
+                r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"query": t, "size": 20},
+                                headers={"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"})
+                for p in r.json().get("products", []) or []:
+                    k = f"AH: {p.get('mainCategory')} / {p.get('subCategory')}"
+                    seen[k] = _dirk_aisle(p.get("mainCategory") or "", p.get("subCategory") or "")
+    except Exception as e:
+        logger.warning("Categorie-steekproef mislukt: %s", e)
+    for k in sorted(seen):
+        logger.info("Categorie %s -> %s", k, seen[k])
 
 
 async def _dirk_post(client, query, variables):
@@ -3263,6 +3311,7 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
+    asyncio.create_task(_log_category_sample())
 
 
 async def _daily_refresh_loop():
