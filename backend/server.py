@@ -1578,6 +1578,7 @@ def product_public(doc: dict, store: str, user_id: str) -> dict:
         "unavailable_here": store in unavailable,
         "is_global": doc.get("is_global", False),
         "is_own": doc.get("owner_id") == user_id,
+        "source": "Dirk" if doc.get("dirk_id") else ("Albert Heijn" if doc.get("ah_id") else None),
     }
 
 

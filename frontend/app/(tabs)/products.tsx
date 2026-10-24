@@ -26,7 +26,14 @@ export type Product = {
   unavailable_here?: boolean;
   is_global: boolean;
   is_own: boolean;
+  source?: "Dirk" | "Albert Heijn" | null;
 };
+
+const STORE_FILTERS = [
+  { key: "all", label: "Alle producten" },
+  { key: "Dirk", label: "Dirk" },
+  { key: "Albert Heijn", label: "Albert Heijn" },
+] as const;
 
 export default function ProductsScreen() {
   const styles = useStyles();
@@ -40,6 +47,7 @@ export default function ProductsScreen() {
   const [search, setSearch] = useState("");
   const [source, setSource] = useState<"all" | "global" | "own">("all");
   const [aisle, setAisle] = useState<string>("all");
+  const [storeFilter, setStoreFilter] = useState<"all" | "Dirk" | "Albert Heijn">("all");
   const [storeOpen, setStoreOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
@@ -47,20 +55,25 @@ export default function ProductsScreen() {
     queryFn: () => api<{ products: Product[]; stores: string[] }>("/products"),
   });
 
+  const storeProducts = useMemo(() => {
+    const list = data?.products ?? [];
+    return storeFilter === "all" ? list : list.filter((p) => p.source === storeFilter);
+  }, [data, storeFilter]);
+
   const filtered = useMemo(() => {
-    let list = data?.products ?? [];
+    let list = storeProducts;
     if (source === "global") list = list.filter((p) => p.is_global);
     if (source === "own") list = list.filter((p) => p.is_own && !p.is_global);
     if (aisle !== "all") list = list.filter((p) => p.aisle === aisle);
     if (search.trim()) list = list.filter((p) => p.name.toLowerCase().includes(search.trim().toLowerCase()));
     return list;
-  }, [data, source, aisle, search]);
+  }, [storeProducts, source, aisle, search]);
 
   const aisleCounts = useMemo(() => {
     const m: Record<string, number> = {};
-    for (const p of data?.products ?? []) m[p.aisle] = (m[p.aisle] ?? 0) + 1;
+    for (const p of storeProducts) m[p.aisle] = (m[p.aisle] ?? 0) + 1;
     return m;
-  }, [data]);
+  }, [storeProducts]);
 
   const sources = [
     { key: "all", label: "Alle" },
@@ -88,6 +101,21 @@ export default function ProductsScreen() {
             onChangeText={setSearch}
             style={styles.searchInput}
           />
+        </View>
+        <View style={styles.segment}>
+          {STORE_FILTERS.map((f) => (
+            <Pressable
+              key={f.key}
+              testID={`product-store-${f.key}`}
+              onPress={() => {
+                setStoreFilter(f.key);
+                setAisle("all");
+              }}
+              style={[styles.segBtn, storeFilter === f.key && styles.segBtnActive]}
+            >
+              <Text style={[styles.segText, storeFilter === f.key && styles.segTextActive]}>{f.label}</Text>
+            </Pressable>
+          ))}
         </View>
         <View style={styles.segment}>
           {sources.map((s) => (
