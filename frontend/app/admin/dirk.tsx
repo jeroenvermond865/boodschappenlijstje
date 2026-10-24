@@ -9,7 +9,7 @@ import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type ImportStatus = { status?: string; found?: number; todo?: number; added?: number; added_ah?: number; finished_at?: string | null; error?: string | null; running: boolean };
+type ImportStatus = { status?: string; found?: number; todo?: number; added?: number; skipped?: number; added_ah?: number; finished_at?: string | null; error?: string | null; running: boolean };
 
 type DirkResult = { image?: string | null; source_id: string; name: string; brand?: string | null; quantity?: string | null; price: number; on_offer?: boolean; aisle: string };
 
@@ -53,7 +53,7 @@ export default function DirkImportScreen() {
   const importLine = importStatus?.running
     ? `Bezig: ${importStatus.status ?? ""} · ${importStatus.found ?? 0} gevonden · ${(importStatus.added ?? 0) + (importStatus.added_ah ?? 0)} toegevoegd. Laat dit scherm open.`
     : importStatus?.status === "klaar"
-      ? `Klaar: ${importStatus.added ?? 0} van Dirk en ${importStatus.added_ah ?? 0} van Albert Heijn toegevoegd.`
+      ? `Klaar: ${importStatus.added ?? 0} van Dirk en ${importStatus.added_ah ?? 0} van Albert Heijn toegevoegd.${importStatus.skipped ? ` ${importStatus.skipped} Dirk-producten zijn niet leverbaar en overgeslagen.` : ""}`
       : importStatus?.status === "onderbroken"
         ? "De vorige import is onderbroken. Start hem opnieuw; wat er al is, wordt overgeslagen."
         : importStatus?.status === "mislukt"

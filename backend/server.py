@@ -1889,6 +1889,29 @@ async def _dirk_fetch_products(client, ids: list) -> list:
     return prods
 
 
+_dirk_single_logged = 0
+
+
+async def _dirk_fetch_single(client, pid) -> Optional[dict]:
+    global _dirk_single_logged
+    try:
+        r = await client.post(DIRK_GQL, json={
+            "query": "query($ids:[Int!],$sid:Int!){products(productIds:$ids,storeId:$sid){%s}}" % (DIRK_PRODUCT_FIELDS % (" image" if _dirk_image_ok else "")),
+            "variables": {"ids": [pid], "sid": DIRK_STORE_ID},
+        })
+        body = r.json() or {}
+        prods = [p for p in ((body.get("data") or {}).get("products") or []) if p]
+        if not prods and _dirk_single_logged < 3:
+            _dirk_single_logged += 1
+            logger.warning("Dirk product %s niet op te halen (%s): %s", pid, r.status_code, str(body)[:300])
+        return prods[0] if prods else None
+    except Exception as e:
+        if _dirk_single_logged < 3:
+            _dirk_single_logged += 1
+            logger.warning("Dirk product %s fout: %s", pid, e)
+        return None
+
+
 def _dirk_normalize(p: dict) -> Optional[dict]:
     info = p.get("productInformation") or {}
     name = (info.get("headerText") or "").strip()
@@ -2165,6 +2188,7 @@ async def _import_all_dirk() -> None:
             todo = [pid for pid in ids if str(pid) not in existing]
             await _set_import_status(status="Dirk importeren", found=len(ids), todo=len(todo))
             added = 0
+            skipped = 0
             for i in range(0, len(todo), 25):
                 prods = None
                 for attempt in range(3):
@@ -2174,8 +2198,15 @@ async def _import_all_dirk() -> None:
                     except Exception as e:
                         logger.warning("Dirk ophalen mislukt (poging %d): %s", attempt + 1, e)
                         await asyncio.sleep(2 * (attempt + 1))
-                if not prods:
-                    continue
+                batch = todo[i:i + 25]
+                prods = prods or []
+                got = {p.get("productId") for p in prods}
+                missing = [pid for pid in batch if pid not in got]
+                if missing:
+                    # Eén fout product kan een hele groep laten mislukken; probeer de rest los
+                    singles = await asyncio.gather(*[_dirk_fetch_single(c, pid) for pid in missing])
+                    prods += [p for p in singles if p]
+                    skipped += len([p for p in singles if not p])
                 docs = []
                 for p in prods:
                     nrm = _dirk_normalize(p)
@@ -2187,7 +2218,8 @@ async def _import_all_dirk() -> None:
                     await db.products.insert_many(docs)
                     added += len(docs)
                 await _set_import_status(added=added)
-        logger.info("Dirk-import klaar: %d gevonden, %d toegevoegd", len(ids), added)
+        logger.info("Dirk-import klaar: %d gevonden, %d toegevoegd, %d niet leverbaar", len(ids), added, skipped)
+        await _set_import_status(skipped=skipped)
         try:
             added_ah = await _import_all_ah(mults)
         except Exception as e:
