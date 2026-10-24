@@ -2734,46 +2734,70 @@ def _days_left(deleted_at) -> int:
     return max(0, (gone - now_utc()).days)
 
 
-@api_router.get("/admin/trash")
-async def list_trash(user: dict = Depends(get_current_user)):
-    await require_perm(user, "manage_users")
-    names = {u["user_id"]: u.get("name") or u.get("email") async for u in db.users.find({}, {"_id": 0, "user_id": 1, "name": 1, "email": 1})}
-    items = []
-    for kind, (coll, idf) in TRASH.items():
-        query = {"deleted_at": {"$ne": None}}
-        if kind != "user":
-            # Spullen van een verwijderde gebruiker staan onder die gebruiker
-            query["deleted_with_user"] = {"$exists": False}
+async def _trash_queries(user: dict) -> dict:
+    # Wat deze gebruiker in Recent verwijderd ziet: eigen spullen, plus wat bij zijn beheerrechten hoort
+    perms = await user_permissions(user)
+    uid = user["user_id"]
+    own = {"deleted_at": {"$ne": None}, "deleted_with_user": {"$exists": False}, "owner_id": uid}
+    q = {"camp": [own], "dish": [own], "product": [own], "user": []}
+    if "manage_standard_dishes" in perms:
+        q["dish"].append({"deleted_at": {"$ne": None}, "is_standard": True})
+    if "manage_products" in perms:
+        q["product"].append({"deleted_at": {"$ne": None}, "is_global": True})
+    if "manage_users" in perms:
+        q["user"].append({"deleted_at": {"$ne": None}})
+    return {k: ({"$or": v} if v else None) for k, v in q.items()}
+
+
+async def _trash_docs(user: dict) -> list:
+    out = []
+    for kind, query in (await _trash_queries(user)).items():
+        if query is None:
+            continue
+        coll, _ = TRASH[kind]
         async for d in db[coll].find(query, {"_id": 0}):
-            extra = ""
-            if kind == "user":
-                extra = d.get("email") or ""
-                n = sum([await db[c].count_documents({"deleted_with_user": d[idf]}) for c in ("camps", "dishes", "products")])
-                if n:
-                    extra += f" · met {n} kampen, gerechten en producten"
-            elif d.get("owner_id"):
-                extra = f"van {names.get(d['owner_id'], 'onbekend')}"
-            items.append({
-                "kind": kind,
-                "id": d[idf],
-                "name": d.get("name") or d.get("email") or "",
-                "extra": extra,
-                "deleted_at": ensure_aware(d["deleted_at"]).isoformat() if isinstance(d.get("deleted_at"), datetime) else None,
-                "days_left": _days_left(d.get("deleted_at")),
-            })
+            out.append((kind, d))
+    return out
+
+
+async def _find_trash_item(user: dict, kind: str, item_id: str) -> dict:
+    if kind not in TRASH:
+        raise HTTPException(status_code=404, detail="Onbekend type")
+    query = (await _trash_queries(user)).get(kind)
+    coll, idf = TRASH[kind]
+    doc = await db[coll].find_one({"$and": [query, {idf: item_id}]}) if query else None
+    if not doc:
+        raise HTTPException(status_code=404, detail="Niet gevonden in Recent verwijderd")
+    return doc
+
+
+@api_router.get("/trash")
+async def list_trash(user: dict = Depends(get_current_user)):
+    items = []
+    for kind, d in await _trash_docs(user):
+        idf = TRASH[kind][1]
+        extra = ""
+        if kind == "user":
+            extra = d.get("email") or ""
+            n = sum([await db[c].count_documents({"deleted_with_user": d[idf]}) for c in ("camps", "dishes", "products")])
+            if n:
+                extra += f" · met {n} kampen, gerechten en producten"
+        items.append({
+            "kind": kind,
+            "id": d[idf],
+            "name": d.get("name") or d.get("email") or "",
+            "extra": extra,
+            "deleted_at": ensure_aware(d["deleted_at"]).isoformat() if isinstance(d.get("deleted_at"), datetime) else None,
+            "days_left": _days_left(d.get("deleted_at")),
+        })
     items.sort(key=lambda i: i["deleted_at"] or "", reverse=True)
     return {"items": items, "days": TRASH_DAYS}
 
 
-@api_router.post("/admin/trash/{kind}/{item_id}/restore")
+@api_router.post("/trash/{kind}/{item_id}/restore")
 async def restore_trash(kind: str, item_id: str, user: dict = Depends(get_current_user)):
-    await require_perm(user, "manage_users")
-    if kind not in TRASH:
-        raise HTTPException(status_code=404, detail="Onbekend type")
+    doc = await _find_trash_item(user, kind, item_id)
     coll, idf = TRASH[kind]
-    doc = await db[coll].find_one({idf: item_id, "deleted_at": {"$ne": None}})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Niet gevonden in Recent verwijderd")
     if kind == "user":
         await db.users.update_one({idf: item_id}, {"$set": {"deleted_at": None}})
         for c in ("camps", "dishes", "products"):
@@ -2786,17 +2810,22 @@ async def restore_trash(kind: str, item_id: str, user: dict = Depends(get_curren
     return {"ok": True}
 
 
-@api_router.delete("/admin/trash/{kind}/{item_id}")
+@api_router.delete("/trash/{kind}/{item_id}")
 async def purge_trash_item(kind: str, item_id: str, user: dict = Depends(get_current_user)):
-    await require_perm(user, "manage_users")
-    if kind not in TRASH:
-        raise HTTPException(status_code=404, detail="Onbekend type")
-    coll, idf = TRASH[kind]
-    doc = await db[coll].find_one({idf: item_id, "deleted_at": {"$ne": None}})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Niet gevonden in Recent verwijderd")
+    doc = await _find_trash_item(user, kind, item_id)
     await _purge_docs(kind, [doc])
     return {"ok": True}
+
+
+@api_router.delete("/trash")
+async def purge_all_trash(user: dict = Depends(get_current_user)):
+    by_kind: Dict[str, list] = {}
+    for kind, d in await _trash_docs(user):
+        by_kind.setdefault(kind, []).append(d)
+    # Gebruikers als laatste: hun spullen hangen eraan
+    for kind in ("camp", "dish", "product", "user"):
+        await _purge_docs(kind, by_kind.get(kind, []))
+    return {"ok": True, "deleted": sum(len(v) for v in by_kind.values())}
 
 
 async def _purge_docs(kind: str, docs: list) -> None:

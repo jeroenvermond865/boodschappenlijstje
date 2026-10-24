@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -28,7 +29,7 @@ export default function AdminTrashScreen() {
 
   const { data, isLoading } = useQuery({
     queryKey: ["admin-trash"],
-    queryFn: () => api<{ items: TrashItem[]; days: number }>("/admin/trash"),
+    queryFn: () => api<{ items: TrashItem[]; days: number }>("/trash"),
   });
 
   const invalidate = () => {
@@ -40,7 +41,7 @@ export default function AdminTrashScreen() {
   };
 
   const restore = useMutation({
-    mutationFn: (it: TrashItem) => api(`/admin/trash/${it.kind}/${it.id}/restore`, { method: "POST" }),
+    mutationFn: (it: TrashItem) => api(`/trash/${it.kind}/${it.id}/restore`, { method: "POST" }),
     onSuccess: () => {
       invalidate();
       toast.show("Teruggezet", "success");
@@ -48,10 +49,21 @@ export default function AdminTrashScreen() {
     onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
   });
   const purge = useMutation({
-    mutationFn: (it: TrashItem) => api(`/admin/trash/${it.kind}/${it.id}`, { method: "DELETE" }),
+    mutationFn: (it: TrashItem) => api(`/trash/${it.kind}/${it.id}`, { method: "DELETE" }),
     onSuccess: () => {
       invalidate();
       toast.show("Definitief verwijderd", "info");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
+  });
+
+  const [confirmAll, setConfirmAll] = useState(false);
+  const purgeAll = useMutation({
+    mutationFn: () => api<{ deleted: number }>("/trash", { method: "DELETE" }),
+    onSuccess: (res) => {
+      invalidate();
+      setConfirmAll(false);
+      toast.show(`${res.deleted} definitief verwijderd`, "info");
     },
     onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
   });
@@ -85,6 +97,21 @@ export default function AdminTrashScreen() {
           <Text style={styles.intro}>
             Alles blijft hier {data?.days ?? 30} dagen staan en wordt daarna definitief verwijderd.
           </Text>
+          <Pressable
+            testID="trash-purge-all"
+            onPress={() => (confirmAll ? purgeAll.mutate() : setConfirmAll(true))}
+            disabled={purgeAll.isPending}
+            style={[styles.purgeAll, confirmAll && styles.purgeAllConfirm]}
+          >
+            {purgeAll.isPending ? (
+              <ActivityIndicator color={confirmAll ? "#fff" : colors.error} />
+            ) : (
+              <Icon name="delete-sweep-outline" size={18} color={confirmAll ? "#fff" : colors.error} />
+            )}
+            <Text style={[styles.purgeAllText, confirmAll && { color: "#fff" }]}>
+              {confirmAll ? "Zeker weten? Tik nogmaals" : "Alles definitief verwijderen"}
+            </Text>
+          </Pressable>
           {items.map((it) => (
             <View key={`${it.kind}-${it.id}`} style={styles.card} testID={`trash-${it.kind}-${it.id}`}>
               <View style={styles.cardHead}>
@@ -129,6 +156,18 @@ const useStyles = makeStyles((colors) => ({
   headerTitle: { flex: 1, textAlign: "center", fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   center: { flex: 1, alignItems: "center", justifyContent: "center", paddingTop: 40 },
   intro: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
+  purgeAll: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.error,
+  },
+  purgeAllConfirm: { backgroundColor: colors.error },
+  purgeAllText: { fontSize: 15, fontFamily: fonts.semibold, color: colors.error },
   card: { backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 16, gap: 6 },
   cardHead: { flexDirection: "row", alignItems: "center", gap: 6 },
   kind: { fontSize: 12, fontFamily: fonts.semibold, color: colors.muted, textTransform: "uppercase" },

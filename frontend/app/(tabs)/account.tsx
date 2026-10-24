@@ -103,6 +103,12 @@ export default function AccountScreen() {
           onPress={() => router.push("/account/profile")}
         />
         <AdminRow
+          testID="trash-link"
+          icon="delete-restore"
+          label="Recent verwijderd"
+          onPress={() => router.push("/admin/trash")}
+        />
+        <AdminRow
           testID="feedback-link"
           icon="message-draw"
           label="Feedback & verbeteringen"
@@ -144,14 +150,6 @@ export default function AccountScreen() {
                 icon="account-group-outline"
                 label="Gebruikers & rollen"
                 onPress={() => router.push("/admin/users")}
-              />
-            ) : null}
-            {canUsers ? (
-              <AdminRow
-                testID="admin-trash-link"
-                icon="delete-restore"
-                label="Recent verwijderd"
-                onPress={() => router.push("/admin/trash")}
               />
             ) : null}
             {canRoles ? (
