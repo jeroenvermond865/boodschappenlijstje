@@ -46,7 +46,7 @@ FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "onboarding@resend.dev")
 
-ADMIN_SEED_EMAILS = ["jeroenvermond865@gmail.com", "test@scout.nl"]
+ADMIN_SEED_EMAILS = ["jeroenvermond865@gmail.com"]
 DEFAULT_ROLE = "leidingslid"
 ALL_PERMISSIONS = ["manage_standard_dishes", "review_submissions", "manage_users", "manage_roles", "view_budget", "manage_budget", "manage_settings", "manage_products"]
 DEFAULT_ROLES = [
@@ -408,6 +408,8 @@ class CampUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 @api_router.post("/auth/register")
 async def register(data: RegisterInput):
+    if len(data.password) < 6:
+        raise HTTPException(status_code=400, detail="Wachtwoord moet minstens 6 tekens zijn")
     email = data.email.lower().strip()
     existing = await db.users.find_one({"email": email})
     if existing:
@@ -517,8 +519,12 @@ async def reset_password(data: ResetPassword):
     if len(data.new_password) < 6:
         raise HTTPException(status_code=400, detail="Wachtwoord moet minstens 6 tekens zijn")
     email = data.email.lower().strip()
-    rec = await db.password_resets.find_one({"email": email, "code": data.code.strip()})
-    if not rec or ensure_aware(rec["expires_at"]) < now_utc():
+    rec = await db.password_resets.find_one({"email": email})
+    if not rec or ensure_aware(rec["expires_at"]) < now_utc() or rec.get("attempts", 0) >= 5:
+        raise HTTPException(status_code=400, detail="Ongeldige of verlopen code")
+    if rec["code"] != data.code.strip():
+        # Na 5 foute pogingen vervalt de code, zodat hij niet te raden is
+        await db.password_resets.update_one({"_id": rec["_id"]}, {"$inc": {"attempts": 1}})
         raise HTTPException(status_code=400, detail="Ongeldige of verlopen code")
     await db.users.update_one({"email": email}, {"$set": {"password_hash": hash_password(data.new_password)}})
     await db.password_resets.delete_many({"email": email})
@@ -743,6 +749,8 @@ async def update_dish(dish_id: str, data: DishInput, user: dict = Depends(get_cu
         await require_perm(user, "manage_standard_dishes")
     elif doc.get("owner_id") != user["user_id"]:
         raise HTTPException(status_code=403, detail="Je kunt alleen je eigen gerechten aanpassen")
+    if data.category not in MEAL_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Ongeldige categorie")
     await db.dishes.update_one(
         {"dish_id": dish_id},
         {"$set": {
@@ -924,7 +932,7 @@ async def delete_camp(camp_id: str, user: dict = Depends(get_current_user)):
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {"deleted_at": now_utc()}})
         return {"ok": True, "left": False}
     # Member leaves the camp (removes it from their own list)
-    await db.camps.update_one({"camp_id": camp_id}, {"$pull": {"member_ids": uid}})
+    await db.camps.update_one({"camp_id": camp_id}, {"$pull": {"member_ids": uid}, "$addToSet": {"left_ids": uid}})
     return {"ok": True, "left": True}
 
 
@@ -936,9 +944,11 @@ async def restore_camp(camp_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Kamp niet gevonden")
     if doc.get("owner_id") == uid:
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {"deleted_at": None}})
+    elif uid in doc.get("left_ids", []):
+        # Member re-joins the camp (undo leave); alleen wie zelf vertrok
+        await db.camps.update_one({"camp_id": camp_id}, {"$addToSet": {"member_ids": uid}, "$pull": {"left_ids": uid}})
     else:
-        # Member re-joins the camp (undo leave)
-        await db.camps.update_one({"camp_id": camp_id}, {"$addToSet": {"member_ids": uid}})
+        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
     restored = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0})
     return camp_public(restored)
 
@@ -1035,7 +1045,7 @@ async def remove_member(camp_id: str, member_id: str, user: dict = Depends(get_c
     camp = await db.camps.find_one({"camp_id": camp_id, "owner_id": user["user_id"], "deleted_at": None})
     if not camp:
         raise HTTPException(status_code=404, detail="Kamp niet gevonden of je bent geen eigenaar")
-    await db.camps.update_one({"camp_id": camp_id}, {"$pull": {"member_ids": member_id}})
+    await db.camps.update_one({"camp_id": camp_id}, {"$pull": {"member_ids": member_id, "left_ids": member_id}})
     return {"ok": True}
 
 
@@ -2158,16 +2168,21 @@ async def _get_object(path: str):
     return content, ct
 
 
+# Alleen afbeeldingen; andere typen (zoals HTML) zouden als script op de site kunnen draaien
+IMAGE_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}
+
+
 @api_router.post("/upload")
 async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     data = await file.read()
     if len(data) > 8 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Afbeelding is te groot (max 8MB)")
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "jpg"
-    if ext not in ("jpg", "jpeg", "png", "webp", "gif"):
+    if ext not in IMAGE_TYPES:
         ext = "jpg"
+    content_type = file.content_type if file.content_type in IMAGE_TYPES.values() else IMAGE_TYPES[ext]
     path = f"{STORAGE_APP}/uploads/{user['user_id']}/{uuid.uuid4().hex}.{ext}"
-    await _put_object(path, data, file.content_type or "image/jpeg")
+    await _put_object(path, data, content_type)
     return {"url": f"/api/files/{path}", "path": path}
 
 
@@ -2177,7 +2192,9 @@ async def serve_file(path: str):
         content, ct = await _get_object(path)
     except Exception:
         raise HTTPException(status_code=404, detail="Niet gevonden")
-    return Response(content=content, media_type=ct, headers={"Cache-Control": "public, max-age=86400"})
+    if ct not in IMAGE_TYPES.values():
+        ct = "application/octet-stream"
+    return Response(content=content, media_type=ct, headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"})
 
 
 @api_router.get("/settings")
@@ -2250,6 +2267,8 @@ async def admin_add_store(data: StoreInput, user: dict = Depends(get_current_use
     if existing and existing.get("active"):
         raise HTTPException(status_code=400, detail="Deze winkel bestaat al")
     mult = float(data.mult or 1.0)
+    if mult <= 0:
+        raise HTTPException(status_code=400, detail="De prijsfactor moet groter dan 0 zijn")
     last = await db.stores.find({}, {"_id": 0}).sort("order", -1).to_list(1)
     order = (last[0]["order"] + 1) if last else 1
     await db.stores.update_one(
@@ -2269,6 +2288,8 @@ async def admin_update_store(name: str, data: StoreInput, user: dict = Depends(g
         raise HTTPException(status_code=404, detail="Winkel niet gevonden")
     new_name = data.name.strip()
     mult = float(data.mult if data.mult is not None else store.get("mult", 1.0))
+    if mult <= 0:
+        raise HTTPException(status_code=400, detail="De prijsfactor moet groter dan 0 zijn")
     update = {"mult": mult}
     if new_name and new_name != name:
         if await db.stores.find_one({"name": new_name, "active": True}):
@@ -2676,6 +2697,8 @@ async def startup():
     await db.dishes.create_index("dish_id", unique=True)
     await db.camps.create_index("camp_id", unique=True)
     await db.invitations.create_index([("email", 1), ("camp_id", 1)], unique=True)
+    await db.google_logins.create_index("expires_at", expireAfterSeconds=0)
+    await db.password_resets.create_index("expires_at", expireAfterSeconds=0)
 
     # Seed roles
     for r in DEFAULT_ROLES:
