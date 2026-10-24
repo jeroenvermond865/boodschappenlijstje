@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Field, Icon, Select } from "@/src/components/ui";
 import { api } from "@/src/api";
-import { searchSorted } from "@/src/search";
+import { fetchProducts, useDebounced } from "@/src/search";
 import {
   AISLES,
   CATEGORY_LABELS,
@@ -433,12 +433,14 @@ function DishProductPicker({ open, onClose, onPick }: { open: boolean; onClose: 
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [q, setQ] = useState("");
+  const debouncedQ = useDebounced(q);
   const { data } = useQuery({
-    queryKey: ["products"],
-    queryFn: () => api<{ products: Product[] }>("/products"),
+    queryKey: ["products", "search", "picker", debouncedQ.trim()],
+    queryFn: () => fetchProducts({ q: debouncedQ, limit: 60 }),
     enabled: open,
+    placeholderData: (prev) => prev,
   });
-  const list = searchSorted(data?.products ?? [], q, (p) => p.name);
+  const list = data?.products ?? [];
   return (
     <Modal visible={open} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.pickerBackdrop}>

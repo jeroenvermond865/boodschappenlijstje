@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, EmptyState, Icon, Select, Stepper } from "@/src/components/ui";
 import { api } from "@/src/api";
-import { searchSorted } from "@/src/search";
+import { fetchProducts, useDebounced } from "@/src/search";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory, formatQty } from "@/src/constants";
 import type { Dish } from "@/app/(tabs)/dishes";
 import type { Product } from "@/app/(tabs)/products";
@@ -524,10 +524,12 @@ function ExtraAddModal({
   const [qty, setQty] = useState(1);
   const [store, setStore] = useState(defaultStore ?? stores[0] ?? "Overig");
 
+  const debouncedQ = useDebounced(q);
   const { data } = useQuery({
-    queryKey: ["products"],
-    queryFn: () => api<{ products: Product[] }>("/products"),
+    queryKey: ["products", "search", "picker", debouncedQ.trim()],
+    queryFn: () => fetchProducts({ q: debouncedQ, limit: 60 }),
     enabled: visible,
+    placeholderData: (prev) => prev,
   });
 
   useEffect(() => {
@@ -541,7 +543,7 @@ function ExtraAddModal({
     setStore((prev) => prev || defaultStore || stores[0] || "Overig");
   }, [defaultStore, stores]);
 
-  const list = searchSorted(data?.products ?? [], q, (p) => p.name);
+  const list = data?.products ?? [];
 
   const confirm = () => {
     if (!sel) return;

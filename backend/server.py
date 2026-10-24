@@ -10,6 +10,7 @@ import uuid
 import re
 import secrets
 import base64
+import unicodedata
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
 from urllib.parse import urlencode
@@ -1589,17 +1590,134 @@ def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set]
     }
 
 
+# Productlijst in het geheugen, zodat niet bij elke aanvraag ~17.000 producten uit de database komen
+PRODUCT_CACHE_SECONDS = 120
+_product_cache: dict = {"at": None, "docs": []}
+
+
+def _invalidate_products() -> None:
+    _product_cache["at"] = None
+
+
+async def _global_products() -> list:
+    now = datetime.now(timezone.utc)
+    at = _product_cache["at"]
+    if at is None or (now - at).total_seconds() > PRODUCT_CACHE_SECONDS:
+        docs = await db.products.find({"deleted_at": None, "is_global": True}, {"_id": 0}).to_list(40000)
+        docs.sort(key=lambda d: (AISLES.index(d["aisle"]) if d.get("aisle") in AISLES else 99, d["name"].lower()))
+        for d in docs:
+            d["_norm"] = _norm_text(d["name"])
+        _product_cache["docs"] = docs
+        _product_cache["at"] = now
+    return _product_cache["docs"]
+
+
+async def _visible_products(user: dict) -> list:
+    docs = await _global_products()
+    own = await db.products.find({"deleted_at": None, "is_global": {"$ne": True}, "owner_id": user["user_id"]}, {"_id": 0}).to_list(2000)
+    for d in own:
+        d["_norm"] = _norm_text(d["name"])
+    return own + docs if own else docs
+
+
+def _norm_text(s: str) -> str:
+    s = unicodedata.normalize("NFD", (s or "").lower())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9%.,]+", " ", s).strip()
+
+
+def _term_score(name: str, words: list, term: str) -> int:
+    # Lager is beter: "melk" geeft eerst melk, dan karnemelk, pas daarna melkchocolade
+    if name == term:
+        return 0
+    if name.startswith(term + " "):
+        return 1
+    if term in words:
+        return 2
+    if any(w.endswith(term) for w in words):
+        return 3
+    if name.startswith(term):
+        return 4
+    if any(w.startswith(term) for w in words):
+        return 5
+    if term in name:
+        return 6
+    return -1
+
+
+def _search_products(docs: list, q: str) -> list:
+    terms = _norm_text(q).split()
+    if not terms:
+        return docs
+    scored = []
+    for d in docs:
+        name = d["_norm"]
+        if not all(t in name for t in terms):
+            continue
+        words = name.split()
+        total = 0
+        for t in terms:
+            total += _term_score(name, words, t)
+        scored.append((total, len(name), name, d))
+    scored.sort(key=lambda x: (x[0], x[1], x[2]))
+    return [x[3] for x in scored]
+
+
+def _clean(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k != "_norm"}
+
+
 @api_router.get("/products")
 async def list_products(user: dict = Depends(get_current_user)):
     store = user.get("store", DEFAULT_STORE)
-    cursor = db.products.find(
-        {"deleted_at": None, "$or": [{"is_global": True}, {"owner_id": user["user_id"]}]},
-        {"_id": 0},
-    )
-    docs = await cursor.to_list(30000)
-    docs.sort(key=lambda d: (AISLES.index(d["aisle"]) if d.get("aisle") in AISLES else 99, d["name"].lower()))
+    docs = await _visible_products(user)
     favorites = set(user.get("favorite_products") or [])
-    return {"products": [product_public(d, store, user["user_id"], favorites) for d in docs], "stores": await get_active_stores()}
+    return {"products": [product_public(_clean(d), store, user["user_id"], favorites) for d in docs], "stores": await get_active_stores()}
+
+
+@api_router.get("/products/search")
+async def search_products(
+    q: str = "",
+    source: str = "",
+    aisle: str = "",
+    favorites: bool = False,
+    offset: int = 0,
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    store = user.get("store", DEFAULT_STORE)
+    favs = set(user.get("favorite_products") or [])
+    docs = await _visible_products(user)
+    if source:
+        docs = [d for d in docs if product_source(d) == source]
+    if favorites:
+        docs = [d for d in docs if d["product_id"] in favs]
+    aisle_counts: Dict[str, int] = {}
+    for d in docs:
+        a = d.get("aisle", "Overig")
+        aisle_counts[a] = aisle_counts.get(a, 0) + 1
+    if aisle:
+        docs = [d for d in docs if d.get("aisle") == aisle]
+    if q.strip():
+        docs = _search_products(docs, q)
+    offset = max(0, offset)
+    limit = max(1, min(limit, 200))
+    page = docs[offset:offset + limit]
+    return {
+        "products": [product_public(_clean(d), store, user["user_id"], favs) for d in page],
+        "total": len(docs),
+        "next_offset": offset + limit if offset + limit < len(docs) else None,
+        "aisle_counts": aisle_counts,
+    }
+
+
+@api_router.get("/products/{product_id}")
+async def get_product(product_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.products.find_one({"product_id": product_id, "deleted_at": None}, {"_id": 0})
+    if not doc or (not doc.get("is_global") and doc.get("owner_id") != user["user_id"]):
+        raise HTTPException(status_code=404, detail="Product niet gevonden")
+    favs = set(user.get("favorite_products") or [])
+    return product_public(doc, user.get("store", DEFAULT_STORE), user["user_id"], favs)
 
 
 @api_router.post("/products/{product_id}/favorite")
@@ -1640,6 +1758,7 @@ async def create_product(data: ProductInput, user: dict = Depends(get_current_us
         "created_at": now_utc(),
     }
     await db.products.insert_one(doc)
+    _invalidate_products()
     return product_public(doc, user.get("store", DEFAULT_STORE), user["user_id"])
 
 
@@ -1669,6 +1788,7 @@ async def update_product(product_id: str, data: ProductInput, user: dict = Depen
             "unavailable": unavailable,
         }},
     )
+    _invalidate_products()
     updated = await db.products.find_one({"product_id": product_id}, {"_id": 0})
     return product_public(updated, user.get("store", DEFAULT_STORE), user["user_id"])
 
@@ -1685,6 +1805,7 @@ async def delete_product(product_id: str, user: dict = Depends(get_current_user)
     elif doc.get("owner_id") != user["user_id"]:
         raise HTTPException(status_code=403, detail="Je kunt alleen je eigen producten verwijderen")
     await db.products.update_one({"product_id": product_id}, {"$set": {"deleted_at": now_utc()}})
+    _invalidate_products()
     return {"ok": True}
 
 
@@ -2148,6 +2269,7 @@ async def _import_all_ah(mults: dict) -> int:
             if docs:
                 await db.products.insert_many(docs)
                 added += len(docs)
+                _invalidate_products()
             if n % 5 == 0:
                 await _set_import_status(status=f"Albert Heijn ({n}/{len(DIRK_ALL_TERMS)})", added_ah=added)
     return added
@@ -2205,6 +2327,7 @@ async def _import_all_dirk() -> None:
                 if docs:
                     await db.products.insert_many(docs)
                     added += len(docs)
+                    _invalidate_products()
                 await _set_import_status(added=added)
         logger.info("Dirk-import klaar: %d gevonden, %d toegevoegd, %d niet leverbaar", len(ids), added, skipped)
         await _set_import_status(skipped=skipped)
@@ -2715,6 +2838,7 @@ async def list_trash(user: dict = Depends(get_current_user)):
 @api_router.post("/trash/{kind}/{item_id}/restore")
 async def restore_trash(kind: str, item_id: str, user: dict = Depends(get_current_user)):
     doc = await _find_trash_item(user, kind, item_id)
+    _invalidate_products()
     coll, idf = TRASH[kind]
     if kind == "user":
         await db.users.update_one({idf: item_id}, {"$set": {"deleted_at": None}})
@@ -3148,6 +3272,7 @@ async def _daily_refresh_loop():
         try:
             res = await _refresh_dirk_prices_all()
             logger.info("Daily Dirk refresh: %s", res)
+            _invalidate_products()
             await _purge_expired_trash()
         except Exception as e:
             logger.warning("Daily Dirk refresh error: %s", e)

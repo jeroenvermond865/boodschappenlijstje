@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, Modal, Pressable, Text, TextInput, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -27,15 +27,28 @@ export default function ProductEditScreen() {
   const { has } = useAuth();
   const canManage = has("manage_products");
 
-  const { data: productsData } = useQuery({
-    queryKey: ["products"],
-    queryFn: () => api<{ products: Product[]; stores: string[] }>("/products"),
+  const { data: storesData } = useQuery({
+    queryKey: ["stores"],
+    queryFn: () => api<{ stores: string[] }>("/stores"),
   });
-  const stores = productsData?.stores ?? ["Albert Heijn", "Jumbo", "Lidl", "Aldi", "Plus", "Overig"];
-  const existing = useMemo(
-    () => (params.id ? productsData?.products.find((p) => p.id === params.id) : undefined),
-    [params.id, productsData],
-  );
+  const stores = storesData?.stores ?? ["Dirk", "Albert Heijn"];
+  // Direct tonen vanuit de al geladen productlijst, daarna vers ophalen
+  const cached = useMemo(() => {
+    if (!params.id) return undefined;
+    for (const [, d] of qc.getQueriesData<any>({ queryKey: ["products", "search"] })) {
+      const list: Product[] = d?.pages ? d.pages.flatMap((pg: any) => pg.products) : d?.products ?? [];
+      const hit = list.find((p) => p.id === params.id);
+      if (hit) return hit;
+    }
+    return undefined;
+  }, [params.id, qc]);
+  const { data: fetched } = useQuery({
+    queryKey: ["products", "item", params.id],
+    queryFn: () => api<Product>(`/products/${params.id}`),
+    enabled: !!params.id,
+    placeholderData: cached,
+  });
+  const existing = params.id ? fetched : undefined;
   const isNew = !params.id;
   const readOnly = !!existing?.is_global && !canManage;
 
@@ -55,6 +68,21 @@ export default function ProductEditScreen() {
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [unavailable, setUnavailable] = useState<string[]>(existing?.unavailable ?? []);
+
+  // Als het product pas na het openen binnenkomt: velden alsnog vullen
+  const seeded = useRef(!!existing);
+  useEffect(() => {
+    if (!existing || seeded.current) return;
+    seeded.current = true;
+    setName(existing.name);
+    setBrand(existing.brand ?? "");
+    setBarcode(existing.barcode ?? "");
+    setAisle(existing.aisle);
+    setUnit(existing.unit);
+    setAsGlobal(existing.is_global);
+    setPrices(Object.fromEntries(Object.entries(existing.prices ?? {}).map(([k, v]) => [k, v ? String(v) : ""])));
+    setUnavailable(existing.unavailable ?? []);
+  }, [existing]);
   const toggleUnavailable = (s: string) =>
     setUnavailable((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
 

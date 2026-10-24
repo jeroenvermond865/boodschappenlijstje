@@ -2,11 +2,11 @@ import { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
-import { searchSorted } from "@/src/search";
+import { fetchProducts, useDebounced } from "@/src/search";
 import { AISLES, AISLE_ICONS } from "@/src/constants";
 import { useAuth } from "@/src/auth";
 import { usesNativeTabs } from "@/src/navigation";
@@ -53,39 +53,47 @@ export default function ProductsScreen() {
   const [storeFilter, setStoreFilter] = useState<"all" | "Dirk" | "Albert Heijn">("all");
   const [storeOpen, setStoreOpen] = useState(false);
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["products"],
-    queryFn: () => api<{ products: Product[]; stores: string[] }>("/products"),
+  const debouncedSearch = useDebounced(search);
+  const queryKey = ["products", "search", storeFilter, aisle, onlyFavorites, debouncedSearch.trim()];
+  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
+    queryKey,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      fetchProducts({
+        q: debouncedSearch,
+        source: storeFilter === "all" ? "" : storeFilter,
+        aisle: aisle === "all" ? "" : aisle,
+        favorites: onlyFavorites,
+        offset: pageParam,
+        limit: 50,
+      }),
+    getNextPageParam: (last) => last.next_offset ?? undefined,
+    placeholderData: (prev) => prev,
   });
 
-  const storeProducts = useMemo(() => {
-    const list = data?.products ?? [];
-    return storeFilter === "all" ? list : list.filter((p) => p.source === storeFilter);
-  }, [data, storeFilter]);
-
-  const filtered = useMemo(() => {
-    let list = storeProducts;
-    if (onlyFavorites) list = list.filter((p) => p.is_favorite);
-    if (aisle !== "all") list = list.filter((p) => p.aisle === aisle);
-    if (search.trim()) list = searchSorted(list, search, (p) => p.name);
-    return list;
-  }, [storeProducts, onlyFavorites, aisle, search]);
-
-  const aisleCounts = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const p of storeProducts) m[p.aisle] = (m[p.aisle] ?? 0) + 1;
-    return m;
-  }, [storeProducts]);
+  const filtered = useMemo(() => (data?.pages ?? []).flatMap((pg) => pg.products), [data]);
+  const aisleCounts = data?.pages[0]?.aisle_counts ?? {};
 
   const toggleFavorite = useMutation({
     mutationFn: (p: Product) => api(`/products/${p.id}/favorite`, { method: p.is_favorite ? "DELETE" : "POST" }),
     onMutate: (p: Product) => {
       // Direct bijwerken, zonder te wachten op de server
-      qc.setQueryData(["products"], (old: any) =>
-        old ? { ...old, products: old.products.map((x: Product) => (x.id === p.id ? { ...x, is_favorite: !p.is_favorite } : x)) } : old,
+      qc.setQueriesData({ queryKey: ["products", "search"] }, (old: any) =>
+        old?.pages
+          ? {
+              ...old,
+              pages: old.pages.map((pg: any) => ({
+                ...pg,
+                products: pg.products.map((x: Product) => (x.id === p.id ? { ...x, is_favorite: !p.is_favorite } : x)),
+              })),
+            }
+          : old,
       );
     },
-    onError: () => qc.invalidateQueries({ queryKey: ["products"] }),
+    onSettled: (_r, _e, p) => {
+      if (onlyFavorites || !p) qc.invalidateQueries({ queryKey: ["products", "search"] });
+    },
+    onError: () => qc.invalidateQueries({ queryKey: ["products", "search"] }),
   });
 
   return (
@@ -157,6 +165,13 @@ export default function ProductsScreen() {
         <FlatList
           data={filtered}
           keyExtractor={(p) => p.id}
+          onEndReached={() => {
+            if (hasNextPage && !isFetchingNextPage) fetchNextPage();
+          }}
+          onEndReachedThreshold={0.6}
+          initialNumToRender={15}
+          windowSize={7}
+          ListFooterComponent={isFetchingNextPage ? <ActivityIndicator color={colors.brandPrimary} style={{ marginTop: 8 }} /> : null}
           contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomChrome + 96, gap: 10 }}
           renderItem={({ item }) => (
             <Pressable
