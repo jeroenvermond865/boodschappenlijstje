@@ -1562,8 +1562,13 @@ def resolve_price(prices: dict, store: str, unavailable: Optional[list] = None) 
     return round(sum(vals) / len(vals), 2) if vals else 0.0
 
 
+def product_source(doc: dict) -> Optional[str]:
+    return "Dirk" if doc.get("dirk_id") else ("Albert Heijn" if doc.get("ah_id") else None)
+
+
 def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set] = None) -> dict:
     prices = doc.get("prices", {}) or {}
+    store = product_source(doc) or store
     unavailable = doc.get("unavailable", []) or []
     return {
         "id": doc["product_id"],
@@ -1580,7 +1585,7 @@ def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set]
         "is_own": doc.get("owner_id") == user_id,
         "image": doc.get("image"),
         "is_favorite": doc["product_id"] in (favorites or set()),
-        "source": "Dirk" if doc.get("dirk_id") else ("Albert Heijn" if doc.get("ah_id") else None),
+        "source": product_source(doc),
     }
 
 
@@ -2025,11 +2030,7 @@ async def import_store_products(data: StoreImportInput, user: dict = Depends(get
         if await db.products.find_one({idf: sid, "deleted_at": None}):
             skipped += 1
             continue
-        base = it.price / mults.get(store, 1.0) if it.price else 0
-        prices = {}
-        if it.price:
-            for sn, m in mults.items():
-                prices[sn] = round((it.price if sn == store else base * m), 2)
+        prices = _prices_from(it.price, store, mults)
         unit = (it.quantity or "stuks").strip()[:24] or "stuks"
         await db.products.insert_one({
             "product_id": f"prod_{uuid.uuid4().hex[:12]}",
@@ -2081,10 +2082,8 @@ _dirk_import_running = False
 
 
 def _prices_from(price: float, store: str, mults: dict) -> dict:
-    if not price:
-        return {}
-    base = price / mults.get(store, 1.0)
-    return {sn: round(price if sn == store else base * m, 2) for sn, m in mults.items()}
+    # Alleen de echte prijs van de eigen supermarkt, geen geschatte prijzen
+    return {store: round(price, 2)} if price else {}
 
 
 async def _set_import_status(**fields) -> None:
@@ -2223,13 +2222,7 @@ async def import_all_dirk_status(user: dict = Depends(get_current_user)):
 
 
 def _apply_refresh(p: dict, store: str, price: float, aisle: str, mults: dict, image: Optional[str] = None) -> dict:
-    base = price / mults.get(store, 1.0) if price else 0
-    prices = dict(p.get("prices", {}) or {})
-    prices[store] = price
-    for sn, m in mults.items():
-        if sn != store and not prices.get(sn):
-            prices[sn] = round(base * m, 2)
-    out = {"prices": prices, "aisle": aisle if aisle in AISLES else p.get("aisle", "Overig")}
+    out = {"prices": {store: price}, "aisle": aisle if aisle in AISLES else p.get("aisle", "Overig")}
     if image:
         out["image"] = image
     return out
@@ -2505,7 +2498,6 @@ async def list_stores(user: dict = Depends(get_current_user)):
 
 class StoreInput(BaseModel):
     name: str
-    mult: Optional[float] = 1.0
 
 
 @api_router.get("/admin/stores")
@@ -2524,17 +2516,13 @@ async def admin_add_store(data: StoreInput, user: dict = Depends(get_current_use
     existing = await db.stores.find_one({"name": name})
     if existing and existing.get("active"):
         raise HTTPException(status_code=400, detail="Deze winkel bestaat al")
-    mult = float(data.mult or 1.0)
-    if mult <= 0:
-        raise HTTPException(status_code=400, detail="De prijsfactor moet groter dan 0 zijn")
     last = await db.stores.find({}, {"_id": 0}).sort("order", -1).to_list(1)
     order = (last[0]["order"] + 1) if last else 1
     await db.stores.update_one(
         {"name": name},
-        {"$set": {"name": name, "mult": mult, "active": True, "order": order}},
+        {"$set": {"name": name, "active": True, "order": order}},
         upsert=True,
     )
-    await _backfill_store_prices(name, mult)
     return {"ok": True}
 
 
@@ -2545,10 +2533,7 @@ async def admin_update_store(name: str, data: StoreInput, user: dict = Depends(g
     if not store:
         raise HTTPException(status_code=404, detail="Winkel niet gevonden")
     new_name = data.name.strip()
-    mult = float(data.mult if data.mult is not None else store.get("mult", 1.0))
-    if mult <= 0:
-        raise HTTPException(status_code=400, detail="De prijsfactor moet groter dan 0 zijn")
-    update = {"mult": mult}
+    update: dict = {}
     if new_name and new_name != name:
         if await db.stores.find_one({"name": new_name, "active": True}):
             raise HTTPException(status_code=400, detail="Er bestaat al een winkel met die naam")
@@ -2558,7 +2543,8 @@ async def admin_update_store(name: str, data: StoreInput, user: dict = Depends(g
             val = p["prices"].get(name)
             await db.products.update_one({"product_id": p["product_id"]}, {"$set": {f"prices.{new_name}": val}, "$unset": {f"prices.{name}": ""}})
         await db.users.update_many({"store": name}, {"$set": {"store": new_name}})
-    await db.stores.update_one({"name": name}, {"$set": update})
+    if update:
+        await db.stores.update_one({"name": name}, {"$set": update})
     return {"ok": True}
 
 
@@ -2616,27 +2602,6 @@ async def store_requests_count(user: dict = Depends(get_current_user)):
     return {"count": await db.store_requests.count_documents({"status": "pending"})}
 
 
-async def _backfill_store_prices(store_name: str, mult: float):
-    prods = await db.products.find({"is_global": True, "deleted_at": None}, {"_id": 0}).to_list(10000)
-    active = await db.stores.find({"active": True}, {"_id": 0}).to_list(200)
-    mults = {s["name"]: s.get("mult", 1.0) for s in active}
-    for p in prods:
-        prices = p.get("prices", {}) or {}
-        if prices.get(store_name):
-            continue
-        base = None
-        for sn, pv in prices.items():
-            if pv and mults.get(sn):
-                base = pv / mults[sn]
-                break
-        if base is None:
-            continue
-        await db.products.update_one(
-            {"product_id": p["product_id"]},
-            {"$set": {f"prices.{store_name}": round(base * mult, 2)}},
-        )
-
-
 @api_router.post("/admin/store-requests/{req_id}/approve")
 async def approve_store_request(req_id: str, user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_settings")
@@ -2649,7 +2614,6 @@ async def approve_store_request(req_id: str, user: dict = Depends(get_current_us
         last = await db.stores.find({}, {"_id": 0}).sort("order", -1).to_list(1)
         order = (last[0]["order"] + 1) if last else 1
         await db.stores.insert_one({"name": name, "mult": 1.0, "active": True, "order": order})
-        await _backfill_store_prices(name, 1.0)
     await db.store_requests.update_one({"req_id": req_id}, {"$set": {"status": "approved", "reviewed_at": now_utc()}})
     return {"ok": True}
 
@@ -3158,9 +3122,14 @@ async def startup():
         await db.stores.update_many({"name": {"$nin": COUPLED_STORES}}, {"$set": {"active": False}})
         await db.users.update_many({"store": {"$nin": COUPLED_STORES}}, {"$set": {"store": "Dirk"}})
         await db.settings.insert_one({"key": "stores_only_dirk_ah", "done_at": now_utc()})
+    # Eenmalig: geschatte prijzen (via prijsfactor) weghalen, alleen echte winkelprijs bewaren
+    if not await db.settings.find_one({"key": "prices_own_store_only"}):
+        for idf, store in (("dirk_id", "Dirk"), ("ah_id", "Albert Heijn")):
+            async for p in db.products.find({idf: {"$exists": True}}, {"_id": 0, "product_id": 1, "prices": 1}):
+                own = (p.get("prices") or {}).get(store)
+                await db.products.update_one({"product_id": p["product_id"]}, {"$set": {"prices": {store: own} if own else {}}})
+        await db.settings.insert_one({"key": "prices_own_store_only", "done_at": now_utc()})
     active_stores = await db.stores.find({"active": True}, {"_id": 0}).to_list(200)
-    for s in active_stores:
-        await _backfill_store_prices(s["name"], s.get("mult", 1.0))
     logger.info("Stores ready: %d", len(active_stores))
 
     # Migrate legacy department names -> new Dirk-style departments

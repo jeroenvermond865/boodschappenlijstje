@@ -93,11 +93,30 @@ export default function ProductsScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>{s.tab_products}</Text>
         <Text style={styles.subtitle}>{s.sub_products}</Text>
-        <Pressable testID="store-selector" onPress={() => setStoreOpen(true)} style={styles.storeRow}>
+        <Pressable testID="store-selector" onPress={() => setStoreOpen((v) => !v)} style={styles.storeRow}>
           <Icon name="storefront-outline" size={16} color={colors.brandPrimary} />
-          <Text style={styles.storeText}>{user?.store ?? "Albert Heijn"}</Text>
-          <Icon name="chevron-down" size={16} color={colors.brandPrimary} />
+          <Text style={styles.storeText}>{STORE_FILTERS.find((f) => f.key === storeFilter)?.label}</Text>
+          <Icon name={storeOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.brandPrimary} />
         </Pressable>
+        {storeOpen ? (
+          <View style={styles.storeMenu}>
+            {STORE_FILTERS.map((f) => (
+              <Pressable
+                key={f.key}
+                testID={`product-store-${f.key}`}
+                onPress={() => {
+                  setStoreFilter(f.key);
+                  setAisle("all");
+                  setStoreOpen(false);
+                }}
+                style={styles.storeMenuItem}
+              >
+                <Text style={[styles.storeMenuText, storeFilter === f.key && styles.storeMenuTextActive]}>{f.label}</Text>
+                {storeFilter === f.key ? <Icon name="check" size={16} color={colors.brandPrimary} /> : null}
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
         <View style={styles.searchBox}>
           <Icon name="magnify" size={20} color={colors.muted} />
           <TextInput
@@ -108,21 +127,6 @@ export default function ProductsScreen() {
             onChangeText={setSearch}
             style={styles.searchInput}
           />
-        </View>
-        <View style={styles.segment}>
-          {STORE_FILTERS.map((f) => (
-            <Pressable
-              key={f.key}
-              testID={`product-store-${f.key}`}
-              onPress={() => {
-                setStoreFilter(f.key);
-                setAisle("all");
-              }}
-              style={[styles.segBtn, storeFilter === f.key && styles.segBtnActive]}
-            >
-              <Text style={[styles.segText, storeFilter === f.key && styles.segTextActive]}>{f.label}</Text>
-            </Pressable>
-          ))}
         </View>
         <Pressable
           testID="product-favorites-toggle"
@@ -202,7 +206,6 @@ export default function ProductsScreen() {
       )}
 
 
-      <StorePickerModal open={storeOpen} onClose={() => setStoreOpen(false)} stores={data?.stores ?? []} current={user?.store} />
     </View>
   );
 }
@@ -329,6 +332,18 @@ const useStyles = makeStyles((colors) => ({
     alignItems: "center",
     justifyContent: "center",
   },
+  storeMenu: {
+    alignSelf: "flex-start",
+    minWidth: 200,
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: 4,
+  },
+  storeMenuItem: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, paddingHorizontal: 14, paddingVertical: 10 },
+  storeMenuText: { fontSize: 15, fontFamily: fonts.medium, color: colors.onSurface },
+  storeMenuTextActive: { fontFamily: fonts.bold, color: colors.brandPrimary },
   favToggle: {
     flexDirection: "row",
     alignItems: "center",

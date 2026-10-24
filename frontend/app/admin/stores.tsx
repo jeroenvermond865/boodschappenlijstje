@@ -9,7 +9,7 @@ import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Store = { name: string; mult: number };
+type Store = { name: string };
 type SReq = { req_id: string; name: string; requested_by_name?: string };
 
 export default function AdminStoresScreen() {
@@ -33,7 +33,6 @@ export default function AdminStoresScreen() {
   const [open, setOpen] = useState(false);
   const [original, setOriginal] = useState<string | null>(null);
   const [name, setName] = useState("");
-  const [mult, setMult] = useState("1.0");
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["admin-stores"] });
@@ -67,19 +66,17 @@ export default function AdminStoresScreen() {
   const openNew = () => {
     setOriginal(null);
     setName("");
-    setMult("1.0");
     setOpen(true);
   };
   const openEdit = (s: Store) => {
     setOriginal(s.name);
     setName(s.name);
-    setMult(String(s.mult ?? 1.0));
     setOpen(true);
   };
 
   const save = useMutation({
     mutationFn: () => {
-      const body = { name: name.trim(), mult: parseFloat(mult.replace(",", ".")) || 1.0 };
+      const body = { name: name.trim() };
       return original
         ? api(`/admin/stores/${encodeURIComponent(original)}`, { method: "PUT", body })
         : api("/admin/stores", { method: "POST", body });
@@ -138,13 +135,11 @@ export default function AdminStoresScreen() {
               ))}
             </View>
           ) : null}
-          <Text style={styles.hint}>De prijsfactor past de richtprijzen aan (1.0 = gemiddeld, lager = goedkoper). Zodra een winkel aan z'n website gekoppeld is, worden prijzen automatisch opgehaald.</Text>
           {(data?.stores ?? []).map((s) => (
             <View key={s.name} style={styles.row} testID={`store-${s.name}`}>
               <Icon name="storefront-outline" size={22} color={colors.brandPrimary} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.name}>{s.name}</Text>
-                <Text style={styles.sub}>Prijsfactor {Number(s.mult ?? 1).toFixed(2)}</Text>
               </View>
               <Pressable testID={`store-edit-${s.name}`} onPress={() => openEdit(s)} hitSlop={8} style={styles.iconBtn}>
                 <Icon name="pencil-outline" size={20} color={colors.onSurfaceSecondary} />
@@ -167,7 +162,6 @@ export default function AdminStoresScreen() {
               </Pressable>
             </View>
             <Field label="Naam" testID="store-name-input" value={name} onChangeText={setName} />
-            <Field label="Prijsfactor" testID="store-mult-input" value={mult} onChangeText={setMult} keyboardType="decimal-pad" />
             <Button label="Opslaan" onPress={() => name.trim() && save.mutate()} loading={save.isPending} testID="store-save-button" />
           </View>
         </View>
