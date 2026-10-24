@@ -301,7 +301,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     if ensure_aware(session["expires_at"]) < now_utc():
         raise HTTPException(status_code=401, detail="Sessie verlopen")
     user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
-    if not user:
+    if not user or user.get("deleted_at"):
         raise HTTPException(status_code=401, detail="Gebruiker niet gevonden")
     return user
 
@@ -413,6 +413,8 @@ async def register(data: RegisterInput):
     email = data.email.lower().strip()
     existing = await db.users.find_one({"email": email})
     if existing:
+        if existing.get("deleted_at"):
+            raise HTTPException(status_code=400, detail="Dit account is verwijderd. Vraag de beheerder om het terug te zetten")
         raise HTTPException(status_code=400, detail="E-mailadres is al in gebruik")
     user_id = new_user_id()
     is_admin = email in ADMIN_SEED_EMAILS
@@ -438,7 +440,7 @@ async def register(data: RegisterInput):
 async def login(data: LoginInput):
     ident = data.identifier.lower().strip()
     user = await db.users.find_one({"$or": [{"email": ident}, {"username": ident}]})
-    if not user or not user.get("password_hash") or not verify_password(data.password, user["password_hash"]):
+    if not user or user.get("deleted_at") or not user.get("password_hash") or not verify_password(data.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Onjuiste inloggegevens")
     token = await create_session(user["user_id"])
     return {"session_token": token, "user": public_user(user)}
@@ -648,6 +650,8 @@ async def auth_session(data: SessionInput):
         raise HTTPException(status_code=401, detail="Geen e-mail ontvangen")
 
     existing = await db.users.find_one({"email": email})
+    if existing and existing.get("deleted_at"):
+        raise HTTPException(status_code=403, detail="Dit account is verwijderd. Vraag de beheerder om het terug te zetten")
     if existing:
         user_id = existing["user_id"]
         await db.users.update_one(
@@ -982,7 +986,7 @@ async def get_members(camp_id: str, user: dict = Depends(get_current_user)):
     if not camp:
         raise HTTPException(status_code=404, detail="Kamp niet gevonden")
     ids = [camp["owner_id"]] + camp.get("member_ids", [])
-    users = await db.users.find({"user_id": {"$in": ids}}, {"_id": 0}).to_list(1000)
+    users = await db.users.find({"user_id": {"$in": ids}, "deleted_at": None}, {"_id": 0}).to_list(1000)
     by_id = {u["user_id"]: u for u in users}
     result = []
     for uid in ids:
@@ -1005,6 +1009,8 @@ async def add_member(camp_id: str, data: MemberInput, user: dict = Depends(get_c
         raise HTTPException(status_code=404, detail="Kamp niet gevonden of je bent geen eigenaar")
     email = data.email.lower().strip()
     target = await db.users.find_one({"email": email})
+    if target and target.get("deleted_at"):
+        raise HTTPException(status_code=400, detail="Dit account is verwijderd")
     if target:
         if target["user_id"] == camp["owner_id"]:
             raise HTTPException(status_code=400, detail="Jij bent al de eigenaar")
@@ -1366,7 +1372,7 @@ async def delete_role(name: str, user: dict = Depends(get_current_user)):
 @api_router.get("/admin/users")
 async def admin_list_users(user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_users")
-    docs = await db.users.find({}, {"_id": 0}).sort("created_at", 1).to_list(5000)
+    docs = await db.users.find({"deleted_at": None}, {"_id": 0}).sort("created_at", 1).to_list(5000)
     return {"users": [public_user(d) for d in docs]}
 
 
@@ -1414,11 +1420,18 @@ async def admin_delete_user(target_id: str, user: dict = Depends(get_current_use
     await require_perm(user, "manage_users")
     if target_id == user["user_id"]:
         raise HTTPException(status_code=400, detail="Je kunt je eigen account niet verwijderen")
-    target = await db.users.find_one({"user_id": target_id})
+    target = await db.users.find_one({"user_id": target_id, "deleted_at": None})
     if not target:
         raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
-    await db.users.delete_one({"user_id": target_id})
+    # Naar "Recent verwijderd": 30 dagen terug te zetten, samen met alles van deze gebruiker
+    ts = now_utc()
+    await db.users.update_one({"user_id": target_id}, {"$set": {"deleted_at": ts}})
     await db.user_sessions.delete_many({"user_id": target_id})
+    for coll in (db.camps, db.dishes, db.products):
+        await coll.update_many(
+            {"owner_id": target_id, "deleted_at": None},
+            {"$set": {"deleted_at": ts, "deleted_with_user": target_id}},
+        )
     return {"ok": True}
 
 
@@ -2462,6 +2475,134 @@ async def delete_feedback(feedback_id: str, user: dict = Depends(get_current_use
 
 
 # ---------------------------------------------------------------------------
+# Recent verwijderd (prullenbak, 30 dagen)
+# ---------------------------------------------------------------------------
+TRASH_DAYS = 30
+TRASH = {
+    "user": ("users", "user_id"),
+    "camp": ("camps", "camp_id"),
+    "dish": ("dishes", "dish_id"),
+    "product": ("products", "product_id"),
+}
+
+
+def _days_left(deleted_at) -> int:
+    if not isinstance(deleted_at, datetime):
+        return TRASH_DAYS
+    gone = ensure_aware(deleted_at) + timedelta(days=TRASH_DAYS)
+    return max(0, (gone - now_utc()).days)
+
+
+@api_router.get("/admin/trash")
+async def list_trash(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    names = {u["user_id"]: u.get("name") or u.get("email") async for u in db.users.find({}, {"_id": 0, "user_id": 1, "name": 1, "email": 1})}
+    items = []
+    for kind, (coll, idf) in TRASH.items():
+        query = {"deleted_at": {"$ne": None}}
+        if kind != "user":
+            # Spullen van een verwijderde gebruiker staan onder die gebruiker
+            query["deleted_with_user"] = {"$exists": False}
+        async for d in db[coll].find(query, {"_id": 0}):
+            extra = ""
+            if kind == "user":
+                extra = d.get("email") or ""
+                n = sum([await db[c].count_documents({"deleted_with_user": d[idf]}) for c in ("camps", "dishes", "products")])
+                if n:
+                    extra += f" · met {n} kampen, gerechten en producten"
+            elif d.get("owner_id"):
+                extra = f"van {names.get(d['owner_id'], 'onbekend')}"
+            items.append({
+                "kind": kind,
+                "id": d[idf],
+                "name": d.get("name") or d.get("email") or "",
+                "extra": extra,
+                "deleted_at": ensure_aware(d["deleted_at"]).isoformat() if isinstance(d.get("deleted_at"), datetime) else None,
+                "days_left": _days_left(d.get("deleted_at")),
+            })
+    items.sort(key=lambda i: i["deleted_at"] or "", reverse=True)
+    return {"items": items, "days": TRASH_DAYS}
+
+
+@api_router.post("/admin/trash/{kind}/{item_id}/restore")
+async def restore_trash(kind: str, item_id: str, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    if kind not in TRASH:
+        raise HTTPException(status_code=404, detail="Onbekend type")
+    coll, idf = TRASH[kind]
+    doc = await db[coll].find_one({idf: item_id, "deleted_at": {"$ne": None}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Niet gevonden in Recent verwijderd")
+    if kind == "user":
+        await db.users.update_one({idf: item_id}, {"$set": {"deleted_at": None}})
+        for c in ("camps", "dishes", "products"):
+            await db[c].update_many({"deleted_with_user": item_id}, {"$set": {"deleted_at": None}, "$unset": {"deleted_with_user": ""}})
+        return {"ok": True}
+    owner = doc.get("owner_id")
+    if owner and not await db.users.find_one({"user_id": owner, "deleted_at": None}):
+        raise HTTPException(status_code=400, detail="De eigenaar is verwijderd. Zet eerst de gebruiker terug")
+    await db[coll].update_one({idf: item_id}, {"$set": {"deleted_at": None}, "$unset": {"deleted_with_user": ""}})
+    return {"ok": True}
+
+
+@api_router.delete("/admin/trash/{kind}/{item_id}")
+async def purge_trash_item(kind: str, item_id: str, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    if kind not in TRASH:
+        raise HTTPException(status_code=404, detail="Onbekend type")
+    coll, idf = TRASH[kind]
+    doc = await db[coll].find_one({idf: item_id, "deleted_at": {"$ne": None}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Niet gevonden in Recent verwijderd")
+    await _purge_docs(kind, [doc])
+    return {"ok": True}
+
+
+async def _purge_docs(kind: str, docs: list) -> None:
+    coll, idf = TRASH[kind]
+    ids = [d[idf] for d in docs]
+    if not ids:
+        return
+    if kind == "user":
+        for c in ("camps", "dishes", "products"):
+            owned = await db[c].find({"owner_id": {"$in": ids}}, {"_id": 0}).to_list(100000)
+            await _purge_docs({"camps": "camp", "dishes": "dish", "products": "product"}[c], owned)
+        await db.user_sessions.delete_many({"user_id": {"$in": ids}})
+        await db.camps.update_many({}, {"$pull": {"member_ids": {"$in": ids}, "left_ids": {"$in": ids}}})
+    elif kind == "camp":
+        await db.invitations.delete_many({"camp_id": {"$in": ids}})
+    elif kind == "product":
+        await db.product_submissions.delete_many({"product_id": {"$in": ids}})
+    elif kind == "dish":
+        await db.submissions.delete_many({"dish_id": {"$in": ids}, "status": "pending"})
+    await db[coll].delete_many({idf: {"$in": ids}})
+
+
+async def _purge_expired_trash() -> None:
+    cutoff = now_utc() - timedelta(days=TRASH_DAYS)
+    # Eerst gebruikers (nemen hun spullen mee), daarna losse items
+    for kind in ("user", "camp", "dish", "product"):
+        coll, _ = TRASH[kind]
+        docs = await db[coll].find({"deleted_at": {"$ne": None, "$lt": cutoff}}, {"_id": 0}).to_list(100000)
+        await _purge_docs(kind, docs)
+        if docs:
+            logger.info("Definitief verwijderd: %d %s", len(docs), coll)
+
+
+async def _trash_orphans() -> None:
+    # Spullen waarvan de eigenaar niet meer bestaat, gaan naar Recent verwijderd
+    user_ids = {u["user_id"] async for u in db.users.find({}, {"_id": 0, "user_id": 1})}
+    ts = now_utc()
+    for coll in (db.camps, db.dishes, db.products):
+        res = await coll.update_many(
+            {"owner_id": {"$nin": list(user_ids) + [None]}, "deleted_at": None},
+            {"$set": {"deleted_at": ts}},
+        )
+        if res.modified_count:
+            logger.info("Wees-items naar Recent verwijderd: %d", res.modified_count)
+
+
+# ---------------------------------------------------------------------------
 # Dish sharing
 # ---------------------------------------------------------------------------
 @api_router.post("/dishes/{dish_id}/share")
@@ -2785,6 +2926,9 @@ async def startup():
             await db.dishes.update_one({"dish_id": d["dish_id"]}, {"$set": {"ingredients": d["ingredients"]}})
     logger.info("Department migration done")
 
+    await _trash_orphans()
+    await _purge_expired_trash()
+
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
 
@@ -2796,6 +2940,7 @@ async def _daily_refresh_loop():
         try:
             res = await _refresh_dirk_prices_all()
             logger.info("Daily Dirk refresh: %s", res)
+            await _purge_expired_trash()
         except Exception as e:
             logger.warning("Daily Dirk refresh error: %s", e)
         await asyncio.sleep(24 * 60 * 60)

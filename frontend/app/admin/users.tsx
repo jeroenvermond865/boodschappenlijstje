@@ -65,7 +65,7 @@ export default function AdminUsersScreen() {
     mutationFn: () => api(`/admin/users/${edit!.id}`, { method: "DELETE" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin-users"] });
-      toast.show("Gebruiker verwijderd", "info");
+      toast.show("Gebruiker staat 30 dagen in Recent verwijderd", "info");
       setEdit(null);
     },
     onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),

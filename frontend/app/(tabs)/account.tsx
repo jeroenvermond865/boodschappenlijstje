@@ -146,6 +146,14 @@ export default function AccountScreen() {
                 onPress={() => router.push("/admin/users")}
               />
             ) : null}
+            {canUsers ? (
+              <AdminRow
+                testID="admin-trash-link"
+                icon="delete-restore"
+                label="Recent verwijderd"
+                onPress={() => router.push("/admin/trash")}
+              />
+            ) : null}
             {canRoles ? (
               <AdminRow
                 testID="admin-roles-link"
