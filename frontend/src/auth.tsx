@@ -130,7 +130,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       Platform.OS === "web" && typeof window !== "undefined"
         ? window.location.origin + "/"
         : Linking.createURL("");
-    const authUrl = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+    const base =
+      Platform.OS === "web" && typeof window !== "undefined"
+        ? window.location.origin
+        : process.env.EXPO_PUBLIC_BACKEND_URL ?? "";
+    const authUrl = `${base}/api/auth/google/start?redirect=${encodeURIComponent(redirectUrl)}`;
 
     if (Platform.OS === "web") {
       window.location.href = authUrl;

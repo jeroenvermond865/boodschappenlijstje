@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File
-from fastapi.responses import Response, HTMLResponse
+from fastapi.responses import Response, HTMLResponse, RedirectResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -8,6 +8,8 @@ import logging
 import asyncio
 import uuid
 import re
+import secrets
+from urllib.parse import urlencode
 import bcrypt
 import httpx
 from html import escape
@@ -31,7 +33,8 @@ api_router = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 
 EMAIL_BASE_URL = "https://integrations.emergentagent.com"
 EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
@@ -480,13 +483,83 @@ async def reset_password(data: ResetPassword):
     return {"ok": True}
 
 
+def google_callback_url() -> str:
+    return (FRONTEND_URL or "").rstrip("/") + "/api/auth/google/callback"
+
+
+def allowed_redirect(url: str) -> bool:
+    # Alleen terug naar de eigen site of naar de app (eigen URL-schema)
+    base = (FRONTEND_URL or "").rstrip("/")
+    if url.startswith("http://") or url.startswith("https://"):
+        return bool(base) and (url == base or url.startswith(base + "/"))
+    return "://" in url
+
+
+@api_router.get("/auth/google/start")
+async def google_start(redirect: str = ""):
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=503, detail="Google inloggen is niet ingesteld")
+    redirect = redirect or (FRONTEND_URL or "").rstrip("/") + "/"
+    if not allowed_redirect(redirect):
+        raise HTTPException(status_code=400, detail="Ongeldige redirect")
+    state = secrets.token_urlsafe(24)
+    await db.google_logins.insert_one({"state": state, "redirect": redirect, "expires_at": now_utc() + timedelta(minutes=10)})
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": google_callback_url(),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "prompt": "select_account",
+    }
+    return RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
+
+
+@api_router.get("/auth/google/callback")
+async def google_callback(state: str = "", code: str = "", error: str = ""):
+    rec = await db.google_logins.find_one({"state": state, "session_id": {"$exists": False}})
+    if not rec or ensure_aware(rec["expires_at"]) < now_utc():
+        raise HTTPException(status_code=400, detail="Inlogpoging verlopen, probeer opnieuw")
+    if error or not code:
+        await db.google_logins.delete_one({"_id": rec["_id"]})
+        return RedirectResponse(rec["redirect"])
+    async with httpx.AsyncClient(timeout=15) as http:
+        tok = await http.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": google_callback_url(),
+            "grant_type": "authorization_code",
+        })
+        if tok.status_code != 200:
+            raise HTTPException(status_code=401, detail="Google inloggen mislukt")
+        info = await http.get(
+            "https://openidconnect.googleapis.com/v1/userinfo",
+            headers={"Authorization": f"Bearer {tok.json().get('access_token')}"},
+        )
+    if info.status_code != 200 or not info.json().get("email_verified"):
+        raise HTTPException(status_code=401, detail="Google inloggen mislukt")
+    profile = info.json()
+    session_id = secrets.token_urlsafe(32)
+    await db.google_logins.update_one(
+        {"_id": rec["_id"]},
+        {"$set": {
+            "session_id": session_id,
+            "email": profile.get("email"),
+            "name": profile.get("name"),
+            "picture": profile.get("picture"),
+            "expires_at": now_utc() + timedelta(minutes=5),
+        }},
+    )
+    sep = "&" if "#" in rec["redirect"] else "#"
+    return RedirectResponse(f"{rec['redirect']}{sep}session_id={session_id}")
+
+
 @api_router.post("/auth/session")
 async def auth_session(data: SessionInput):
-    async with httpx.AsyncClient(timeout=15) as http:
-        resp = await http.get(EMERGENT_SESSION_URL, headers={"X-Session-ID": data.session_id})
-    if resp.status_code != 200:
+    payload = await db.google_logins.find_one_and_delete({"session_id": data.session_id})
+    if not payload or ensure_aware(payload["expires_at"]) < now_utc():
         raise HTTPException(status_code=401, detail="Google inloggen mislukt")
-    payload = resp.json()
     email = payload.get("email", "").lower().strip()
     name = payload.get("name")
     picture = payload.get("picture")

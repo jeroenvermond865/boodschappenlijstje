@@ -6,6 +6,7 @@ RUN yarn install --frozen-lockfile --network-timeout 600000
 COPY frontend/ ./
 # Leeg = de app praat met de server op hetzelfde adres
 ENV EXPO_PUBLIC_BACKEND_URL=""
+ENV EXPO_PUBLIC_GOOGLE_LOGIN="1"
 RUN npx expo export --platform web --output-dir /build/web
 
 # Stap 2: de server (FastAPI) die de API en de website serveert
