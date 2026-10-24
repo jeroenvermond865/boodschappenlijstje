@@ -155,7 +155,7 @@ async def get_active_stores() -> list:
     docs = await db.stores.find({"active": True}, {"_id": 0}).sort("order", 1).to_list(200)
     if not docs:
         return list(STORES)
-    return [d["name"] for d in docs]
+    return list(dict.fromkeys(d["name"] for d in docs))
 
 
 async def role_permissions(role_name: str) -> list:
@@ -1640,18 +1640,6 @@ async def create_product(data: ProductInput, user: dict = Depends(get_current_us
         "created_at": now_utc(),
     }
     await db.products.insert_one(doc)
-    # Non-admin personal product -> notify admins so they can promote it
-    if not make_global:
-        sub = {
-            "psub_id": f"psub_{uuid.uuid4().hex[:12]}",
-            "product_id": product_id,
-            "name": doc["name"],
-            "submitted_by": user["user_id"],
-            "submitted_by_name": user.get("name") or user.get("email"),
-            "status": "pending",
-            "created_at": now_utc(),
-        }
-        await db.product_submissions.insert_one(sub)
     return product_public(doc, user.get("store", DEFAULT_STORE), user["user_id"])
 
 
@@ -2532,71 +2520,6 @@ class StoreInput(BaseModel):
     name: str
 
 
-@api_router.get("/admin/stores")
-async def admin_list_stores(user: dict = Depends(get_current_user)):
-    await require_perm(user, "manage_settings")
-    docs = await db.stores.find({"active": True}, {"_id": 0}).sort("order", 1).to_list(200)
-    return {"stores": docs}
-
-
-@api_router.post("/admin/stores")
-async def admin_add_store(data: StoreInput, user: dict = Depends(get_current_user)):
-    await require_perm(user, "manage_settings")
-    name = data.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Geef een winkelnaam op")
-    existing = await db.stores.find_one({"name": name})
-    if existing and existing.get("active"):
-        raise HTTPException(status_code=400, detail="Deze winkel bestaat al")
-    last = await db.stores.find({}, {"_id": 0}).sort("order", -1).to_list(1)
-    order = (last[0]["order"] + 1) if last else 1
-    await db.stores.update_one(
-        {"name": name},
-        {"$set": {"name": name, "active": True, "order": order}},
-        upsert=True,
-    )
-    return {"ok": True}
-
-
-@api_router.put("/admin/stores/{name}")
-async def admin_update_store(name: str, data: StoreInput, user: dict = Depends(get_current_user)):
-    await require_perm(user, "manage_settings")
-    store = await db.stores.find_one({"name": name})
-    if not store:
-        raise HTTPException(status_code=404, detail="Winkel niet gevonden")
-    new_name = data.name.strip()
-    update: dict = {}
-    if new_name and new_name != name:
-        if await db.stores.find_one({"name": new_name, "active": True}):
-            raise HTTPException(status_code=400, detail="Er bestaat al een winkel met die naam")
-        update["name"] = new_name
-        # migrate product prices + user store choices to the new name
-        async for p in db.products.find({f"prices.{name}": {"$exists": True}}, {"_id": 0, "product_id": 1, "prices": 1}):
-            val = p["prices"].get(name)
-            await db.products.update_one({"product_id": p["product_id"]}, {"$set": {f"prices.{new_name}": val}, "$unset": {f"prices.{name}": ""}})
-        await db.users.update_many({"store": name}, {"$set": {"store": new_name}})
-    if update:
-        await db.stores.update_one({"name": name}, {"$set": update})
-    return {"ok": True}
-
-
-@api_router.delete("/admin/stores/{name}")
-async def admin_delete_store(name: str, user: dict = Depends(get_current_user)):
-    await require_perm(user, "manage_settings")
-    store = await db.stores.find_one({"name": name})
-    if not store:
-        raise HTTPException(status_code=404, detail="Winkel niet gevonden")
-    remaining = await db.stores.count_documents({"active": True})
-    if remaining <= 1:
-        raise HTTPException(status_code=400, detail="Er moet minstens één winkel blijven")
-    await db.stores.update_one({"name": name}, {"$set": {"active": False}})
-    # move users on this store to a default
-    fallback = await db.stores.find_one({"active": True})
-    if fallback:
-        await db.users.update_many({"store": name}, {"$set": {"store": fallback["name"]}})
-    return {"ok": True}
-
-
 @api_router.post("/store-requests")
 async def request_store(data: StoreRequestInput, user: dict = Depends(get_current_user)):
     name = data.name.strip()
@@ -2640,12 +2563,7 @@ async def approve_store_request(req_id: str, user: dict = Depends(get_current_us
     req = await db.store_requests.find_one({"req_id": req_id, "status": "pending"})
     if not req:
         raise HTTPException(status_code=404, detail="Aanvraag niet gevonden")
-    name = req["name"]
-    exists = await db.stores.find_one({"name": name})
-    if not exists:
-        last = await db.stores.find({}, {"_id": 0}).sort("order", -1).to_list(1)
-        order = (last[0]["order"] + 1) if last else 1
-        await db.stores.insert_one({"name": name, "mult": 1.0, "active": True, "order": order})
+    # Alleen noteren: een nieuwe supermarkt wordt door ons gekoppeld (geprogrammeerd)
     await db.store_requests.update_one({"req_id": req_id}, {"$set": {"status": "approved", "reviewed_at": now_utc()}})
     return {"ok": True}
 
@@ -3178,6 +3096,16 @@ async def startup():
             {"$setOnInsert": {"name": s, "mult": STORE_MULT.get(s, 1.0), "active": True, "order": i}},
             upsert=True,
         )
+    # Dubbele winkels (zelfde naam) opruimen: één document per naam
+    seen_stores: set = set()
+    all_stores = await db.stores.find({}, {"_id": 1, "name": 1, "order": 1}).to_list(500)
+    all_stores.sort(key=lambda d: (d.get("name") not in COUPLED_STORES, d.get("order") or 0))
+    for st in all_stores:
+        key = (st.get("name") or "").strip().lower()
+        if key in seen_stores:
+            await db.stores.delete_one({"_id": st["_id"]})
+        else:
+            seen_stores.add(key)
     # Eenmalig: alleen Dirk en Albert Heijn blijven over
     if not await db.settings.find_one({"key": "stores_only_dirk_ah"}):
         await db.stores.update_many({"name": {"$nin": COUPLED_STORES}}, {"$set": {"active": False}})

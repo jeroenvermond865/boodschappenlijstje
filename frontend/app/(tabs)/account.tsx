@@ -35,14 +35,6 @@ export default function AccountScreen() {
   });
   const pending = counts?.pending ?? 0;
 
-  const { data: pcounts } = useQuery({
-    queryKey: ["product-submissions-count"],
-    queryFn: () => api<{ count: number }>("/admin/product-submissions/count"),
-    enabled: canProducts,
-    refetchInterval: 15000,
-  });
-  const pendingProducts = pcounts?.count ?? 0;
-
   const { data: scounts } = useQuery({
     queryKey: ["store-requests-count"],
     queryFn: () => api<{ count: number }>("/admin/store-requests/count"),
@@ -109,6 +101,12 @@ export default function AccountScreen() {
           onPress={() => router.push("/admin/trash")}
         />
         <AdminRow
+          testID="store-request-link"
+          icon="storefront-plus-outline"
+          label="Supermarkt aanvragen"
+          onPress={() => router.push("/store-request")}
+        />
+        <AdminRow
           testID="feedback-link"
           icon="message-draw"
           label="Feedback & verbeteringen"
@@ -125,15 +123,6 @@ export default function AccountScreen() {
                 label="Inzendingen beoordelen"
                 badge={pending}
                 onPress={() => router.push("/admin/submissions")}
-              />
-            ) : null}
-            {canProducts ? (
-              <AdminRow
-                testID="admin-product-submissions-link"
-                icon="cart-plus"
-                label="Nieuwe producten"
-                badge={pendingProducts}
-                onPress={() => router.push("/admin/product-submissions")}
               />
             ) : null}
             {canProducts ? (
@@ -170,11 +159,11 @@ export default function AccountScreen() {
             ) : null}
             {canSettings ? (
               <AdminRow
-                testID="admin-stores-link"
-                icon="storefront-edit-outline"
-                label="Winkels & aanvragen"
+                testID="admin-store-requests-link"
+                icon="storefront-outline"
+                label="Supermarkt-aanvragen"
                 badge={pendingStores}
-                onPress={() => router.push("/admin/stores")}
+                onPress={() => router.push("/admin/store-requests")}
               />
             ) : null}
             {canSettings ? (

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Image, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,7 +10,6 @@ import { AISLES, AISLE_ICONS } from "@/src/constants";
 import { useAuth } from "@/src/auth";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings } from "@/src/settings";
-import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 export type Product = {
@@ -207,81 +206,6 @@ export default function ProductsScreen() {
 
 
     </View>
-  );
-}
-
-function StorePickerModal({ open, onClose, stores, current }: { open: boolean; onClose: () => void; stores: string[]; current?: string }) {
-  const styles = useStyles();
-  const { colors } = useTheme();
-  const insets = useSafeAreaInsets();
-  const { refresh } = useAuth();
-  const qc = useQueryClient();
-  const toast = useToast();
-  const [reqName, setReqName] = useState("");
-
-  const choose = useMutation({
-    mutationFn: (store: string) => api("/auth/profile", { method: "PUT", body: { store } }),
-    onSuccess: async () => {
-      await refresh();
-      qc.invalidateQueries({ queryKey: ["products"] });
-      onClose();
-    },
-    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
-  });
-
-  const request = useMutation({
-    mutationFn: () => api("/store-requests", { method: "POST", body: { name: reqName.trim() } }),
-    onSuccess: () => {
-      setReqName("");
-      toast.show("Aanvraag verstuurd — de beheerder beoordeelt dit", "success");
-      onClose();
-    },
-    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
-  });
-
-  return (
-    <Modal visible={open} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
-          <View style={styles.sheetHeader}>
-            <Text style={styles.sheetTitle}>Kies je supermarkt</Text>
-            <Pressable testID="store-close" onPress={onClose} hitSlop={8}>
-              <Icon name="close" size={22} color={colors.onSurface} />
-            </Pressable>
-          </View>
-          <Text style={styles.sheetHint}>Je ziet dan de prijzen van deze winkel in je budget.</Text>
-          <FlatList
-            data={stores}
-            keyExtractor={(s) => s}
-            style={{ maxHeight: 320 }}
-            renderItem={({ item }) => (
-              <Pressable testID={`store-opt-${item}`} onPress={() => choose.mutate(item)} style={styles.storeOpt}>
-                <Icon name="storefront-outline" size={20} color={item === current ? colors.brandPrimary : colors.muted} />
-                <Text style={[styles.storeOptText, item === current && { color: colors.brandPrimary, fontFamily: fonts.bold }]}>{item}</Text>
-                {item === current ? <Icon name="check" size={20} color={colors.brandPrimary} /> : null}
-              </Pressable>
-            )}
-          />
-          <View style={styles.reqRow}>
-            <TextInput
-              testID="store-request-input"
-              placeholder="Winkel aanvragen…"
-              placeholderTextColor={colors.muted}
-              value={reqName}
-              onChangeText={setReqName}
-              style={styles.reqInput}
-            />
-            <Pressable
-              testID="store-request-send"
-              onPress={() => reqName.trim() && request.mutate()}
-              style={[styles.reqBtn, !reqName.trim() && { opacity: 0.5 }]}
-            >
-              <Text style={styles.reqBtnText}>Aanvragen</Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    </Modal>
   );
 }
 

@@ -612,14 +612,6 @@ function ExtraAddModal({
                 )}
                 ListEmptyComponent={<Text style={styles.noMeal}>Geen product gevonden.</Text>}
               />
-              <Pressable
-                testID="extra-new-product"
-                onPress={() => router.push({ pathname: "/product/edit", params: q.trim() ? { name: q.trim() } : {} })}
-                style={styles.newProductBtn}
-              >
-                <Icon name="plus-circle" size={20} color={colors.brandPrimary} />
-                <Text style={styles.newProductText}>Nieuw product aanmaken{q.trim() ? ` "${q.trim()}"` : ""}</Text>
-              </Pressable>
             </View>
           )}
         </View>

@@ -32,7 +32,7 @@ export default function StoreRequestsScreen() {
     mutationFn: (id: string) => api(`/admin/store-requests/${id}/approve`, { method: "POST" }),
     onSuccess: () => {
       invalidate();
-      toast.show("Winkel toegevoegd", "success");
+      toast.show("Genoteerd", "success");
     },
     onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
   });
@@ -51,7 +51,7 @@ export default function StoreRequestsScreen() {
         <Pressable testID="back-button" onPress={() => goBack("/")} hitSlop={10} style={styles.headerBtn}>
           <Icon name="chevron-left" size={28} color={colors.onSurface} />
         </Pressable>
-        <Text style={styles.headerTitle}>Winkelaanvragen</Text>
+        <Text style={styles.headerTitle}>Supermarkt-aanvragen</Text>
         <View style={styles.headerBtn} />
       </View>
 
@@ -63,7 +63,7 @@ export default function StoreRequestsScreen() {
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 24, gap: 14 }}>
           {(data?.requests ?? []).length === 0 ? (
             <View style={styles.center}>
-              <EmptyState icon="storefront-outline" title="Geen aanvragen" subtitle="Winkels die gebruikers aanvragen verschijnen hier." />
+              <EmptyState icon="storefront-outline" title="Geen aanvragen" subtitle="Supermarkten die gebruikers aanvragen verschijnen hier, zodat we ze kunnen koppelen." />
             </View>
           ) : (
             (data?.requests ?? []).map((r) => (
@@ -77,7 +77,7 @@ export default function StoreRequestsScreen() {
                   </Pressable>
                   <Pressable testID={`sreq-approve-${r.req_id}`} onPress={() => approve.mutate(r.req_id)} style={[styles.actionBtn, styles.approveBtn]}>
                     <Icon name="check" size={18} color={colors.onBrandPrimary} />
-                    <Text style={[styles.actionText, { color: colors.onBrandPrimary }]}>Toevoegen</Text>
+                    <Text style={[styles.actionText, { color: colors.onBrandPrimary }]}>Genoteerd</Text>
                   </Pressable>
                 </View>
               </View>

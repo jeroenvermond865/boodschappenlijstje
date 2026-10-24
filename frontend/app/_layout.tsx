@@ -52,9 +52,8 @@ function Gate() {
       <Stack.Screen name="product/edit" options={{ presentation: "modal" }} />
       <Stack.Screen name="product/scan" options={{ presentation: "modal" }} />
       <Stack.Screen name="admin/submissions" />
-      <Stack.Screen name="admin/product-submissions" />
       <Stack.Screen name="admin/store-requests" />
-      <Stack.Screen name="admin/stores" />
+      <Stack.Screen name="store-request" options={{ presentation: "modal" }} />
       <Stack.Screen name="admin/users" />
       <Stack.Screen name="admin/roles" />
       <Stack.Screen name="account/profile" />
