@@ -1824,6 +1824,8 @@ def _dirk_aisle(department: str, webgroup: str) -> str:
 
 async def _dirk_post(client, query, variables):
     r = await client.post(DIRK_GQL, json={"query": query, "variables": variables})
+    if r.status_code >= 500:
+        r.raise_for_status()
     return r.json().get("data", {}) or {}
 
 
@@ -1850,8 +1852,10 @@ async def _dirk_fetch_products(client, ids: list) -> list:
     if _dirk_image_ok:
         # Met productfoto; kent Dirk het veld niet, dan zonder foto verder
         r = await client.post(DIRK_GQL, json={"query": q % (DIRK_PRODUCT_FIELDS % " image"), "variables": variables})
+        if r.status_code >= 500:
+            r.raise_for_status()
         body = r.json() or {}
-        if body.get("errors") and not (body.get("data") or {}).get("products"):
+        if body.get("errors") and not (body.get("data") or {}).get("products") and "image" in str(body.get("errors")):
             _dirk_image_ok = False
             logger.warning("Dirk geeft geen productfoto's: %s", str(body.get("errors"))[:300])
         else:
@@ -2147,10 +2151,15 @@ async def _import_all_dirk() -> None:
             await _set_import_status(status="Dirk importeren", found=len(ids), todo=len(todo))
             added = 0
             for i in range(0, len(todo), 25):
-                try:
-                    prods = await _dirk_fetch_products(c, todo[i:i + 25])
-                except Exception as e:
-                    logger.warning("Dirk ophalen mislukt: %s", e)
+                prods = None
+                for attempt in range(3):
+                    try:
+                        prods = await _dirk_fetch_products(c, todo[i:i + 25])
+                        break
+                    except Exception as e:
+                        logger.warning("Dirk ophalen mislukt (poging %d): %s", attempt + 1, e)
+                        await asyncio.sleep(2 * (attempt + 1))
+                if not prods:
                     continue
                 docs = []
                 for p in prods:
@@ -2214,17 +2223,18 @@ async def _refresh_dirk_prices(mults: dict) -> int:
     prods = await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(10000)
     if not prods:
         return 0
-    ids = [p["dirk_id"] for p in prods]
+    # dirk_id staat als tekst opgeslagen; Dirk wil getallen
+    ids = [int(p["dirk_id"]) for p in prods if str(p["dirk_id"]).isdigit()]
     fetched = {}
     async with httpx.AsyncClient(timeout=30, headers=DIRK_HEADERS) as c:
         for i in range(0, len(ids), 25):
             for p in await _dirk_fetch_products(c, ids[i:i + 25]):
                 n = _dirk_normalize(p)
                 if n:
-                    fetched[n["dirk_id"]] = n
+                    fetched[str(n["dirk_id"])] = n
     updated = 0
     for p in prods:
-        n = fetched.get(p["dirk_id"])
+        n = fetched.get(str(p["dirk_id"]))
         if not n or not n["price"]:
             continue
         await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Dirk", n["price"], n["aisle"], mults, n.get("image"))})
