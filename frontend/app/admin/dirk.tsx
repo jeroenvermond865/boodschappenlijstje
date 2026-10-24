@@ -9,6 +9,8 @@ import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
+type ImportStatus = { status?: string; found?: number; todo?: number; added?: number; added_ah?: number; finished_at?: string | null; error?: string | null; running: boolean };
+
 type DirkResult = { source_id: string; name: string; brand?: string | null; quantity?: string | null; price: number; on_offer?: boolean; aisle: string };
 
 const COUPLED = ["Dirk", "Albert Heijn"];
@@ -30,6 +32,33 @@ export default function DirkImportScreen() {
     queryKey: ["dirk-refresh-status"],
     queryFn: () => api<{ linked: number; refreshed_at: string | null }>("/admin/products/refresh-status"),
   });
+
+  const { data: importStatus } = useQuery({
+    queryKey: ["dirk-import-all"],
+    queryFn: () => api<ImportStatus>("/admin/products/import-dirk-all"),
+    // Blijf vragen zolang de import loopt; dat houdt de server ook wakker
+    refetchInterval: (query) => (query.state.data?.running ? 5000 : false),
+  });
+
+  const importAllMut = useMutation({
+    mutationFn: () => api("/admin/products/import-dirk-all", { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["dirk-import-all"] });
+      toast.show("Import gestart, dit duurt een tijdje", "info");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
+  });
+
+  const wasRunning = importStatus?.running;
+  const importLine = importStatus?.running
+    ? `Bezig: ${importStatus.status ?? ""} · ${importStatus.found ?? 0} gevonden · ${(importStatus.added ?? 0) + (importStatus.added_ah ?? 0)} toegevoegd. Laat dit scherm open.`
+    : importStatus?.status === "klaar"
+      ? `Klaar: ${importStatus.added ?? 0} van Dirk en ${importStatus.added_ah ?? 0} van Albert Heijn toegevoegd.`
+      : importStatus?.status === "onderbroken"
+        ? "De vorige import is onderbroken. Start hem opnieuw; wat er al is, wordt overgeslagen."
+        : importStatus?.status === "mislukt"
+          ? `Mislukt: ${importStatus.error ?? "onbekende fout"}`
+          : "Haalt het hele assortiment van Dirk en Albert Heijn binnen. Dit kan een half uur duren.";
 
   const runSearch = async () => {
     if (!q.trim()) return;
@@ -111,6 +140,22 @@ export default function DirkImportScreen() {
           <Pressable testID="refresh-prices" onPress={() => refreshMut.mutate()} disabled={refreshMut.isPending} style={styles.refreshBtn}>
             {refreshMut.isPending ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Icon name="refresh" size={18} color={colors.onBrandPrimary} />}
             <Text style={styles.refreshBtnText}>Ververs nu</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.refreshCard}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.refreshTitle}>Alle producten importeren</Text>
+            <Text style={styles.refreshSub}>{importLine}</Text>
+          </View>
+          <Pressable
+            testID="import-all"
+            onPress={() => importAllMut.mutate()}
+            disabled={importAllMut.isPending || !!wasRunning}
+            style={styles.refreshBtn}
+          >
+            {importAllMut.isPending || wasRunning ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Icon name="download" size={18} color={colors.onBrandPrimary} />}
+            <Text style={styles.refreshBtnText}>Start</Text>
           </Pressable>
         </View>
 

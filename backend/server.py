@@ -1095,7 +1095,14 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
     if not camp:
         raise HTTPException(status_code=404, detail="Kamp niet gevonden")
 
+    active = await get_active_stores()
     primary_store = user.get("store", DEFAULT_STORE)
+    if primary_store not in active:
+        primary_store = active[0]
+
+    def store_of(item: dict) -> str:
+        st = item.get("store")
+        return st if st in active else primary_store
 
     dish_ids = set()
     for day in camp.get("days", []):
@@ -1121,11 +1128,11 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
                 for ing in dish.get("ingredients", []):
                     a, c = counts.get(ing.get("diet", "all"), counts["all"])
                     qty = ing.get("qty_adult", 0) * a + ing.get("qty_child", 0) * c
-                    store = ing.get("store") or primary_store
+                    store = store_of(ing)
                     for tgt in (total_store_map, day_store_map):
                         _add_item(tgt, store, ing["name"], ing.get("unit", "stuks"), ing.get("aisle", "Overig"), qty)
         for ex in day.get("extras", []):
-            store = ex.get("store") or primary_store
+            store = store_of(ex)
             for tgt in (total_store_map, day_store_map):
                 _add_item(tgt, store, ex["name"], ex.get("unit", "stuks"), ex.get("aisle", "Overig"), ex.get("qty", 0))
         day_by_store = []
@@ -1142,7 +1149,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
     # General ("Algemeen") sheet – loose items for the whole camp
     general_store_map: Dict[str, dict] = {}
     for ex in camp.get("general", []):
-        store = ex.get("store") or primary_store
+        store = store_of(ex)
         for tgt in (total_store_map, general_store_map):
             _add_item(tgt, store, ex["name"], ex.get("unit", "stuks"), ex.get("aisle", "Overig"), ex.get("qty", 0))
 
@@ -1182,7 +1189,15 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
     dish_docs = await db.dishes.find({"dish_id": {"$in": list(dish_ids)}}, {"_id": 0}).to_list(1000)
     dishes_by_id = {d["dish_id"]: d for d in dish_docs}
 
+    active = await get_active_stores()
     primary_store = user.get("store", DEFAULT_STORE)
+    if primary_store not in active:
+        primary_store = active[0]
+
+    def store_of(item: dict) -> str:
+        st = item.get("store")
+        return st if st in active else primary_store
+
     prod_ids = set()
     for d in dish_docs:
         for ing in d.get("ingredients", []):
@@ -1238,13 +1253,13 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
                 for ing in dish.get("ingredients", []):
                     a, c = counts.get(ing.get("diet", "all"), counts["all"])
                     qty = ing.get("qty_adult", 0) * a + ing.get("qty_child", 0) * c
-                    store = ing.get("store") or primary_store
+                    store = store_of(ing)
                     cost = qty * unit_price(ing, store)
                     day_cost += cost
                     record(ing["name"], ing.get("unit", "stuks"), ing.get("aisle", "Overig"), store, qty, cost)
         for ex in day.get("extras", []):
             qty = ex.get("qty", 0)
-            store = ex.get("store") or primary_store
+            store = store_of(ex)
             cost = qty * unit_price(ex, store)
             day_cost += cost
             record(ex["name"], ex.get("unit", "stuks"), ex.get("aisle", "Overig"), store, qty, cost)
@@ -1259,7 +1274,7 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
 
     for ex in camp.get("general", []):
         qty = ex.get("qty", 0)
-        store = ex.get("store") or primary_store
+        store = store_of(ex)
         cost = qty * unit_price(ex, store)
         record(ex["name"], ex.get("unit", "stuks"), ex.get("aisle", "Overig"), store, qty, cost)
 
@@ -1573,7 +1588,7 @@ async def list_products(user: dict = Depends(get_current_user)):
         {"deleted_at": None, "$or": [{"is_global": True}, {"owner_id": user["user_id"]}]},
         {"_id": 0},
     )
-    docs = await cursor.to_list(5000)
+    docs = await cursor.to_list(30000)
     docs.sort(key=lambda d: (AISLES.index(d["aisle"]) if d.get("aisle") in AISLES else 99, d["name"].lower()))
     return {"products": [product_public(d, store, user["user_id"]) for d in docs], "stores": await get_active_stores()}
 
@@ -1810,11 +1825,12 @@ async def _dirk_post(client, query, variables):
     return r.json().get("data", {}) or {}
 
 
-async def _dirk_search_ids(client, term: str, limit: int = 15) -> list:
+async def _dirk_search_ids(client, term: str, limit: Optional[int] = 15) -> list:
     d = await _dirk_post(client,
         "query($q:NewSearchQueryInput!){newSearchProducts(query:$q){productId ranking}}",
         {"q": {"searchTerm": term}})
-    return [p["productId"] for p in (d.get("newSearchProducts") or [])][:limit]
+    ids = [p["productId"] for p in (d.get("newSearchProducts") or [])]
+    return ids[:limit] if limit else ids
 
 
 async def _dirk_fetch_products(client, ids: list) -> list:
@@ -1984,6 +2000,171 @@ async def import_store_products(data: StoreImportInput, user: dict = Depends(get
         })
         added += 1
     return {"added": added, "skipped": skipped, "store": store}
+
+
+# --- Admin: hele Dirk-assortiment importeren (achtergrondtaak) ---
+# Dirk heeft geen openbare "alle producten"-lijst, dus we zoeken op veel algemene termen
+DIRK_ALL_TERMS = [
+    "aardappel", "groente", "fruit", "appel", "banaan", "peer", "sinaasappel", "druiven", "aardbei", "citroen",
+    "tomaat", "komkommer", "paprika", "ui", "knoflook", "wortel", "sla", "spinazie", "broccoli", "bloemkool",
+    "champignon", "courgette", "prei", "kool", "boon", "mais", "erwt", "avocado", "kruiden", "salade",
+    "vlees", "gehakt", "kip", "kipfilet", "varken", "rund", "biefstuk", "worst", "rookworst", "spek", "ham",
+    "hamburger", "schnitzel", "shoarma", "vis", "zalm", "tonijn", "garnaal", "kibbeling", "vega", "vegetarisch",
+    "brood", "broodje", "beschuit", "cracker", "croissant", "pistolet", "wrap", "tortilla", "koek", "ontbijtkoek",
+    "beleg", "hagelslag", "pindakaas", "jam", "chocopasta", "honing", "smeerkaas", "salami", "filet",
+    "melk", "karnemelk", "yoghurt", "kwark", "vla", "toetje", "pudding", "room", "boter", "margarine", "ei",
+    "kaas", "geraspte kaas", "mozzarella", "feta", "roomkaas",
+    "water", "frisdrank", "cola", "sinas", "limonade", "siroop", "sap", "jus", "ijsthee", "energy",
+    "koffie", "thee", "cacao", "bier", "wijn", "radler",
+    "pasta", "spaghetti", "macaroni", "rijst", "noedels", "mie", "couscous", "meel", "bloem", "suiker",
+    "zout", "peper", "olie", "azijn", "saus", "pastasaus", "ketchup", "mayonaise", "mosterd", "sambal",
+    "soep", "bouillon", "conserven", "blik", "tomatenpuree", "pesto", "kruidenmix", "nasi", "bami",
+    "ontbijtgranen", "muesli", "cornflakes", "havermout", "pannenkoek", "poffertjes",
+    "maaltijd", "pizza", "lasagne", "stamppot", "ovenschotel", "tapas", "dip", "hummus",
+    "diepvries", "friet", "patat", "kroket", "frikandel", "snack", "ijs", "groenten diepvries",
+    "chips", "nootjes", "pinda", "snoep", "drop", "chocolade", "reep", "biscuit", "koekjes", "wafel", "popcorn",
+    "toiletpapier", "keukenpapier", "afwasmiddel", "wasmiddel", "schoonmaak", "vuilniszak", "folie", "batterij",
+    "shampoo", "douchegel", "tandpasta", "deodorant", "zeep", "luier", "babyvoeding", "maandverband",
+    "hond", "kat", "kattenvoer", "hondenvoer", "kaars", "servet", "bord", "beker", "aansteker",
+]
+
+_dirk_import_running = False
+
+
+def _prices_from(price: float, store: str, mults: dict) -> dict:
+    if not price:
+        return {}
+    base = price / mults.get(store, 1.0)
+    return {sn: round(price if sn == store else base * m, 2) for sn, m in mults.items()}
+
+
+async def _set_import_status(**fields) -> None:
+    await db.settings.update_one({"key": "dirk_import"}, {"$set": fields}, upsert=True)
+
+
+def _new_store_product(idf: str, nrm: dict, store: str, mults: dict) -> dict:
+    return {
+        "product_id": f"prod_{uuid.uuid4().hex[:12]}",
+        idf: str(nrm["source_id"]),
+        "name": nrm["name"],
+        "aisle": nrm["aisle"],
+        "unit": (nrm.get("quantity") or "stuks").strip()[:24] or "stuks",
+        "brand": nrm.get("brand"),
+        "barcode": None,
+        "prices": _prices_from(nrm["price"], store, mults),
+        "unavailable": [],
+        "is_global": True,
+        "owner_id": None,
+        "deleted_at": None,
+        "created_at": now_utc(),
+    }
+
+
+async def _import_all_ah(mults: dict) -> int:
+    existing = {str(p["ah_id"]) async for p in db.products.find({"ah_id": {"$exists": True}, "deleted_at": None}, {"_id": 0, "ah_id": 1})}
+    added = 0
+    async with httpx.AsyncClient(timeout=30, headers=AH_HEADERS) as c:
+        tok = await _ah_token(c)
+        H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
+        for n, term in enumerate(DIRK_ALL_TERMS, 1):
+            docs = []
+            for page in range(3):
+                try:
+                    r = await c.get("https://api.ah.nl/mobile-services/product/search/v2",
+                                    params={"query": term, "size": 100, "page": page}, headers=H)
+                    prods = r.json().get("products", []) or []
+                except Exception as e:
+                    logger.warning("AH zoekterm %s mislukt: %s", term, e)
+                    break
+                for p in prods:
+                    nrm = _ah_normalize(p)
+                    if not nrm or not nrm.get("ah_id") or str(nrm["ah_id"]) in existing:
+                        continue
+                    existing.add(str(nrm["ah_id"]))
+                    nrm["source_id"] = nrm["ah_id"]
+                    docs.append(_new_store_product("ah_id", nrm, "Albert Heijn", mults))
+                if len(prods) < 100:
+                    break
+            if docs:
+                await db.products.insert_many(docs)
+                added += len(docs)
+            if n % 5 == 0:
+                await _set_import_status(status=f"Albert Heijn ({n}/{len(DIRK_ALL_TERMS)})", added_ah=added)
+    return added
+
+
+async def _import_all_dirk() -> None:
+    global _dirk_import_running
+    _dirk_import_running = True
+    try:
+        await _set_import_status(status="zoeken", found=0, added=0, added_ah=0, started_at=now_utc(), finished_at=None, error=None)
+        mults = await _store_mults()
+        ids: list = []
+        seen: set = set()
+        async with httpx.AsyncClient(timeout=30, headers=DIRK_HEADERS) as c:
+            for n, term in enumerate(DIRK_ALL_TERMS, 1):
+                try:
+                    for pid in await _dirk_search_ids(c, term, limit=None):
+                        if pid not in seen:
+                            seen.add(pid)
+                            ids.append(pid)
+                except Exception as e:
+                    logger.warning("Dirk zoekterm %s mislukt: %s", term, e)
+                if n % 10 == 0:
+                    await _set_import_status(found=len(ids))
+            existing = {str(p["dirk_id"]) async for p in db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None}, {"_id": 0, "dirk_id": 1})}
+            todo = [pid for pid in ids if str(pid) not in existing]
+            await _set_import_status(status="Dirk importeren", found=len(ids), todo=len(todo))
+            added = 0
+            for i in range(0, len(todo), 25):
+                try:
+                    prods = await _dirk_fetch_products(c, todo[i:i + 25])
+                except Exception as e:
+                    logger.warning("Dirk ophalen mislukt: %s", e)
+                    continue
+                docs = []
+                for p in prods:
+                    nrm = _dirk_normalize(p)
+                    if not nrm:
+                        continue
+                    nrm["source_id"] = nrm["dirk_id"]
+                    docs.append(_new_store_product("dirk_id", nrm, "Dirk", mults))
+                if docs:
+                    await db.products.insert_many(docs)
+                    added += len(docs)
+                await _set_import_status(added=added)
+        logger.info("Dirk-import klaar: %d gevonden, %d toegevoegd", len(ids), added)
+        try:
+            added_ah = await _import_all_ah(mults)
+        except Exception as e:
+            logger.warning("AH-import mislukt: %s", e)
+            added_ah = 0
+        await _set_import_status(status="klaar", added=added, added_ah=added_ah, finished_at=now_utc())
+    except Exception as e:
+        logger.error("Dirk-import mislukt: %s", e)
+        await _set_import_status(status="mislukt", error=str(e)[:200], finished_at=now_utc())
+    finally:
+        _dirk_import_running = False
+
+
+@api_router.post("/admin/products/import-dirk-all")
+async def start_import_all_dirk(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_products")
+    if not _dirk_import_running:
+        asyncio.create_task(_import_all_dirk())
+    return {"ok": True}
+
+
+@api_router.get("/admin/products/import-dirk-all")
+async def import_all_dirk_status(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_products")
+    doc = await db.settings.find_one({"key": "dirk_import"}, {"_id": 0, "key": 0}) or {}
+    for k in ("started_at", "finished_at"):
+        if isinstance(doc.get(k), datetime):
+            doc[k] = ensure_aware(doc[k]).isoformat()
+    if doc.get("status") not in (None, "klaar", "mislukt") and not _dirk_import_running:
+        doc["status"] = "onderbroken"
+    return {**doc, "running": _dirk_import_running}
 
 
 def _apply_refresh(p: dict, store: str, price: float, aisle: str, mults: dict) -> dict:
@@ -2908,6 +3089,11 @@ async def startup():
             {"$setOnInsert": {"name": s, "mult": STORE_MULT.get(s, 1.0), "active": True, "order": i}},
             upsert=True,
         )
+    # Eenmalig: alleen Dirk en Albert Heijn blijven over
+    if not await db.settings.find_one({"key": "stores_only_dirk_ah"}):
+        await db.stores.update_many({"name": {"$nin": COUPLED_STORES}}, {"$set": {"active": False}})
+        await db.users.update_many({"store": {"$nin": COUPLED_STORES}}, {"$set": {"store": "Dirk"}})
+        await db.settings.insert_one({"key": "stores_only_dirk_ah", "done_at": now_utc()})
     active_stores = await db.stores.find({"active": True}, {"_id": 0}).to_list(200)
     for s in active_stores:
         await _backfill_store_prices(s["name"], s.get("mult", 1.0))
