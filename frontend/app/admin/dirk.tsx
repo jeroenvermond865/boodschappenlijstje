@@ -11,7 +11,7 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type ImportStatus = { status?: string; found?: number; todo?: number; added?: number; added_ah?: number; finished_at?: string | null; error?: string | null; running: boolean };
 
-type DirkResult = { source_id: string; name: string; brand?: string | null; quantity?: string | null; price: number; on_offer?: boolean; aisle: string };
+type DirkResult = { image?: string | null; source_id: string; name: string; brand?: string | null; quantity?: string | null; price: number; on_offer?: boolean; aisle: string };
 
 const COUPLED = ["Dirk", "Albert Heijn"];
 
@@ -86,7 +86,7 @@ export default function DirkImportScreen() {
     mutationFn: () => {
       const items = results
         .filter((r) => picked.has(r.source_id))
-        .map((r) => ({ source_id: r.source_id, name: r.name, brand: r.brand, quantity: r.quantity, price: r.price, aisle: r.aisle }));
+        .map((r) => ({ source_id: r.source_id, image: r.image, name: r.name, brand: r.brand, quantity: r.quantity, price: r.price, aisle: r.aisle }));
       return api<{ added: number; skipped: number }>("/admin/products/import-dirk", { method: "POST", body: { store, items } });
     },
     onSuccess: (res) => {

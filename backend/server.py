@@ -1578,6 +1578,7 @@ def product_public(doc: dict, store: str, user_id: str) -> dict:
         "unavailable_here": store in unavailable,
         "is_global": doc.get("is_global", False),
         "is_own": doc.get("owner_id") == user_id,
+        "image": doc.get("image"),
         "source": "Dirk" if doc.get("dirk_id") else ("Albert Heijn" if doc.get("ah_id") else None),
     }
 
@@ -1834,12 +1835,29 @@ async def _dirk_search_ids(client, term: str, limit: Optional[int] = 15) -> list
     return ids[:limit] if limit else ids
 
 
+DIRK_PRODUCT_FIELDS = "productId normalPrice offerPrice productInformation{headerText subText packaging brand department webgroup%s}"
+DIRK_IMAGE_BASE = "https://web-fileserver.dirk.nl/"
+_dirk_image_ok = True
+
+
 async def _dirk_fetch_products(client, ids: list) -> list:
+    global _dirk_image_ok
     if not ids:
         return []
-    d = await _dirk_post(client,
-        "query($ids:[Int!],$sid:Int!){products(productIds:$ids,storeId:$sid){productId normalPrice offerPrice productInformation{headerText subText packaging brand department webgroup}}}",
-        {"ids": ids, "sid": DIRK_STORE_ID})
+    q = "query($ids:[Int!],$sid:Int!){products(productIds:$ids,storeId:$sid){%s}}"
+    variables = {"ids": ids, "sid": DIRK_STORE_ID}
+    d = None
+    if _dirk_image_ok:
+        # Met productfoto; kent Dirk het veld niet, dan zonder foto verder
+        r = await client.post(DIRK_GQL, json={"query": q % (DIRK_PRODUCT_FIELDS % " image"), "variables": variables})
+        body = r.json() or {}
+        if body.get("errors") and not (body.get("data") or {}).get("products"):
+            _dirk_image_ok = False
+            logger.warning("Dirk geeft geen productfoto's: %s", str(body.get("errors"))[:300])
+        else:
+            d = body.get("data") or {}
+    if d is None:
+        d = await _dirk_post(client, q % (DIRK_PRODUCT_FIELDS % ""), variables)
     order = {pid: i for i, pid in enumerate(ids)}
     prods = [p for p in (d.get("products") or []) if p]
     prods.sort(key=lambda p: order.get(p.get("productId"), 999))
@@ -1854,7 +1872,11 @@ def _dirk_normalize(p: dict) -> Optional[dict]:
     price = p.get("offerPrice") or 0
     if not price:
         price = p.get("normalPrice") or 0
+    img = (info.get("image") or "").strip()
+    if img and not img.startswith("http"):
+        img = DIRK_IMAGE_BASE + img.lstrip("/")
     return {
+        "image": img or None,
         "dirk_id": p.get("productId"),
         "name": name[:80],
         "brand": (info.get("brand") or None),
@@ -1895,7 +1917,11 @@ def _ah_normalize(p: dict) -> Optional[dict]:
         return None
     price = p.get("currentPrice") or p.get("priceBeforeBonus") or 0
     before = p.get("priceBeforeBonus") or 0
+    imgs = [i for i in (p.get("images") or []) if isinstance(i, dict) and i.get("url")]
+    # Kies een foto rond de 200px, anders de eerste
+    imgs.sort(key=lambda i: abs((i.get("width") or 200) - 200))
     return {
+        "image": imgs[0]["url"] if imgs else None,
         "ah_id": p.get("webshopId"),
         "name": name[:80],
         "brand": (p.get("brand") or None),
@@ -1944,6 +1970,7 @@ COUPLED_STORES = ["Dirk", "Albert Heijn"]
 
 
 class StoreImportItem(BaseModel):
+    image: Optional[str] = None
     source_id: str
     name: str
     brand: Optional[str] = None
@@ -1993,6 +2020,7 @@ async def import_store_products(data: StoreImportInput, user: dict = Depends(get
             "brand": (it.brand or "").strip() or None,
             "barcode": None,
             "prices": prices,
+            "image": it.image if (it.image or "").startswith("https://") else None,
             "unavailable": [],
             "is_global": True,
             "owner_id": None,
@@ -2053,6 +2081,7 @@ def _new_store_product(idf: str, nrm: dict, store: str, mults: dict) -> dict:
         "brand": nrm.get("brand"),
         "barcode": None,
         "prices": _prices_from(nrm["price"], store, mults),
+        "image": nrm.get("image"),
         "unavailable": [],
         "is_global": True,
         "owner_id": None,
@@ -2168,14 +2197,17 @@ async def import_all_dirk_status(user: dict = Depends(get_current_user)):
     return {**doc, "running": _dirk_import_running}
 
 
-def _apply_refresh(p: dict, store: str, price: float, aisle: str, mults: dict) -> dict:
+def _apply_refresh(p: dict, store: str, price: float, aisle: str, mults: dict, image: Optional[str] = None) -> dict:
     base = price / mults.get(store, 1.0) if price else 0
     prices = dict(p.get("prices", {}) or {})
     prices[store] = price
     for sn, m in mults.items():
         if sn != store and not prices.get(sn):
             prices[sn] = round(base * m, 2)
-    return {"prices": prices, "aisle": aisle if aisle in AISLES else p.get("aisle", "Overig")}
+    out = {"prices": prices, "aisle": aisle if aisle in AISLES else p.get("aisle", "Overig")}
+    if image:
+        out["image"] = image
+    return out
 
 
 async def _refresh_dirk_prices(mults: dict) -> int:
@@ -2195,7 +2227,7 @@ async def _refresh_dirk_prices(mults: dict) -> int:
         n = fetched.get(p["dirk_id"])
         if not n or not n["price"]:
             continue
-        await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Dirk", n["price"], n["aisle"], mults)})
+        await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Dirk", n["price"], n["aisle"], mults, n.get("image"))})
         updated += 1
     return updated
 
@@ -2217,7 +2249,7 @@ async def _refresh_ah_prices(mults: dict) -> int:
             n = _ah_normalize(card)
             if not n or not n["price"]:
                 continue
-            await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Albert Heijn", n["price"], n["aisle"], mults)})
+            await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Albert Heijn", n["price"], n["aisle"], mults, n.get("image"))})
             updated += 1
     return updated
 

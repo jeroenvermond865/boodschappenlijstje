@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, Image, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -27,6 +27,7 @@ export type Product = {
   is_global: boolean;
   is_own: boolean;
   source?: "Dirk" | "Albert Heijn" | null;
+  image?: string | null;
 };
 
 const STORE_FILTERS = [
@@ -157,9 +158,13 @@ export default function ProductsScreen() {
               onPress={() => router.push({ pathname: "/product/edit", params: { id: item.id } })}
               style={({ pressed }) => [styles.row, pressed && { opacity: 0.9 }]}
             >
-              <View style={styles.rowIcon}>
-                <Icon name={(AISLE_ICONS[item.aisle] ?? "cart-outline") as any} size={20} color={colors.brandPrimary} />
-              </View>
+              {item.image ? (
+                <Image source={{ uri: item.image }} style={styles.rowImage} resizeMode="contain" />
+              ) : (
+                <View style={styles.rowIcon}>
+                  <Icon name={(AISLE_ICONS[item.aisle] ?? "cart-outline") as any} size={20} color={colors.brandPrimary} />
+                </View>
+              )}
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowTitle} numberOfLines={1}>
                   {item.name}
@@ -324,6 +329,7 @@ const useStyles = makeStyles((colors) => ({
     alignItems: "center",
     justifyContent: "center",
   },
+  rowImage: { width: 44, height: 44, borderRadius: 12, backgroundColor: "#fff" },
   rowTitle: { fontSize: 16, fontFamily: fonts.semibold, color: colors.onSurface },
   brand: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
   rowSub: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },
