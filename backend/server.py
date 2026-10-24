@@ -1562,7 +1562,7 @@ def resolve_price(prices: dict, store: str, unavailable: Optional[list] = None) 
     return round(sum(vals) / len(vals), 2) if vals else 0.0
 
 
-def product_public(doc: dict, store: str, user_id: str) -> dict:
+def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set] = None) -> dict:
     prices = doc.get("prices", {}) or {}
     unavailable = doc.get("unavailable", []) or []
     return {
@@ -1579,6 +1579,7 @@ def product_public(doc: dict, store: str, user_id: str) -> dict:
         "is_global": doc.get("is_global", False),
         "is_own": doc.get("owner_id") == user_id,
         "image": doc.get("image"),
+        "is_favorite": doc["product_id"] in (favorites or set()),
         "source": "Dirk" if doc.get("dirk_id") else ("Albert Heijn" if doc.get("ah_id") else None),
     }
 
@@ -1592,7 +1593,22 @@ async def list_products(user: dict = Depends(get_current_user)):
     )
     docs = await cursor.to_list(30000)
     docs.sort(key=lambda d: (AISLES.index(d["aisle"]) if d.get("aisle") in AISLES else 99, d["name"].lower()))
-    return {"products": [product_public(d, store, user["user_id"]) for d in docs], "stores": await get_active_stores()}
+    favorites = set(user.get("favorite_products") or [])
+    return {"products": [product_public(d, store, user["user_id"], favorites) for d in docs], "stores": await get_active_stores()}
+
+
+@api_router.post("/products/{product_id}/favorite")
+async def add_favorite(product_id: str, user: dict = Depends(get_current_user)):
+    if not await db.products.find_one({"product_id": product_id, "deleted_at": None}):
+        raise HTTPException(status_code=404, detail="Product niet gevonden")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$addToSet": {"favorite_products": product_id}})
+    return {"ok": True, "is_favorite": True}
+
+
+@api_router.delete("/products/{product_id}/favorite")
+async def remove_favorite(product_id: str, user: dict = Depends(get_current_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$pull": {"favorite_products": product_id}})
+    return {"ok": True, "is_favorite": False}
 
 
 @api_router.post("/products")

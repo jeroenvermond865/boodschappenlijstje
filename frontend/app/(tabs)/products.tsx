@@ -28,6 +28,7 @@ export type Product = {
   is_own: boolean;
   source?: "Dirk" | "Albert Heijn" | null;
   image?: string | null;
+  is_favorite?: boolean;
 };
 
 const STORE_FILTERS = [
@@ -46,7 +47,8 @@ export default function ProductsScreen() {
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
 
   const [search, setSearch] = useState("");
-  const [source, setSource] = useState<"all" | "global" | "own">("all");
+  const [onlyFavorites, setOnlyFavorites] = useState(false);
+  const qc = useQueryClient();
   const [aisle, setAisle] = useState<string>("all");
   const [storeFilter, setStoreFilter] = useState<"all" | "Dirk" | "Albert Heijn">("all");
   const [storeOpen, setStoreOpen] = useState(false);
@@ -63,12 +65,11 @@ export default function ProductsScreen() {
 
   const filtered = useMemo(() => {
     let list = storeProducts;
-    if (source === "global") list = list.filter((p) => p.is_global);
-    if (source === "own") list = list.filter((p) => p.is_own && !p.is_global);
+    if (onlyFavorites) list = list.filter((p) => p.is_favorite);
     if (aisle !== "all") list = list.filter((p) => p.aisle === aisle);
     if (search.trim()) list = list.filter((p) => p.name.toLowerCase().includes(search.trim().toLowerCase()));
     return list;
-  }, [storeProducts, source, aisle, search]);
+  }, [storeProducts, onlyFavorites, aisle, search]);
 
   const aisleCounts = useMemo(() => {
     const m: Record<string, number> = {};
@@ -76,11 +77,16 @@ export default function ProductsScreen() {
     return m;
   }, [storeProducts]);
 
-  const sources = [
-    { key: "all", label: "Alle" },
-    { key: "global", label: "Algemeen" },
-    { key: "own", label: "Eigen" },
-  ] as const;
+  const toggleFavorite = useMutation({
+    mutationFn: (p: Product) => api(`/products/${p.id}/favorite`, { method: p.is_favorite ? "DELETE" : "POST" }),
+    onMutate: (p: Product) => {
+      // Direct bijwerken, zonder te wachten op de server
+      qc.setQueryData(["products"], (old: any) =>
+        old ? { ...old, products: old.products.map((x: Product) => (x.id === p.id ? { ...x, is_favorite: !p.is_favorite } : x)) } : old,
+      );
+    },
+    onError: () => qc.invalidateQueries({ queryKey: ["products"] }),
+  });
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -118,18 +124,14 @@ export default function ProductsScreen() {
             </Pressable>
           ))}
         </View>
-        <View style={styles.segment}>
-          {sources.map((s) => (
-            <Pressable
-              key={s.key}
-              testID={`product-source-${s.key}`}
-              onPress={() => setSource(s.key)}
-              style={[styles.segBtn, source === s.key && styles.segBtnActive]}
-            >
-              <Text style={[styles.segText, source === s.key && styles.segTextActive]}>{s.label}</Text>
-            </Pressable>
-          ))}
-        </View>
+        <Pressable
+          testID="product-favorites-toggle"
+          onPress={() => setOnlyFavorites((v) => !v)}
+          style={[styles.favToggle, onlyFavorites && styles.favToggleActive]}
+        >
+          <Icon name={onlyFavorites ? "star" : "star-outline"} size={16} color={onlyFavorites ? colors.onBrandPrimary : colors.brandPrimary} />
+          <Text style={[styles.favToggleText, onlyFavorites && styles.favToggleTextActive]}>Mijn favorieten</Text>
+        </Pressable>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.deptRow}>
           <Pressable testID="dept-all" onPress={() => setAisle("all")} style={[styles.deptChip, aisle === "all" && styles.deptChipActive]}>
             <Text style={[styles.deptText, aisle === "all" && styles.deptTextActive]}>Alle afdelingen</Text>
@@ -174,11 +176,13 @@ export default function ProductsScreen() {
                   {item.aisle} · per {item.unit}
                 </Text>
               </View>
-              {!item.is_global ? (
-                <View style={styles.ownBadge}>
-                  <Text style={styles.ownBadgeText}>Eigen</Text>
-                </View>
-              ) : null}
+              <Pressable
+                testID={`product-fav-${item.id}`}
+                onPress={() => toggleFavorite.mutate(item)}
+                hitSlop={10}
+              >
+                <Icon name={item.is_favorite ? "star" : "star-outline"} size={22} color={item.is_favorite ? "#E8A317" : colors.muted} />
+              </Pressable>
               {item.unavailable_here ? (
                 <Text style={styles.naPrice}>Niet verkr.</Text>
               ) : (
@@ -188,19 +192,15 @@ export default function ProductsScreen() {
             </Pressable>
           )}
           ListEmptyComponent={
-            <EmptyState icon="cart-outline" title="Geen producten" subtitle="Voeg een product toe of pas je filter aan." />
+            onlyFavorites ? (
+              <EmptyState icon="star-outline" title="Nog geen favorieten" subtitle="Tik op het sterretje bij een product om het hier te bewaren." />
+            ) : (
+              <EmptyState icon="cart-outline" title="Geen producten" subtitle="Pas je zoekopdracht of filter aan." />
+            )
           }
         />
       )}
 
-      <Pressable
-        testID="new-product-fab"
-        onPress={() => router.push("/product/edit")}
-        style={({ pressed }) => [styles.fab, { bottom: bottomChrome + 16 }, pressed && { opacity: 0.9 }]}
-      >
-        <Icon name="plus" size={22} color={colors.onBrandPrimary} />
-        <Text style={styles.fabText}>Product</Text>
-      </Pressable>
 
       <StorePickerModal open={storeOpen} onClose={() => setStoreOpen(false)} stores={data?.stores ?? []} current={user?.store} />
     </View>
@@ -329,6 +329,20 @@ const useStyles = makeStyles((colors) => ({
     alignItems: "center",
     justifyContent: "center",
   },
+  favToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.brandPrimary,
+  },
+  favToggleActive: { backgroundColor: colors.brandPrimary },
+  favToggleText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  favToggleTextActive: { color: colors.onBrandPrimary },
   rowImage: { width: 44, height: 44, borderRadius: 12, backgroundColor: "#fff" },
   rowTitle: { fontSize: 16, fontFamily: fonts.semibold, color: colors.onSurface },
   brand: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
