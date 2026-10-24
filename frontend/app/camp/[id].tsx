@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, EmptyState, Icon, Select, Stepper } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { searchSorted } from "@/src/search";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory, formatQty } from "@/src/constants";
 import type { Dish } from "@/app/(tabs)/dishes";
 import type { Product } from "@/app/(tabs)/products";
@@ -540,7 +541,7 @@ function ExtraAddModal({
     setStore((prev) => prev || defaultStore || stores[0] || "Overig");
   }, [defaultStore, stores]);
 
-  const list = (data?.products ?? []).filter((p) => !q.trim() || p.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const list = searchSorted(data?.products ?? [], q, (p) => p.name);
 
   const confirm = () => {
     if (!sel) return;

@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { searchSorted } from "@/src/search";
 import { AISLES, AISLE_ICONS } from "@/src/constants";
 import { useAuth } from "@/src/auth";
 import { usesNativeTabs } from "@/src/navigation";
@@ -66,7 +67,7 @@ export default function ProductsScreen() {
     let list = storeProducts;
     if (onlyFavorites) list = list.filter((p) => p.is_favorite);
     if (aisle !== "all") list = list.filter((p) => p.aisle === aisle);
-    if (search.trim()) list = list.filter((p) => p.name.toLowerCase().includes(search.trim().toLowerCase()));
+    if (search.trim()) list = searchSorted(list, search, (p) => p.name);
     return list;
   }, [storeProducts, onlyFavorites, aisle, search]);
 

@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Field, Icon, Select } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { searchSorted } from "@/src/search";
 import {
   AISLES,
   CATEGORY_LABELS,
@@ -437,9 +438,7 @@ function DishProductPicker({ open, onClose, onPick }: { open: boolean; onClose: 
     queryFn: () => api<{ products: Product[] }>("/products"),
     enabled: open,
   });
-  const list = (data?.products ?? []).filter(
-    (p) => !q.trim() || p.name.toLowerCase().includes(q.trim().toLowerCase()),
-  );
+  const list = searchSorted(data?.products ?? [], q, (p) => p.name);
   return (
     <Modal visible={open} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.pickerBackdrop}>
