@@ -3325,12 +3325,20 @@ def _stems(w: str) -> list:
 _PREPS = {"zonder", "met", "in", "uit", "van", "voor", "op", "naar", "of", "en", "à", "a", "ca", "circa", "om"}
 
 
+# Andere namen in de winkel: "lasagnevel" heet daar lasagnebladen, parmezaan vaak Parmigiano
+_SYNONYMS = {"lasagnevel": ["lasagnebladen", "lasagne"], "lasagnevellen": ["lasagnebladen", "lasagne"],
+             "parmezaanse kaas": ["parmigiano reggiano", "grana padano", "parmezaan"], "parmezaan": ["parmigiano reggiano", "grana padano"],
+             "creme fraiche": ["creme fraiche", "zure room"], "zalmfilet": ["zalm"], "kipfilet": ["kipfilet", "kip"],
+             "lente ui": ["bosui"], "lenteui": ["bosui"], "sjalot": ["sjalotten", "sjalot"], "rucola": ["rucola", "rucolasla"]}
+
+
 def _best_matches(pool: list, name: str, limit: int = 1) -> list:
-    # Eerst alle woorden; lukt dat niet, dan zonder bijvoeglijke woorden, dan alleen het hoofdwoord (ook enkelvoud/meervoud)
-    words = _alt_terms(name, None).split()
+    # Zoek op een paar niveaus (alle woorden, zonder voorzetsel-deel, zonder bijvoeglijke woorden, andere naam, alleen het hoofdwoord)
+    # en kies daarna het beste product over alles heen: een losse treffer op "middelgrote ui" is niet beter dan "uien"
+    words = _alt_terms(re.sub(r"\([^)]*\)", " ", name), None).split()
     if not words:
         return []
-    # "zwarte olijf zonder pit" gaat over olijven, niet over "pit": alles na een voorzetsel telt alleen in de eerste poging
+    # "zwarte olijf zonder pit" gaat over olijven, niet over "pit"
     head = words
     for k, w in enumerate(words):
         if k and w in _PREPS:
@@ -3338,15 +3346,18 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
             break
     head = [w for w in head if w not in _PREPS] or words
     core = [w for w in head if w not in _FILLER] or head
-    levels = [words, head, core]
+    levels = [(words, 0), (head, 0.4), (core, 0.8)]
+    for syn in _SYNONYMS.get(" ".join(core), []) + _SYNONYMS.get(core[-1], []):
+        levels.append((syn.split(), 1.2))
     # "parmezaanse kaas": liever parmezaan dan zomaar kaas
     for w in core[:-1]:
         for suf in ("sche", "se"):
             if w.endswith(suf) and len(w) - len(suf) >= 4:
-                levels.append([w[: -len(suf)]])
-    levels.append(core[-1:])
+                levels.append(([w[: -len(suf)]], 1.6))
+    levels.append((core[-1:], 1.2 if len(core) == 1 else 4))
+    best: dict = {}
     seen = set()
-    for lv in levels:
+    for lv, extra in levels:
         key = " ".join(lv)
         if key in seen or len(key) < 2:
             continue
@@ -3357,9 +3368,11 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
                 if id(d) not in ids:
                     ids.add(id(d))
                     hits.append(d)
-        if hits:
-            return _rank_food(hits[:400], lv)[:limit]
-    return []
+        for rank, d in enumerate(hits[:400]):
+            pen = _food_penalty(d, rank, lv) + extra
+            if id(d) not in best or pen < best[id(d)][0]:
+                best[id(d)] = (pen, d)
+    return [d for _, d in sorted(best.values(), key=lambda x: x[0])][:limit]
 
 
 _NONFOOD = {"Huishoud & huisdieren", "Kind & drogisterij", "Non food"}
@@ -3367,54 +3380,75 @@ _CANDY_RE = re.compile(r"\b(snoep|drop|winegum|spekjes|chips|koek|koekjes|chocol
 # Bewerkte producten: "ciabatta" is geen ciabatta-cracker, "citroen" geen citroenkoek, "olijf" geen tapenade
 _PROCESSED = ("koek", "cracker", "tapenade", "azijn", "saus", "chips", "spread", "sap", "drank", "siroop", "thee", "snoep", "taart", "cake",
               "smaak", "kimchi", "dressing", "soep", "salade", "pasta", "toast", "wafel", "reep", "ijs", "yoghurt", "kwark", "vla", "limonade",
-              "frisdrank", "bier", "radler", "likeur", "zeep", "geur", "poeder", "aroma", "pesto", "dip", "smeer", "mix", "kruiden")
+              "frisdrank", "bier", "radler", "likeur", "zeep", "geur", "poeder", "aroma", "pesto", "dip", "smeer", "mix", "kruiden", "biscuit",
+              "kroket", "salami", "worst", "honing", "kogel", "zuurkool", "snack", "bonbon", "brandewijn", "jenever", "mayo", "ketchup")
+# Woorden die alleen iets over het product zeggen ("citroenen verpakt", "kaas plakken")
+_DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", "plakjes", "blokjes", "reepjes", "schijfjes", "zwart", "wit",
+                "rood", "groen", "geel", "bio", "biologisch", "biologische", "naturel", "kruimig", "vastkokend", "s", "m", "l", "xl", "kanjers",
+                "vrije", "uitloop", "scharrel", "per", "kilo", "stuk", "zak", "bak", "pot", "blik", "fles", "flessen", "pak", "pack", "voordeel",
+                "voordeelverpakking", "mini", "groot", "klein", "heel", "halve", "stukjes", "diepvries", "vers", "extra", "fijn", "grof"}
+_STORE_WORDS = {"ah", "jumbo", "dirk", "1 de beste", "excellent", "biologisch"}
 
 
-def _rank_food(hits: list, words: list) -> list:
+def _food_penalty(d: dict, rank: int, words: list) -> float:
     # Een recept vraagt om eten: "citroen" is geen afwasmiddel, "aardbeien" geen snoep, "ui" liever uien dan bosui of gehakt met ui
+    name = d["_norm"]
+    brand = _norm_text(d.get("brand") or "")
+    if brand and name.startswith(brand + " "):
+        name = name[len(brand) + 1:]
+    for sw in _STORE_WORDS:
+        if name.startswith(sw + " "):
+            name = name[len(sw) + 1:]
+    nw = [w for w in name.split() if not re.fullmatch(r"[\d.,%]+|\d+\w{0,3}|x|st|stuks?|kg|g|gram|ml|cl|l|liter", w)] or name.split()
     qstems = {st for q in words for st in _stems(q)}
 
     def related(w):
-        return any(w == q or w in _stems(q) or q in _stems(w) or q in w for q in words)
+        return any(w == q or w in _stems(q) or q in _stems(w) or q in w or (q.endswith("e") and w == q[:-1]) for q in words)
 
-    def penalty(rank_d):
-        rank, d = rank_d
-        name = d["_norm"]
-        brand = _norm_text(d.get("brand") or "")
-        nw = name.split()
-        if brand and name.startswith(brand + " "):
-            nw = nw[len(brand.split()):]
-        nw = [w for w in nw if not re.fullmatch(r"[\d.,%]+|\d+\w{0,3}|st|stuks?|kg|g|gram|ml|l|liter", w)] or nw
+    # Positie van het gezochte woord; in het Nederlands zit het hoofdwoord achteraan ("tarwebloem" is bloem, "bloemkool" niet)
+    def place(q):
+        best = None
+        for k, w in enumerate(nw):
+            if w == q or w in _stems(q) or q in _stems(w):
+                v = k
+            elif w.endswith(q) or any(w.endswith(st) for st in _stems(q) if len(st) >= 3):
+                v = 3 + k + (1 if len(w) - len(q) > 6 else 0)
+            elif w.startswith(q):
+                v = 8 + k
+            else:
+                continue
+            best = v if best is None else min(best, v)
+        return best
+    # Het laatste zoekwoord is het hoofdwoord ("witte wijn" is wijn, geen wijnazijn)
+    head = place(words[-1])
+    pos = head if head is not None else min((p for p in map(place, words) if p is not None), default=11) + 3
+    pen = rank * 0.01 + pos
+    # Een zelfstandig naamwoord ná het gezochte woord maakt er iets anders van ("bloemen honing", "citroen kogels")
+    hq = words[-1]
+    hk = next((k for k, w in enumerate(nw) if hq in w or w in _stems(hq) or any(st in w for st in _stems(hq) if len(st) >= 3)), None)
+    stop = False
+    for k, w in enumerate(nw):
+        if hk is not None and k > hk and w in _PREPS:
+            stop = True  # "olijven zonder pit": de rest zegt alleen iets over het product
+        if related(w):
+            continue
+        if hk is not None and k > hk and not stop and w not in _DESCRIPTORS and w not in _FILLER and w not in _PREPS:
+            pen += 2
+        else:
+            pen += 0.7
+    if any(x in w and not related(w) and not any(x in q for q in qstems) for w in nw for x in _PROCESSED):
+        pen += 5
+    if d.get("aisle") in _NONFOOD:
+        pen += 30
+    if d.get("aisle") == "Snacks & snoep" and not any(_CANDY_RE.search(q) for q in words):
+        pen += 8
+    if d.get("aisle") == "Dranken, sap, koffie & thee" and not any(q in ("sap", "melk", "wijn", "bier", "koffie", "thee", "water") for q in words):
+        pen += 6
+    return pen
 
-        # Positie van het gezochte woord; in het Nederlands zit het hoofdwoord achteraan ("tarwebloem" is bloem, "bloemkool" niet)
-        def place(q):
-            best = None
-            for k, w in enumerate(nw):
-                if w == q or w in _stems(q) or q in _stems(w):
-                    v = k
-                elif w.endswith(q) or any(w.endswith(st) for st in _stems(q) if len(st) >= 3):
-                    v = 3 + k
-                elif w.startswith(q):
-                    v = 8 + k
-                else:
-                    continue
-                best = v if best is None else min(best, v)
-            return best
-        # Het laatste zoekwoord is het hoofdwoord ("witte wijn" is wijn, geen wijnazijn)
-        head = place(words[-1])
-        pos = head if head is not None else min((p for p in map(place, words) if p is not None), default=11) + 3
-        extra = [w for w in nw if not related(w)]
-        pen = rank * 0.01 + pos + len(extra) * 0.7
-        if any(x in w and not any(x in q for q in qstems) for w in extra for x in _PROCESSED):
-            pen += 5
-        if d.get("aisle") in _NONFOOD:
-            pen += 30
-        if d.get("aisle") == "Snacks & snoep" and not any(_CANDY_RE.search(q) for q in words):
-            pen += 8
-        if d.get("aisle") == "Dranken, sap, koffie & thee" and not any(q in ("sap", "melk", "wijn", "bier", "koffie", "thee", "water") for q in words):
-            pen += 6
-        return pen
-    return [d for _, d in sorted(enumerate(hits), key=penalty)]
+
+def _rank_food(hits: list, words: list) -> list:
+    return [d for _, d in sorted(enumerate(hits), key=lambda rd: _food_penalty(rd[1], rd[0], words))]
 
 
 def _store_matches(names: list, docs: list, store: str) -> dict:
