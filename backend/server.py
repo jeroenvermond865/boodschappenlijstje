@@ -2858,6 +2858,38 @@ def _promo_public(doc: dict, price: float) -> tuple:
     return now_p, next_p
 
 
+async def _probe_ah_groups() -> None:
+    # Tijdelijk: welke producten vallen onder een AH-bonusgroep?
+    import json as _json
+    await asyncio.sleep(30)
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
+            tok = await _ah_token(c)
+            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
+            r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"query": "hak", "size": 30}, headers=H)
+            prods = (r.json() or {}).get("products") or []
+            logger.info("AHgroep zoek hak: %s", _json.dumps([{k: p.get(k) for k in ("title", "isBonus", "bonusSegmentId", "segmentId", "bonusMechanism", "discountLabels", "currentPrice", "priceBeforeBonus", "bonusStartDate")} for p in prods[:6]], ensure_ascii=False)[:2500])
+            seg = 815167
+            for path, params in [(f"/mobile-services/bonuspage/v2/segment/{seg}", {"application": "AHWEBSHOP", "date": "2026-10-19"}),
+                                 ("/mobile-services/bonuspage/v2/segment", {"application": "AHWEBSHOP", "date": "2026-10-19", "segmentId": seg}),
+                                 (f"/mobile-services/bonuspage/v1/segment/{seg}", {"application": "AHWEBSHOP", "date": "2026-10-19"}),
+                                 ("/mobile-services/product/search/v2", {"bonusSegmentId": seg, "size": 30}),
+                                 ("/mobile-services/product/search/v2", {"query": "", "filters": f"bonusSegment:{seg}", "size": 30}),
+                                 (f"/mobile-services/bonuspage/v3/segment/{seg}", {"application": "AHWEBSHOP", "date": "2026-10-19"}),
+                                 ("/mobile-services/product/search/v2/segment", {"segmentId": seg, "size": 30}),
+                                 (f"/mobile-services/bonus/v1/segment/{seg}", {})]:
+                r = await c.get("https://api.ah.nl" + path, params=params, headers=H)
+                body = r.text
+                try:
+                    j = r.json()
+                    titles = [p.get("title") for p in (j.get("products") or [])][:8] if isinstance(j, dict) else None
+                except Exception:
+                    titles = None
+                logger.info("AHgroep %s %s -> %s titels=%s %s", path, params, r.status_code, titles, body[:400])
+    except Exception as e:
+        logger.warning("AHgroep mislukt: %r", e)
+
+
 async def _dirk_post(client, query, variables):
     r = await client.post(DIRK_GQL, json={"query": query, "variables": variables})
     if r.status_code >= 500:
@@ -4518,6 +4550,7 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
+    asyncio.create_task(_probe_ah_groups())
 
 
 async def _daily_refresh_loop():
