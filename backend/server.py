@@ -757,6 +757,7 @@ def dish_public(doc: dict) -> dict:
         "pantry": doc.get("pantry") or [],
         "needs_vega": bool(_needs_vega(doc)),
         "online": bool(doc.get("online")),
+        "camp_id": doc.get("camp_id"),  # aangepast voor één activiteit
         "owner_id": doc.get("owner_id"),
     }
 
@@ -814,9 +815,55 @@ def package_public(doc: dict) -> dict:
     return {"id": doc["package_id"], "name": doc["name"], "items": doc.get("items") or [], "owner_id": doc.get("owner_id")}
 
 
+_H, _V, _D = "Huishoud & huisdieren", "Voorraadkast", "Kind & drogisterij"
+# Startpakketten die je in een gewoon huishouden (of op kamp) vaak nodig hebt; daarna zelf aan te passen
+DEFAULT_PACKAGES = [
+    ("Afwassen", [("Afwasmiddel", 1, _H), ("Afwasborstel", 1, _H), ("Sponsjes", 1, _H), ("Theedoeken", 2, _H), ("Vaatdoekjes", 1, _H)]),
+    ("Schoonmaken", [("Allesreiniger", 1, _H), ("WC-reiniger", 1, _H), ("Schoonmaakdoekjes", 1, _H), ("Vuilniszakken", 1, _H),
+                     ("Handzeep", 1, _D), ("Glasreiniger", 1, _H)]),
+    ("Keuken basis", [("Keukenpapier", 1, _H), ("Aluminiumfolie", 1, _H), ("Huishoudfolie", 1, _H), ("Diepvrieszakjes", 1, _H),
+                      ("Bakpapier", 1, _H)]),
+    ("Voorraadkast basis", [("Zout", 1, _V), ("Peper", 1, _V), ("Zonnebloemolie", 1, _V), ("Olijfolie", 1, _V), ("Suiker", 1, _V),
+                            ("Bloem", 1, _V), ("Ketchup", 1, _V), ("Mayonaise", 1, _V), ("Bouillonblokjes", 1, _V)]),
+    ("Ontbijt en lunch basis", [("Boter", 1, "Zuivel & kaas"), ("Hagelslag", 1, "Brood, beleg & koek"), ("Pindakaas", 1, "Brood, beleg & koek"),
+                                ("Jam", 1, "Brood, beleg & koek"), ("Thee", 1, "Dranken, sap, koffie & thee"), ("Koffie", 1, "Dranken, sap, koffie & thee"),
+                                ("Ranja", 1, "Dranken, sap, koffie & thee")]),
+    ("Toilet en verzorging", [("Toiletpapier", 1, _H), ("Tandpasta", 1, _D), ("Douchegel", 1, _D), ("Zonnebrand", 1, _D), ("Pleisters", 1, _D)]),
+    ("Wegwerp voor groepen", [("Bordjes", 1, "Non food"), ("Bekers", 1, "Non food"), ("Servetten", 1, "Non food"), ("Plastic bestek", 1, "Non food")]),
+]
+
+
+async def _seed_packages(user: dict, have: set) -> None:
+    # Eén keer per gebruiker: koppel de spullen meteen aan een product in je eigen winkel, dan staat de prijs erbij
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"packages_seeded": True}})
+    docs = await _global_products()
+    store = user.get("store") if user.get("store") in COUPLED_STORES else "Dirk"
+    pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
+
+    def build():
+        out = []
+        for name, items in DEFAULT_PACKAGES:
+            if name.lower() in have:
+                continue
+            its = []
+            for n, qty, aisle in items:
+                hit = (_best_matches(pool, n, 1) or [None])[0] if pool else None
+                its.append(ExtraItem(name=hit["name"] if hit else n, unit="stuks", qty=qty, aisle=(hit or {}).get("aisle") or aisle,
+                                     product_id=(hit or {}).get("product_id"), store=store if hit else None).model_dump())
+            out.append({"package_id": f"pkg_{uuid.uuid4().hex[:12]}", "owner_id": user["user_id"], "name": name, "items": its,
+                        "deleted_at": None, "created_at": now_utc()})
+        return out
+    new = await asyncio.to_thread(build)
+    if new:
+        await db.packages.insert_many(new)
+
+
 @api_router.get("/packages")
 async def list_packages(user: dict = Depends(get_current_user)):
     docs = await db.packages.find({"owner_id": user["user_id"], "deleted_at": None}, {"_id": 0}).sort("name", 1).to_list(500)
+    if not user.get("packages_seeded"):
+        await _seed_packages(user, {d["name"].lower() for d in docs})
+        docs = await db.packages.find({"owner_id": user["user_id"], "deleted_at": None}, {"_id": 0}).sort("name", 1).to_list(500)
     return {"packages": [package_public(d) for d in docs]}
 
 
@@ -853,10 +900,13 @@ async def delete_package(package_id: str, user: dict = Depends(get_current_user)
 
 @api_router.get("/dishes")
 async def list_dishes(user: dict = Depends(get_current_user)):
+    # Ook de gerechten in activiteiten waar je bij hoort (van andere deelnemers of alleen voor die activiteit aangepast)
+    camps = await db.camps.find(camp_access_filter(user["user_id"]), {"_id": 0, "days.meals": 1}).to_list(200)
+    used = list({x for c in camps for d in c.get("days") or [] for ids in (d.get("meals") or {}).values() for x in ids})
     cursor = db.dishes.find(
         {
             "deleted_at": None,
-            "$or": [{"is_standard": True}, {"owner_id": user["user_id"]}],
+            "$or": [{"is_standard": True}, {"owner_id": user["user_id"]}, {"dish_id": {"$in": used}}],
         },
         {"_id": 0},
     )
@@ -912,6 +962,34 @@ async def update_dish(dish_id: str, data: DishInput, user: dict = Depends(get_cu
     )
     updated = await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0})
     return dish_public(updated)
+
+
+@api_router.put("/camps/{camp_id}/dishes/{dish_id}")
+async def save_camp_dish(camp_id: str, dish_id: str, data: DishInput, user: dict = Depends(get_current_user)):
+    # Een gerecht aanpassen voor alleen deze activiteit: de eerste keer maken we er een eigen versie voor de activiteit van
+    camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Niet gevonden")
+    doc = await db.dishes.find_one({"dish_id": dish_id, "deleted_at": None}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Gerecht niet gevonden")
+    if data.category not in MEAL_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Ongeldige categorie")
+    fields = {"name": data.name.strip(), "category": data.category, "ingredients": [i.model_dump() for i in data.ingredients],
+              **({"pantry": [i.model_dump() for i in data.pantry]} if data.pantry is not None else {})}
+    if doc.get("camp_id") == camp_id:
+        await db.dishes.update_one({"dish_id": dish_id}, {"$set": fields})
+        return dish_public(await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0}))
+    new_id = f"dish_{uuid.uuid4().hex[:12]}"
+    copy = {"dish_id": new_id, "is_standard": False, "owner_id": user["user_id"], "source": doc.get("source"), "camp_id": camp_id,
+            "from_dish": dish_id, "pantry": doc.get("pantry") or [], "deleted_at": None, "created_at": now_utc(), **fields}
+    await db.dishes.insert_one(copy)
+    days = camp.get("days") or []
+    for d in days:
+        for cat, ids in (d.get("meals") or {}).items():
+            d["meals"][cat] = [new_id if x == dish_id else x for x in ids]
+    await db.camps.update_one({"camp_id": camp_id}, {"$set": {"days": days}})
+    return dish_public(copy)
 
 
 async def _editable_dish(dish_id: str, user: dict) -> dict:

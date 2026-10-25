@@ -11,7 +11,7 @@ import { fetchProducts, useDebounced } from "@/src/search";
 import { ProductBrowser } from "@/src/ProductBrowser";
 import { OnlineRecipes, type RecipeTile } from "@/src/OnlineRecipes";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory, formatQty } from "@/src/constants";
-import type { Dish } from "@/app/(tabs)/dishes";
+import { isOwnDish, type Dish } from "@/app/(tabs)/dishes";
 import type { Package } from "@/app/package/edit";
 import type { Product } from "@/app/(tabs)/products";
 import { useAuth } from "@/src/auth";
@@ -438,7 +438,7 @@ export default function CampDetailScreen() {
                       <View key={dishId} style={styles.dishRow}>
                         <Pressable
                           disabled={!dish}
-                          onPress={() => router.push({ pathname: "/dish/edit", params: { id: dishId } })}
+                          onPress={() => router.push({ pathname: "/dish/edit", params: { id: dishId, campId: camp.id } })}
                           style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6 }}
                         >
                           {dish?.online ? <Icon name="web" size={15} color={colors.muted} /> : null}
@@ -978,12 +978,13 @@ function DishPickerModal({
     if (visible) {
       setQ("");
       setAllCats(false);
-      setTab(category && !dishes.some((d) => !d.online && d.category === category) ? "online" : "own");
+      setTab(category && !dishes.some((d) => isOwnDish(d, user?.id) && d.category === category) ? "online" : "own");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, category]);
 
-  const mine = dishes.filter((d) => !d.online);
+  const { user } = useAuth();
+  const mine = dishes.filter((d) => isOwnDish(d, user?.id));
   const own = category && !allCats ? mine.filter((d) => d.category === category) : mine;
   const list = own.filter((d) => !q.trim() || d.name.toLowerCase().includes(q.trim().toLowerCase()));
   const pickedRecipes = dishes

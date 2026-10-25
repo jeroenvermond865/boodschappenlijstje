@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Field, Icon, Select } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useTerms } from "@/src/settings";
 import { fetchProducts, useDebounced } from "@/src/search";
 import { ProductBrowser } from "@/src/ProductBrowser";
 import {
@@ -61,7 +62,11 @@ export default function DishEditScreen() {
   const router = useRouter();
   const toast = useToast();
   const qc = useQueryClient();
-  const params = useLocalSearchParams<{ id?: string; category?: string }>();
+  const params = useLocalSearchParams<{ id?: string; category?: string; campId?: string }>();
+  // Vanuit een activiteit: aanpassingen gelden alleen voor die activiteit
+  const campId = params.campId || null;
+  const T = useTerms();
+  const [alsoOwn, setAlsoOwn] = useState(false);
   const { has } = useAuth();
   const canManageStandard = has("manage_standard_dishes");
 
@@ -74,7 +79,7 @@ export default function DishEditScreen() {
     () => (params.id ? dishesData?.dishes.find((d) => d.id === params.id) : undefined),
     [params.id, dishesData],
   );
-  const readOnly = !!existing?.is_standard && !canManageStandard;
+  const readOnly = !campId && !!existing?.is_standard && !canManageStandard;
   const isNew = !params.id;
   const [asStandard, setAsStandard] = useState(false);
 
@@ -175,15 +180,21 @@ export default function DishEditScreen() {
   };
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const body = buildBody();
+      if (campId && params.id) {
+        const out = await api(`/camps/${campId}/dishes/${params.id}`, { method: "PUT", body });
+        if (alsoOwn) await api("/dishes", { method: "POST", body });
+        return out;
+      }
       return params.id && !readOnly
         ? api(`/dishes/${params.id}`, { method: "PUT", body })
         : api("/dishes", { method: "POST", body });
     },
     onSuccess: () => {
       invalidate();
-      toast.show("Gerecht opgeslagen", "success");
+      if (campId) qc.invalidateQueries({ queryKey: ["camp", campId] });
+      toast.show(campId ? (alsoOwn ? `Opgeslagen voor ${T.deze} ${T.one} en bij je eigen gerechten` : `Opgeslagen voor ${T.deze} ${T.one}`) : "Gerecht opgeslagen", "success");
       router.back();
     },
     onError: (e: any) => toast.show(e?.message ?? "Opslaan mislukt", "error"),
@@ -266,7 +277,7 @@ export default function DishEditScreen() {
     }
   };
 
-  const title = isNew ? "Nieuw gerecht" : readOnly ? existing?.name : "Gerecht bewerken";
+  const title = isNew ? "Nieuw gerecht" : readOnly ? existing?.name : campId ? `Gerecht in ${T.deze} ${T.one}` : "Gerecht bewerken";
 
   return (
     <View style={styles.root}>
@@ -282,7 +293,7 @@ export default function DishEditScreen() {
             <Pressable testID="share-dish-button" onPress={onShare} hitSlop={10} style={styles.headerBtn}>
               <Icon name="share-variant" size={22} color={colors.brandPrimary} />
             </Pressable>
-            {!readOnly ? (
+            {!readOnly && !campId ? (
               <Pressable testID="delete-dish-button" onPress={() => remove.mutate()} hitSlop={10} style={styles.headerBtn}>
                 <Icon name="trash-can-outline" size={22} color={colors.error} />
               </Pressable>
@@ -582,7 +593,7 @@ export default function DishEditScreen() {
           </Pressable>
         ) : null}
 
-        {!isNew && existing && !existing.is_standard ? (
+        {!isNew && existing && !existing.is_standard && !campId ? (
           <Pressable testID="submit-standard-button" onPress={() => submit.mutate()} style={styles.submitRow}>
             <Icon name="send-circle-outline" size={20} color={colors.brandSecondary} />
             <Text style={styles.submitText}>Aanmelden als standaardgerecht</Text>
@@ -594,7 +605,15 @@ export default function DishEditScreen() {
         {readOnly ? (
           <Button label="Kopiëren naar Eigen" icon="content-copy" onPress={() => copyToOwn.mutate()} loading={copyToOwn.isPending} testID="copy-dish-button" />
         ) : (
-          <Button label="Opslaan" onPress={onSave} loading={save.isPending} testID="save-dish-button" />
+          <>
+            {campId ? (
+              <Pressable testID="also-own" onPress={() => setAlsoOwn((v) => !v)} style={styles.alsoOwn}>
+                <Icon name={alsoOwn ? "checkbox-marked" : "checkbox-blank-outline"} size={22} color={colors.brandPrimary} />
+                <Text style={styles.alsoOwnText}>Ook opslaan bij mijn eigen gerechten</Text>
+              </Pressable>
+            ) : null}
+            <Button label={campId ? `Opslaan voor ${T.deze} ${T.one}` : "Opslaan"} onPress={onSave} loading={save.isPending} testID="save-dish-button" />
+          </>
         )}
       </View>
 
@@ -837,6 +856,8 @@ const useStyles = makeStyles((colors) => ({
   qtyRead: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   selRow: { flexDirection: "row", gap: 10 },
   dietRow: { flexDirection: "row", gap: 6 },
+  alsoOwn: { flexDirection: "row", alignItems: "center", gap: 8, paddingBottom: 10 },
+  alsoOwnText: { fontSize: 14, fontFamily: fonts.medium, color: colors.onSurface },
   dietChip: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.surfaceTertiary, borderWidth: 1, borderColor: colors.border },
   dietChipActive: { backgroundColor: colors.brandSecondary, borderColor: colors.brandSecondary },
   dietText: { fontSize: 12, fontFamily: fonts.semibold, color: colors.onSurfaceTertiary },

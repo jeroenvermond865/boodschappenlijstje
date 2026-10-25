@@ -8,6 +8,7 @@ import { EmptyState, Icon } from "@/src/components/ui";
 import type { Package } from "@/app/package/edit";
 import { OnlineRecipes } from "@/src/OnlineRecipes";
 import { api } from "@/src/api";
+import { useAuth } from "@/src/auth";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory } from "@/src/constants";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings } from "@/src/settings";
@@ -23,7 +24,12 @@ export type Dish = {
   source?: { recipe_id: string; url?: string; image?: string; store?: string; servings?: number } | null;
   needs_vega?: boolean; // vlees of vis zonder vega-vervanger
   online?: boolean; // online gerecht dat in een kamp staat, nog niet aangepast
+  camp_id?: string | null; // alleen voor één activiteit aangepast
+  owner_id?: string | null;
 };
+
+// Hoort in "Eigen gerechten": standaard of van jou, en niet alleen voor een activiteit of als online gerecht
+export const isOwnDish = (d: Dish, me?: string) => !d.online && !d.camp_id && (d.is_standard || !d.owner_id || d.owner_id === me);
 
 const TABS = [
   { key: "own", label: "Eigen gerechten" },
@@ -32,6 +38,7 @@ const TABS = [
 ] as const;
 
 export default function DishesScreen() {
+  const { user } = useAuth();
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -60,7 +67,7 @@ export default function DishesScreen() {
   });
 
   const filtered = useMemo(() => {
-    let list = (data?.dishes ?? []).filter((d) => !d.online); // online gerechten uit een kamp horen hier niet
+    let list = (data?.dishes ?? []).filter((d) => isOwnDish(d, user?.id)); // online gerechten en kampversies horen hier niet
     if (cat !== "all") list = list.filter((d) => d.category === cat);
     if (search.trim()) list = list.filter((d) => d.name.toLowerCase().includes(search.trim().toLowerCase()));
     return list;
@@ -204,8 +211,8 @@ export default function DishesScreen() {
           ListEmptyComponent={
             <EmptyState
               icon="silverware-variant"
-              title={data?.dishes.some((d) => !d.online) ? "Geen gerechten gevonden" : "Nog geen eigen gerechten"}
-              subtitle={data?.dishes.some((d) => !d.online) ? "Pas je filters aan of voeg een nieuw gerecht toe." : "Maak een gerecht met de knop hieronder, of neem er een over uit Online gerechten."}
+              title={data?.dishes.some((d) => isOwnDish(d, user?.id)) ? "Geen gerechten gevonden" : "Nog geen eigen gerechten"}
+              subtitle={data?.dishes.some((d) => isOwnDish(d, user?.id)) ? "Pas je filters aan of voeg een nieuw gerecht toe." : "Maak een gerecht met de knop hieronder, of neem er een over uit Online gerechten."}
             />
           }
         />
