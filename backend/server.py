@@ -2193,8 +2193,13 @@ async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_curr
                         "start": per.get("start"), "end": per.get("end"),
                         "period": f"{_nice_day(per.get('start'))} t/m {_nice_day(per.get('end'))}" if per.get("start") and per.get("end") else None,
                         "folder_url": per.get("folder_url"), "categories": cats, "items": items})
+    have = {p["key"] for p in periods}
+    for ex in (f.get("extra") or {}).get(store) or []:
+        if not isinstance(ex, dict) or not ex.get("pages") or ex["key"] in have:
+            continue  # zodra de losse acties van volgende week er zijn, tonen we die
+        periods.append({**ex, "period": f"{_nice_day(ex['start'])} t/m {_nice_day(ex['end'])}" if ex.get("start") and ex.get("end") else None,
+                        "categories": [], "items": []})
     return {"store": store, "stores": list(COUPLED_STORES), "periods": periods, "loading": f["at"] is None,
-            "extra_folders": (f.get("extra") or {}).get(store) or [],
             "updated_at": f["at"].isoformat() if f["at"] else None}
 
 
@@ -3170,42 +3175,48 @@ async def _dirk_folder() -> list:
 
 
 async def _dirk_extra_folders() -> list:
-    # Dirk zet de folder van volgende week en de extra folder alleen als PDF online (de losse acties pas vanaf woensdag)
+    # Dirk zet de folder van volgende week, de extra folder en die van Super Dirck3 alleen als bladerfolder online
+    # (losse acties pas vanaf woensdag): de pagina's laten we als afbeeldingen zien
+    today = _iso_day(datetime.now(timezone.utc).isoformat())
     out = []
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-        for path, title in (("/folder/volgende-week", "Folder volgende week"), ("/folder/extra-folder", "Extra folder")):
+        for path, key, title in (("/folder/volgende-week", "next", "Volgende week"), ("/folder/extra-folder", "extra", "Extra"),
+                                 ("/meer/over-dirk/super-dirck-3", "dirck3", "Dirck3")):
             try:
                 r = await c.get("https://www.dirk.nl" + path, headers=_PAGE_HEADERS)
                 data = _nuxt_data(r.text)
             except Exception as e:
                 logger.warning("Dirk %s: %r", path, e)
                 continue
-            files = []
+            pubs = []
 
             def walk(x, depth=0):
-                if depth > 30:
+                if depth > 40:
                     return
                 if isinstance(x, dict):
-                    name = x.get("originalName")
-                    if isinstance(name, str) and name.lower().endswith(".pdf"):
-                        url = next((v for v in x.values() if isinstance(v, str) and v.startswith("http") and ".pdf" in v.lower()), None)
-                        url = url or next((v for v in x.values() if isinstance(v, str) and v.startswith("http")), None)
-                        if not url:
-                            pages = x.get("pages") or []
-                            logger.info("Stest6 %s pages=%d p0=%s p1=%s", name, len(pages), json.dumps(pages[:1], default=str)[:2500],
-                                        json.dumps(pages[1:2], default=str)[:1500])
-                        files.append({"name": name[:-4], "url": url})
+                    pages = x.get("pages")
+                    if isinstance(pages, list) and pages and isinstance(pages[0], dict) and pages[0].get("fileName"):
+                        if not any(p.get("publicationId") == x.get("publicationId") for p in pubs):
+                            pubs.append(x)
                         return
                     for v in x.values():
                         walk(v, depth + 1)
                 elif isinstance(x, list):
                     for v in x:
                         walk(v, depth + 1)
-            walk((data or {}).get("data") or data)
-            for fl in files:
-                if fl["url"]:
-                    out.append({"title": title if len(files) == 1 else f"{title} · {fl['name']}", "url": fl["url"]})
-    out.append({"title": "Super Dirck3-folder", "url": "https://www.dirk.nl/meer/over-dirk/super-dirck-3"})
+            walk(data)
+            if key == "next":
+                # Alleen wat nog moet komen (de zondagfolder van vandaag hoort bij deze week)
+                pubs = [p for p in pubs if (_iso_day(p.get("startDate")) or "") > today]
+            pubs = [p for p in pubs if (_iso_day(p.get("endDate")) or "9999") >= today]
+            if not pubs:
+                continue
+            pages = [DIRK_IMAGE_BASE + "publication/images/" + pg["fileName"] + "?width=1280"
+                     for p in pubs for pg in sorted(p["pages"], key=lambda g: g.get("pageNumber") or 0) if pg.get("fileName")]
+            starts = [d for d in (_iso_day(p.get("startDate")) for p in pubs) if d]
+            ends = [d for d in (_iso_day(p.get("endDate")) for p in pubs) if d]
+            out.append({"key": key, "title": title, "start": min(starts) if starts else None, "end": max(ends) if ends else None,
+                        "pages": pages, "folder_url": "https://www.dirk.nl" + path})
     return out
 
 
@@ -4005,53 +4016,17 @@ async def remove_recipe_favorite(id: str, user: dict = Depends(get_current_user)
 
 
 async def _selftest3() -> None:
-    # Tijdelijk: controle matching vormwoorden
-    await asyncio.sleep(60)
+    # Tijdelijk: controle Dirk-bladerfolders en kruiden bij AH
+    await asyncio.sleep(70)
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            r = await c.get("https://www.dirk.nl/folder/volgende-week", headers=_PAGE_HEADERS)
-            seen_js, queue = set(), sorted(set(re.findall(r'/_nuxt/[A-Za-z0-9_.-]+\.js', r.text)))
-            while queue and len(seen_js) < 150:
-                m = queue.pop(0)
-                if m in seen_js:
-                    continue
-                seen_js.add(m)
-                try:
-                    js = (await c.get("https://www.dirk.nl" + m, headers=_PAGE_HEADERS)).text
-                except Exception:
-                    continue
-                queue += [("/_nuxt/" + x.lstrip("./")) for x in re.findall(r'["\'`](\./[A-Za-z0-9_.-]+\.js)', js) if "/_nuxt/" + x.lstrip("./") not in seen_js]
-                for k in list(re.finditer(r"\.fileName\b|fileName\}|pageNumber\}", js))[:3]:
-                    logger.info("Stest9 js %s: %s", m, js[max(0, k.start() - 300): k.start() + 120])
-            logger.info("Stest9 js scanned %d", len(seen_js))
-            q = '{__schema{queryType{fields{name args{name type{name kind ofType{name}}} type{name kind ofType{name}}}}}}'
-            rr = await c.post(DIRK_GQL, json={"query": q}, headers=DIRK_HEADERS)
-            fields = ((((rr.json().get("data") or {}).get("__schema") or {}).get("queryType") or {}).get("fields")) or []
-            logger.info("Stest9 gql %s %s", rr.status_code, [f for f in fields if "ublic" in f["name"]] or rr.text[:300])
-            for tn in ("Publication", "PublicationPage", "PublicationDto", "Publication_Dto", "PublicationPage_Dto"):
-                rr = await c.post(DIRK_GQL, json={"query": '{__type(name:"%s"){fields{name type{name kind ofType{name}}}}}' % tn}, headers=DIRK_HEADERS)
-                logger.info("Stest9 type %s %s", tn, rr.text[:600])
-            r = await c.get("https://www.dirk.nl/meer/over-dirk/super-dirck-3", headers=_PAGE_HEADERS)
-            data = _nuxt_data(r.text)
-            logger.info("Stest7 dirck3 %s %s", r.status_code, json.dumps(data, default=str)[:3000])
+        ex = await _dirk_extra_folders()
+        logger.info("Stest10 %s", [(x["key"], x["start"], x["end"], len(x["pages"]), x["pages"][:1]) for x in ex])
+        if ex and ex[0]["pages"]:
+            async with httpx.AsyncClient(timeout=20) as c:
+                rr = await c.get(ex[0]["pages"][0])
+                logger.info("Stest10 img %s %s %d", rr.status_code, rr.headers.get("content-type"), len(rr.content))
     except Exception as e:
-        logger.warning("Stest7: %r", e)
-    try:
-        docs = await _global_products()
-        for st in COMPARE_STORES:
-            for w in ("kaneel", "kerrie"):
-                logger.info("Stest4 %s %s: %s", st, w, [(d["name"], d.get("subcategory")) for d in docs if d.get("_src") == st and w in d["_norm"] and d.get("aisle") == "Voorraadkast"][:25])
-            pool = [d for d in docs if d.get("_src") == st and d.get("is_global")]
-            for q in ("kaneelpoeder", "kerriepoeder", "kip", "kaas", "volkoren brood", "aardappelen"):
-                logger.info("Stest3 %s %s -> %s", st, q, [d["name"] for d in _best_matches(pool, q, 3)])
-            for name in ("kipfilet", "rundergehakt", "rookworst", "spekjes", "zalmfilet"):
-                logger.info("Stest8 %s %s -> %s", st, name, [d["name"] for d in _vega_options({"name": name, "store": st}, docs)])
-            for name in ("aardappelen", "uien", "winterpeen", "rookworst"):
-                d = (_best_matches(pool, name, 1) or [None])[0]
-                if d:
-                    logger.info("Stest5 %s %s: %s", st, d["name"], _pack_plan(d, 5500 if name != "rookworst" else 11, "gram" if name != "rookworst" else "stuks", st))
-    except Exception as e:
-        logger.warning("Stest3: %r", e)
+        logger.warning("Stest10: %r", e)
 
 
 async def _import_extra_terms() -> None:

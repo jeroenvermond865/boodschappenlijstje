@@ -30,14 +30,15 @@ type FolderItem = {
 
 type FolderPeriod = {
   categories?: { name: string; count: number }[];
-  key: "current" | "next";
+  key: string; // current, next, extra, dirck3
   title: string;
+  pages?: string[]; // bladerfolder (Dirk): pagina's als afbeelding
   period: string | null;
   folder_url: string | null;
   items: FolderItem[];
 };
 
-type FoldersResponse = { store: string; stores: string[]; periods: FolderPeriod[]; loading: boolean; extra_folders?: { title: string; url: string }[] };
+type FoldersResponse = { store: string; stores: string[]; periods: FolderPeriod[]; loading: boolean };
 
 export default function FoldersScreen() {
   const params = useLocalSearchParams<{ store?: string }>();
@@ -46,7 +47,7 @@ export default function FoldersScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [store, setStore] = useState(params.store || "Albert Heijn");
-  const [periodKey, setPeriodKey] = useState<"current" | "next">("current");
+  const [periodKey, setPeriodKey] = useState<string>("current");
   const [open, setOpen] = useState<FolderItem | null>(null);
   const [cat, setCat] = useState<string | null>(null);
 
@@ -109,25 +110,20 @@ export default function FoldersScreen() {
           <View style={styles.segment}>
             {periods.map((p) => (
               <Pressable key={p.key} onPress={() => { setPeriodKey(p.key); setCat(null); }} style={[styles.segBtn, period?.key === p.key && styles.segBtnActive]}>
-                <Text style={[styles.segText, period?.key === p.key && styles.segTextActive]}>{p.title}</Text>
-                {p.period ? <Text style={styles.segSub}>{p.period}</Text> : null}
+                <Text style={[styles.segText, period?.key === p.key && styles.segTextActive]} numberOfLines={1}>{p.title}</Text>
+                {p.period ? <Text style={styles.segSub} numberOfLines={1}>{p.period}</Text> : null}
               </Pressable>
             ))}
           </View>
         ) : null}
-        {periods.length === 1 && periods[0].key === "current" ? (
+        {!periods.some((p) => p.key === "next") && periods.length > 0 ? (
+          <Text style={styles.muted}>De folder van volgende week staat er nog niet; die verschijnt zodra {store} hem publiceert.</Text>
+        ) : null}
+        {period?.pages ? (
           <Text style={styles.muted}>
-            {(data?.extra_folders ?? []).some((x) => x.title.startsWith("Folder volgende week"))
-              ? `De losse acties van volgende week zet ${store} er later in; de folder zelf kun je hieronder al bekijken.`
-              : `De folder van volgende week staat er nog niet; die verschijnt zodra ${store} hem publiceert.`}
+            {period.key === "next" ? `De losse acties van volgende week zet ${store} er pas later in. Dit is de folder zelf.` : "Blader door de folder."}
           </Text>
         ) : null}
-        {(data?.extra_folders ?? []).map((x) => (
-          <Pressable key={x.url} onPress={() => Linking.openURL(x.url)} style={styles.folderLink}>
-            <Icon name="file-document-outline" size={18} color={colors.brandPrimary} />
-            <Text style={styles.folderLinkText}>{x.title}</Text>
-          </Pressable>
-        ))}
         {period?.folder_url ? (
           <Pressable onPress={() => Linking.openURL(period.folder_url!)} style={styles.folderLink}>
             <Icon name="book-open-page-variant-outline" size={18} color={colors.brandPrimary} />
@@ -151,6 +147,8 @@ export default function FoldersScreen() {
             <Text style={styles.folderLinkText}>Opnieuw laden</Text>
           </Pressable>
         </View>
+      ) : period.pages ? (
+        <FolderPages pages={period.pages} bottom={insets.bottom + 40} />
       ) : (
         <SectionList
           sections={sections}
@@ -195,6 +193,20 @@ export default function FoldersScreen() {
         </Pressable>
       </Modal>
     </View>
+  );
+}
+
+function FolderPages({ pages, bottom }: { pages: string[]; bottom: number }) {
+  const styles = useStyles();
+  const [w, setW] = useState(0);
+  return (
+    <ScrollView onLayout={(e) => setW(e.nativeEvent.layout.width)} contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: bottom, gap: 12 }}>
+      {pages.map((u, i) => (
+        <Pressable key={u} onPress={() => Linking.openURL(u.replace(/\?width=\d+/, ""))}>
+          <Image source={{ uri: u }} style={[styles.page, w ? { height: ((w - 32) * 1.42) } : null]} resizeMode="contain" accessibilityLabel={`Folderpagina ${i + 1}`} />
+        </Pressable>
+      ))}
+    </ScrollView>
   );
 }
 
@@ -284,6 +296,7 @@ function ItemSheet({ item, onClose, onOpenProduct }: { item: FolderItem; onClose
 }
 
 const useStyles = makeStyles((colors) => ({
+  page: { width: "100%", height: 480, borderRadius: 12, backgroundColor: colors.surfaceSecondary },
   root: { flex: 1, backgroundColor: colors.surface },
   header: {
     flexDirection: "row",
@@ -303,7 +316,7 @@ const useStyles = makeStyles((colors) => ({
   chipText: { fontSize: 13, fontFamily: fonts.medium, color: colors.onSurfaceTertiary },
   chipTextActive: { color: colors.onBrandPrimary, fontFamily: fonts.semibold },
   segment: { flexDirection: "row", backgroundColor: colors.surfaceTertiary, borderRadius: 10, padding: 3 },
-  segBtn: { flex: 1, paddingVertical: 7, borderRadius: 8, alignItems: "center" },
+  segBtn: { flex: 1, paddingVertical: 7, paddingHorizontal: 2, borderRadius: 8, alignItems: "center" },
   segBtnActive: { backgroundColor: colors.surface },
   segText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.muted },
   segTextActive: { color: colors.onSurface },
