@@ -120,7 +120,7 @@ export default function DirkImportScreen() {
     refetchInterval: (query) => (query.state.data?.running ? 5000 : false),
   });
   const barcodeMut = useMutation({
-    mutationFn: () => api("/admin/products/barcodes", { method: "POST" }),
+    mutationFn: (only: string) => api(`/admin/products/barcodes?only=${only}`, { method: "POST" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["barcode-import"] });
       toast.show("Barcodes ophalen gestart", "info");
@@ -203,7 +203,7 @@ export default function DirkImportScreen() {
 
         <View style={styles.refreshCard}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.refreshTitle}>Barcodes</Text>
+            <Text style={styles.refreshTitle}>Barcodes van {store}</Text>
             <Text style={styles.refreshSub}>{barcodeLine}</Text>
             <Pressable testID="barcodes-csv" onPress={downloadCsv} hitSlop={6} style={{ marginTop: 6 }}>
               <Text style={[styles.refreshSub, { color: colors.brandPrimary }]}>Download als bestand (CSV)</Text>
@@ -211,7 +211,7 @@ export default function DirkImportScreen() {
           </View>
           <Pressable
             testID="barcodes-start"
-            onPress={() => barcodeMut.mutate()}
+            onPress={() => barcodeMut.mutate(store === "Jumbo" ? "jumbo" : store === "Albert Heijn" ? "ah" : "dirk")}
             disabled={barcodeMut.isPending || !!barcodeStatus?.running}
             style={styles.refreshBtn}
           >

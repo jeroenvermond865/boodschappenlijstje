@@ -1986,6 +1986,56 @@ def _dirk_aisle(department: str, webgroup: str, name: str = "") -> str:
     return "Overig"
 
 
+async def _probe_details() -> None:
+    # Tijdelijk: welke productinformatie en filters geven Dirk, AH en Jumbo?
+    def snip(html: str, words: list) -> str:
+        out = []
+        for w in words:
+            i = html.find(w)
+            if i >= 0:
+                out.append(f"[{w}] " + html[max(0, i - 200):i + 600].replace("\n", " "))
+        return " ||| ".join(out)[:3000]
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS, follow_redirects=True) as c:
+            for f in ["nutritionalValues", "nutritionalInformation", "nutrition", "ingredients", "allergens", "description", "pricePerUnit", "unitPrice", "logos", "properties", "usage", "storage"]:
+                r = await c.post(DIRK_GQL, json={"query": "query{products(productIds:[101229],storeId:66){productId productInformation{headerText %s}}}" % f})
+                logger.info("Detail probe Dirk %s -> %s", f, r.text[:220])
+            r = await c.get("https://www.dirk.nl/boodschappen/zuivel-kaas/melk/halfvolle-melk/101229", headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0"})
+            logger.info("Detail probe Dirk pagina %s %s %s", r.status_code, str(r.url), snip(r.text, ["Energie", "Ingredi", "Allergie", "per liter", "per kilo", "Voedingswaarde"]))
+        ah = await db.products.find_one({"ah_id": {"$exists": True}, "name": {"$regex": "melk", "$options": "i"}}, {"_id": 0, "ah_id": 1})
+        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS, follow_redirects=True) as c:
+            tok = await _ah_token(c)
+            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
+            if ah:
+                r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{ah['ah_id']}", headers=H)
+                card = (r.json() or {}).get("productCard") or {}
+                logger.info("Detail probe AH card %s", str({k: card.get(k) for k in ["descriptionFull", "properties", "propertyIcons", "extraDescriptions", "descriptionHighlights", "salesUnitSize", "unitPriceDescription"]})[:2500])
+                r = await c.get(f"https://www.ah.nl/producten/product/wi{ah['ah_id']}", headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36"})
+                logger.info("Detail probe AH pagina %s %s", r.status_code, snip(r.text, ["Energie", "Ingredi", "Allergie", "prijs per", "Voedingswaarden"]))
+            r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"query": "melk", "size": 3}, headers=H)
+            body = r.json() or {}
+            logger.info("Detail probe AH zoek keys %s", list(body.keys()))
+            logger.info("Detail probe AH filters %s", str(body.get("aggregation") or body.get("filters") or body.get("facets"))[:2500])
+            logger.info("Detail probe AH product %s", str((body.get("products") or [{}])[0])[:1500])
+        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS, follow_redirects=True) as c:
+            v = {"input": {"searchType": "keyword", "searchTerms": "melk", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=melk", "previousUrl": "", "bloomreachCookieId": ""}}
+            for extra in ["facets { key displayName values { key displayName count } }", "filters", "facets", "categoryTiles", "sortOptions"]:
+                q = "query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { count %s } }" % extra
+                r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": q, "variables": v})
+                logger.info("Detail probe Jumbo zoek %s -> %s", extra.split()[0], r.text[:1500])
+            for f in ["subtitle", "nutritionalInformation", "nutritions", "ingredients", "allergens", "pricePerUnit", "prices: price { pricePerUnit { price unit } }", "description", "tags", "badges", "brandInfo", "surcharges", "primaryBadge", "characteristics", "categories"]:
+                q = "query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { products { id %s } } }" % f
+                r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": q, "variables": v})
+                logger.info("Detail probe Jumbo veld %s -> %s", f.split()[0], r.text[:400])
+            for q in ['query { product(sku: "293407STK") { id } }', 'query { productDetail(sku: "293407STK") { id } }']:
+                r = await c.post(JUMBO_GQL, json={"query": q})
+                logger.info("Detail probe Jumbo product -> %s", r.text[:400])
+            r = await c.get("https://www.jumbo.com/producten/campina-langlekker-halfvolle-melk-1-l-293407STK", headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36"})
+            logger.info("Detail probe Jumbo pagina %s %s", r.status_code, snip(r.text, ["Energie", "Ingredi", "Allergie", "per liter", "Voedingswaarden"]))
+    except Exception as e:
+        logger.warning("Detail probe mislukt: %s", e)
+
+
 async def _dirk_post(client, query, variables):
     r = await client.post(DIRK_GQL, json={"query": query, "variables": variables})
     if r.status_code >= 500:
@@ -2566,13 +2616,20 @@ async def _set_barcode_status(**fields) -> None:
     await db.settings.update_one({"key": "barcode_import"}, {"$set": fields}, upsert=True)
 
 
-async def _import_barcodes() -> None:
+async def _import_barcodes(which: str = "all") -> None:
     global _barcode_running
     _barcode_running = True
     try:
         await _set_barcode_status(status="Jumbo-barcodes ophalen", started_at=now_utc(), finished_at=None, dirk=0, ah=0, done=0, total=0, error=None)
         # 1. Jumbo: zoektermen doorlopen vult de barcode bij elk Jumbo-product
-        await _refresh_jumbo_prices(await _store_mults())
+        if which in ("all", "jumbo"):
+            await _refresh_jumbo_prices(await _store_mults())
+        if which == "jumbo":
+            total = await db.products.count_documents({"barcode": {"$nin": [None, ""]}, "deleted_at": None})
+            await _set_barcode_status(status="klaar", with_barcode=total, finished_at=now_utc())
+            _invalidate_products()
+            return
+        # 2. Dirk/AH: met de Jumbo-barcodes hetzelfde product opzoeken
         eans = sorted({p["barcode"] async for p in db.products.find({"jumbo_id": {"$exists": True}, "barcode": {"$nin": [None, ""]}, "deleted_at": None}, {"_id": 0, "barcode": 1})})
         dirk_ids = {str(p["dirk_id"]) for p in await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "barcode": {"$in": [None, ""]}}, {"_id": 0, "dirk_id": 1}).to_list(50000)}
         ah_ids = {str(p["ah_id"]) for p in await db.products.find({"ah_id": {"$exists": True}, "deleted_at": None, "barcode": {"$in": [None, ""]}}, {"_id": 0, "ah_id": 1}).to_list(50000)}
@@ -2586,8 +2643,8 @@ async def _import_barcodes() -> None:
             async def one(ean: str):
                 nonlocal found_dirk, found_ah
                 async with sem:
-                    d = await _dirk_ids_for_ean(dc, ean)
-                    a = await _ah_ids_for_ean(ac, H, ean)
+                    d = await _dirk_ids_for_ean(dc, ean) if which in ("all", "dirk") else []
+                    a = await _ah_ids_for_ean(ac, H, ean) if which in ("all", "ah") else []
                 if len(d) == 1 and d[0] in dirk_ids:
                     await db.products.update_many({"dirk_id": d[0], "barcode": {"$in": [None, ""]}}, {"$set": {"barcode": ean}})
                     dirk_ids.discard(d[0])
@@ -2613,10 +2670,10 @@ async def _import_barcodes() -> None:
 
 
 @api_router.post("/admin/products/barcodes")
-async def start_barcode_import(user: dict = Depends(get_current_user)):
+async def start_barcode_import(only: str = "all", user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_products")
     if not _barcode_running:
-        asyncio.create_task(_import_barcodes())
+        asyncio.create_task(_import_barcodes(only if only in ("dirk", "ah", "jumbo") else "all"))
     return {"ok": True}
 
 
@@ -3597,6 +3654,7 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
+    asyncio.create_task(_probe_details())
 
 
 async def _daily_refresh_loop():
