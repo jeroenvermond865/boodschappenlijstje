@@ -2078,6 +2078,19 @@ async def _jumbo_details(doc: dict) -> dict:
     return out
 
 
+async def _check_details() -> None:
+    # Tijdelijk: na de deploy één product per winkel proberen
+    import json as _json
+    await asyncio.sleep(15)
+    for field, fn in (("dirk_id", _dirk_details), ("ah_id", _ah_details), ("jumbo_id", _jumbo_details)):
+        try:
+            doc = await db.products.find_one({field: {"$exists": True}, "deleted_at": None, "name": {"$regex": "melk", "$options": "i"}}, {"_id": 0})
+            out = await fn(doc)
+            logger.info("Detailcheck %s %s -> %s", field, doc.get("name"), _json.dumps(out, ensure_ascii=False)[:2500])
+        except Exception as e:
+            logger.warning("Detailcheck %s mislukt: %r", field, e)
+
+
 @api_router.get("/products/{product_id}/details")
 async def product_details(product_id: str, user: dict = Depends(get_current_user)):
     doc = await db.products.find_one({"product_id": product_id, "deleted_at": None}, {"_id": 0})
@@ -4062,6 +4075,7 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
+    asyncio.create_task(_check_details())
 
 
 async def _daily_refresh_loop():
