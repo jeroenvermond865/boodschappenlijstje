@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -114,6 +114,44 @@ export default function DirkImportScreen() {
     onError: (e: any) => toast.show(e?.message ?? "Verversen mislukt", "error"),
   });
 
+  const { data: barcodeStatus } = useQuery({
+    queryKey: ["barcode-import"],
+    queryFn: () => api<{ status?: string; done?: number; total?: number; dirk?: number; ah?: number; with_barcode?: number; error?: string | null; running: boolean }>("/admin/products/barcodes"),
+    refetchInterval: (query) => (query.state.data?.running ? 5000 : false),
+  });
+  const barcodeMut = useMutation({
+    mutationFn: () => api("/admin/products/barcodes", { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["barcode-import"] });
+      toast.show("Barcodes ophalen gestart", "info");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
+  });
+  const barcodeLine = barcodeStatus?.running
+    ? `Bezig: ${barcodeStatus.status ?? ""}${barcodeStatus.total ? ` · ${barcodeStatus.done ?? 0}/${barcodeStatus.total}` : ""}. Laat dit scherm open.`
+    : barcodeStatus?.status === "mislukt"
+      ? `Mislukt: ${barcodeStatus.error ?? "onbekende fout"}`
+      : barcodeStatus?.status === "onderbroken"
+        ? "Onderbroken. Start opnieuw; wat er al is, blijft bewaard."
+        : `${barcodeStatus?.with_barcode ?? 0} producten hebben een barcode.${barcodeStatus?.status === "klaar" ? ` Laatste keer: ${barcodeStatus.dirk ?? 0} Dirk en ${barcodeStatus.ah ?? 0} AH gekoppeld.` : ""}`;
+  const downloadCsv = async () => {
+    try {
+      const csv = await api<string>("/admin/products/barcodes.csv");
+      if (Platform.OS === "web") {
+        const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "barcodes.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        toast.show("Download het bestand via de website", "info");
+      }
+    } catch (e: any) {
+      toast.show(e?.message ?? "Downloaden mislukt", "error");
+    }
+  };
+
   const lastRefresh = status?.refreshed_at
     ? new Date(status.refreshed_at).toLocaleString("nl-NL", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
     : "nog niet";
@@ -160,6 +198,25 @@ export default function DirkImportScreen() {
           >
             {importAllMut.isPending || wasRunning ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Icon name="download" size={18} color={colors.onBrandPrimary} />}
             <Text style={styles.refreshBtnText}>Start</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.refreshCard}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.refreshTitle}>Barcodes</Text>
+            <Text style={styles.refreshSub}>{barcodeLine}</Text>
+            <Pressable testID="barcodes-csv" onPress={downloadCsv} hitSlop={6} style={{ marginTop: 6 }}>
+              <Text style={[styles.refreshSub, { color: colors.brandPrimary }]}>Download als bestand (CSV)</Text>
+            </Pressable>
+          </View>
+          <Pressable
+            testID="barcodes-start"
+            onPress={() => barcodeMut.mutate()}
+            disabled={barcodeMut.isPending || !!barcodeStatus?.running}
+            style={styles.refreshBtn}
+          >
+            {barcodeMut.isPending || barcodeStatus?.running ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Icon name="barcode-scan" size={18} color={colors.onBrandPrimary} />}
+            <Text style={styles.refreshBtnText}>Ophalen</Text>
           </Pressable>
         </View>
 

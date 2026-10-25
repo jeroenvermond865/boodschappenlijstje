@@ -1986,33 +1986,6 @@ def _dirk_aisle(department: str, webgroup: str, name: str = "") -> str:
     return "Overig"
 
 
-async def _probe_barcodes() -> None:
-    # Tijdelijk: waar geven Dirk en AH de barcode (EAN) mee?
-    try:
-        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
-            for f in ["eanCodes", "barcodes", "gtinCode", "productEan", "eanNumber", "ean13"]:
-                r = await c.post(DIRK_GQL, json={"query": "query{products(productIds:[101229],storeId:66){productId productInformation{headerText %s}}}" % f})
-                logger.info("Barcode probe2 Dirk %s -> %s", f, r.text[:160])
-            ids = await _dirk_search_ids(c, "8712800147008", limit=5)
-            logger.info("Barcode probe2 Dirk zoeken op EAN -> %s", ids)
-        ah = await db.products.find_one({"ah_id": {"$exists": True}}, {"_id": 0, "ah_id": 1})
-        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
-            tok = await _ah_token(c)
-            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-            if ah:
-                r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{ah['ah_id']}", headers=H)
-                body = r.json() or {}
-                logger.info("Barcode probe2 AH properties %s", str(body.get("properties"))[:700])
-                logger.info("Barcode probe2 AH productCard keys %s", list((body.get("productCard") or {}).keys()))
-            r = await c.get("https://api.ah.nl/mobile-services/product/search/v1/gtin/8712800147008", headers=H)
-            logger.info("Barcode probe2 AH gtin-zoek -> %s %s", r.status_code, r.text[:400])
-        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
-            prods, _ = await _jumbo_search_page(c, "8712800147008", 0)
-            logger.info("Barcode probe2 Jumbo zoeken op EAN -> %s", [(p.get("id"), p.get("ean")) for p in prods[:3]])
-    except Exception as e:
-        logger.warning("Barcode probe mislukt: %s", e)
-
-
 async def _dirk_post(client, query, variables):
     r = await client.post(DIRK_GQL, json={"query": query, "variables": variables})
     if r.status_code >= 500:
@@ -2550,6 +2523,152 @@ async def import_all_dirk_status(user: dict = Depends(get_current_user)):
     if doc.get("status") not in (None, "klaar", "mislukt") and not _dirk_import_running:
         doc["status"] = "onderbroken"
     return {**doc, "running": _dirk_import_running}
+
+
+# --- Barcodes (EAN) ---
+# Jumbo geeft de EAN direct mee. Dirk en AH niet, maar daar kun je wel op EAN zoeken:
+# zo koppelen we de Jumbo-barcodes ook aan dezelfde producten bij Dirk en AH.
+_barcode_running = False
+
+
+def _find_key(obj, key: str) -> list:
+    out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == key and v is not None:
+                out.append(v)
+            else:
+                out += _find_key(v, key)
+    elif isinstance(obj, list):
+        for v in obj:
+            out += _find_key(v, key)
+    return out
+
+
+async def _dirk_ids_for_ean(client, ean: str) -> list:
+    try:
+        return [str(i) for i in await _dirk_search_ids(client, ean, limit=3)]
+    except Exception:
+        return []
+
+
+async def _ah_ids_for_ean(client, headers: dict, ean: str) -> list:
+    try:
+        r = await client.get(f"https://api.ah.nl/mobile-services/product/search/v1/gtin/{ean}", headers=headers)
+        if r.status_code != 200 or not r.text.strip():
+            return []
+        return [str(i) for i in _find_key(r.json(), "webshopId")][:3]
+    except Exception:
+        return []
+
+
+async def _set_barcode_status(**fields) -> None:
+    await db.settings.update_one({"key": "barcode_import"}, {"$set": fields}, upsert=True)
+
+
+async def _import_barcodes() -> None:
+    global _barcode_running
+    _barcode_running = True
+    try:
+        await _set_barcode_status(status="Jumbo-barcodes ophalen", started_at=now_utc(), finished_at=None, dirk=0, ah=0, done=0, total=0, error=None)
+        # 1. Jumbo: zoektermen doorlopen vult de barcode bij elk Jumbo-product
+        await _refresh_jumbo_prices(await _store_mults())
+        eans = sorted({p["barcode"] async for p in db.products.find({"jumbo_id": {"$exists": True}, "barcode": {"$nin": [None, ""]}, "deleted_at": None}, {"_id": 0, "barcode": 1})})
+        dirk_ids = {str(p["dirk_id"]) for p in await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "barcode": {"$in": [None, ""]}}, {"_id": 0, "dirk_id": 1}).to_list(50000)}
+        ah_ids = {str(p["ah_id"]) for p in await db.products.find({"ah_id": {"$exists": True}, "deleted_at": None, "barcode": {"$in": [None, ""]}}, {"_id": 0, "ah_id": 1}).to_list(50000)}
+        await _set_barcode_status(status="Dirk en AH koppelen", total=len(eans))
+        found_dirk = found_ah = 0
+        sem = asyncio.Semaphore(5)
+        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as dc, httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as ac:
+            tok = await _ah_token(ac)
+            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
+
+            async def one(ean: str):
+                nonlocal found_dirk, found_ah
+                async with sem:
+                    d = await _dirk_ids_for_ean(dc, ean)
+                    a = await _ah_ids_for_ean(ac, H, ean)
+                if len(d) == 1 and d[0] in dirk_ids:
+                    await db.products.update_many({"dirk_id": d[0], "barcode": {"$in": [None, ""]}}, {"$set": {"barcode": ean}})
+                    dirk_ids.discard(d[0])
+                    found_dirk += 1
+                for aid in a:
+                    if aid in ah_ids:
+                        await db.products.update_many({"ah_id": aid, "barcode": {"$in": [None, ""]}}, {"$set": {"barcode": ean}})
+                        ah_ids.discard(aid)
+                        found_ah += 1
+
+            for i in range(0, len(eans), 100):
+                await asyncio.gather(*[one(e) for e in eans[i:i + 100]])
+                await _set_barcode_status(done=min(i + 100, len(eans)), dirk=found_dirk, ah=found_ah)
+        _invalidate_products()
+        total = await db.products.count_documents({"barcode": {"$nin": [None, ""]}, "deleted_at": None})
+        logger.info("Barcodes klaar: %d Dirk, %d AH gekoppeld, %d producten met barcode", found_dirk, found_ah, total)
+        await _set_barcode_status(status="klaar", with_barcode=total, finished_at=now_utc())
+    except Exception as e:
+        logger.warning("Barcodes ophalen mislukt: %s", e)
+        await _set_barcode_status(status="mislukt", error=str(e)[:200], finished_at=now_utc())
+    finally:
+        _barcode_running = False
+
+
+@api_router.post("/admin/products/barcodes")
+async def start_barcode_import(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_products")
+    if not _barcode_running:
+        asyncio.create_task(_import_barcodes())
+    return {"ok": True}
+
+
+@api_router.get("/admin/products/barcodes")
+async def barcode_status(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_products")
+    doc = await db.settings.find_one({"key": "barcode_import"}, {"_id": 0, "key": 0}) or {}
+    for k in ("started_at", "finished_at"):
+        if isinstance(doc.get(k), datetime):
+            doc[k] = ensure_aware(doc[k]).isoformat()
+    if doc.get("status") not in (None, "klaar", "mislukt") and not _barcode_running:
+        doc["status"] = "onderbroken"
+    doc["with_barcode"] = await db.products.count_documents({"barcode": {"$nin": [None, ""]}, "deleted_at": None})
+    return {**doc, "running": _barcode_running}
+
+
+@api_router.get("/admin/products/barcodes.csv")
+async def barcode_csv(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_products")
+    rows = ["barcode;winkel;product;merk;inhoud;afdeling"]
+    async for d in db.products.find({"barcode": {"$nin": [None, ""]}, "deleted_at": None}, {"_id": 0}).sort("barcode", 1):
+        cells = [d.get("barcode") or "", product_source(d) or "", d.get("name") or "", d.get("brand") or "", d.get("unit") or "", d.get("aisle") or ""]
+        rows.append(";".join(str(c).replace(";", ",").replace("\n", " ") for c in cells))
+    return Response("\n".join(rows), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="barcodes.csv"'})
+
+
+@api_router.get("/products/by-barcode/{ean}")
+async def product_by_barcode(ean: str, user: dict = Depends(get_current_user)):
+    # Voor het scannen in de winkel: welk(e) product(en) hoort bij deze barcode?
+    ean = re.sub(r"\D", "", ean)
+    if not ean:
+        raise HTTPException(status_code=400, detail="Ongeldige barcode")
+    docs = await db.products.find({"barcode": ean, "deleted_at": None}, {"_id": 0}).to_list(10)
+    if not docs:
+        # Nog niet bekend: live opzoeken bij Dirk en AH en de barcode onthouden
+        async with httpx.AsyncClient(timeout=15, headers=DIRK_HEADERS) as dc, httpx.AsyncClient(timeout=15, headers=AH_HEADERS) as ac:
+            d = await _dirk_ids_for_ean(dc, ean)
+            tok = await _ah_token(ac)
+            a = await _ah_ids_for_ean(ac, {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}, ean)
+        q = []
+        if len(d) == 1:
+            q.append({"dirk_id": d[0]})
+        if a:
+            q.append({"ah_id": {"$in": a}})
+        if q:
+            docs = await db.products.find({"$or": q, "deleted_at": None}, {"_id": 0}).to_list(10)
+            if docs:
+                await db.products.update_many({"product_id": {"$in": [x["product_id"] for x in docs]}, "barcode": {"$in": [None, ""]}}, {"$set": {"barcode": ean}})
+    favs = set(user.get("favorite_products") or [])
+    store = user.get("store", DEFAULT_STORE)
+    return {"barcode": ean, "products": [product_public(x, store, user["user_id"], favs) for x in docs]}
 
 
 def _apply_refresh(p: dict, store: str, price: float, aisle: str, mults: dict, image: Optional[str] = None, barcode: Optional[str] = None) -> dict:
@@ -3402,6 +3521,7 @@ async def startup():
         logger.info("Seeded %d standard dishes", len(docs))
 
     await db.products.create_index("product_id", unique=True)
+    await db.products.create_index("barcode")
     await db.product_submissions.create_index("psub_id", unique=True)
     pcount = await db.products.count_documents({"is_global": True})
     if pcount == 0:
@@ -3477,7 +3597,6 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
-    asyncio.create_task(_probe_barcodes())
 
 
 async def _daily_refresh_loop():
