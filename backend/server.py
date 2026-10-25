@@ -3326,7 +3326,8 @@ _PREPS = {"zonder", "met", "in", "uit", "van", "voor", "op", "naar", "of", "en",
 
 
 # Andere namen in de winkel: "lasagnevel" heet daar lasagnebladen, parmezaan vaak Parmigiano
-_SYNONYMS = {"lasagnevel": ["lasagnebladen", "lasagne"], "lasagnevellen": ["lasagnebladen", "lasagne"],
+_SYNONYMS = {"lasagnevel": ["lasagnebladen", "lasagne"], "lasagnevellen": ["lasagnebladen", "lasagne"], "maizena": ["maizena", "maiszetmeel", "bindmiddel"],
+             "vanille extract": ["vanille extract", "vanillearoma", "vanille"], "vanilleextract": ["vanille extract", "vanillearoma", "vanille"],
              "parmezaanse kaas": ["parmigiano reggiano", "grana padano", "parmezaan"], "parmezaan": ["parmigiano reggiano", "grana padano"],
              "creme fraiche": ["creme fraiche", "zure room"], "zalmfilet": ["zalm"], "kipfilet": ["kipfilet", "kip"],
              "lente ui": ["bosui"], "lenteui": ["bosui"], "sjalot": ["sjalotten", "sjalot"], "rucola": ["rucola", "rucolasla"]}
@@ -3347,8 +3348,12 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
     head = [w for w in head if w not in _PREPS] or words
     core = [w for w in head if w not in _FILLER] or head
     levels = [(words, 0), (head, 0.4), (core, 0.8)]
-    for syn in _SYNONYMS.get(" ".join(core), []) + _SYNONYMS.get(core[-1], []):
-        levels.append((syn.split(), 1.2))
+    for k, syn in enumerate(_SYNONYMS.get(" ".join(core), []) + _SYNONYMS.get(core[-1], [])):
+        levels.append((syn.split(), 1.2 + k * 0.3))
+    # Samengestelde woorden: "aardbeienjam" staat in de winkel ook als "aardbeien jam"
+    last = core[-1]
+    for k in range(3, len(last) - 2):
+        levels.append((core[:-1] + [last[:k], last[k:]], 0.5))
     # "parmezaanse kaas": liever parmezaan dan zomaar kaas
     for w in core[:-1]:
         for suf in ("sche", "se"):
@@ -3376,12 +3381,15 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
 
 
 _NONFOOD = {"Huishoud & huisdieren", "Kind & drogisterij", "Non food"}
+_NONFOOD_RE = re.compile(r"drogist|huishoud|huisdier|baby|verzorging|cosmetica|non food|shampoo|douche|zeep|tandpasta|wasmiddel|afwas|"
+                         r"deodorant|bodylotion|conditioner|wc |toilet|schoonmaak|kattenvoer|hondenvoer|luier|parfum|scheer|haar")
 _CANDY_RE = re.compile(r"\b(snoep|drop|winegum|spekjes|chips|koek|koekjes|chocolade|lolly|kauwgom)\b")
 # Bewerkte producten: "ciabatta" is geen ciabatta-cracker, "citroen" geen citroenkoek, "olijf" geen tapenade
 _PROCESSED = ("koek", "cracker", "tapenade", "azijn", "saus", "chips", "spread", "sap", "drank", "siroop", "thee", "snoep", "taart", "cake",
               "smaak", "kimchi", "dressing", "soep", "salade", "pasta", "toast", "wafel", "reep", "ijs", "yoghurt", "kwark", "vla", "limonade",
               "frisdrank", "bier", "radler", "likeur", "zeep", "geur", "poeder", "aroma", "pesto", "dip", "smeer", "mix", "kruiden", "biscuit",
-              "kroket", "salami", "worst", "honing", "kogel", "zuurkool", "snack", "bonbon", "brandewijn", "jenever", "mayo", "ketchup")
+              "kroket", "salami", "worst", "honing", "kogel", "zuurkool", "snack", "bonbon", "brandewijn", "jenever", "mayo", "ketchup", "jus",
+              "bar", "vloeibaar", "braden", "focaccia", "brood", "margarine", "shake", "drink")
 # Woorden die alleen iets over het product zeggen ("citroenen verpakt", "kaas plakken")
 _DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", "plakjes", "blokjes", "reepjes", "schijfjes", "zwart", "wit",
                 "rood", "groen", "geel", "bio", "biologisch", "biologische", "naturel", "kruimig", "vastkokend", "s", "m", "l", "xl", "kanjers",
@@ -3404,6 +3412,8 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
 
     def related(w):
         return any(w == q or w in _stems(q) or q in _stems(w) or q in w or (q.endswith("e") and w == q[:-1]) for q in words)
+    # Positie telt alleen echte woorden ervoor: "Gele uien" is net zo goed uien als "Uien"
+    nw = [w for w in nw if related(w) or w not in _FILLER and w not in _DESCRIPTORS] or nw
 
     # Positie van het gezochte woord; in het Nederlands zit het hoofdwoord achteraan ("tarwebloem" is bloem, "bloemkool" niet)
     def place(q):
@@ -3436,9 +3446,12 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
             pen += 2
         else:
             pen += 0.7
-    if any(x in w and not related(w) and not any(x in q for q in qstems) for w in nw for x in _PROCESSED):
+
+    def processed(w, x):
+        return x in w if len(x) > 4 else (w == x or w.startswith(x) and len(w) <= len(x) + 3 or w.endswith(x))
+    if any(processed(w, x) and not related(w) and not any(x in q for q in qstems) for w in nw for x in _PROCESSED):
         pen += 5
-    if d.get("aisle") in _NONFOOD:
+    if d.get("aisle") in _NONFOOD or _NONFOOD_RE.search(d.get("aisle") or "") or _NONFOOD_RE.search(name):
         pen += 30
     if d.get("aisle") == "Snacks & snoep" and not any(_CANDY_RE.search(q) for q in words):
         pen += 8
@@ -3554,7 +3567,7 @@ async def _selftest2() -> None:
         docs = await _global_products()
         for st in ("Albert Heijn", "Jumbo", "Dirk"):
             pool = [d for d in docs if d.get("_src") == st and d.get("is_global")]
-            for q in ("middelgrote ui", "citroen", "parmezaanse kaas", "witte wijn", "ciabatta", "zwarte olijf zonder pit", "bloem", "eieren", "lasagnevel", "knoflook"):
+            for q in ("middelgrote ui", "witte wijn", "zwarte olijf zonder pit", "maizena", "vanille-extract", "aardbeienjam", "poedersuiker", "lasagnevel"):
                 logger.info("Stest match %s %r: %s", st, q, [d["name"] for d in _best_matches(pool, q, 3)])
         for rid in ("ah-1302917", "dirk-aardbeien-caprese", "dirk-aspergesoep", "ah-1302830"):
             rec = await _recipe_products(await _recipe_detail(rid), {"user_id": "x"})

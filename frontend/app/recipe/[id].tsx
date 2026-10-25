@@ -32,12 +32,18 @@ type Recipe = {
 
 const SITE: Record<string, string> = { ah: "Allerhande", jumbo: "jumbo.com", dirk: "dirk.nl" };
 
-// Gang op de site -> categorie in de app
+// Gang op de site -> categorie in de app; de titel weegt mee ("Paddenstoelenkoekjes" is geen avondeten)
+const SNACK_RE = /borrel|snack|hapje|tussendoor|toetje|dessert|nagerecht|koffietijd|gebak|koek|cookie|cake|taart|brownie|muffin|cupcake|bonbon|truffel|ijs\b|ijsjes|traktatie|smoothie|cocktail|mocktail|limonade|drankje|bonbons|snoep|fudge|wafel|donut|scone|crumble|tiramisu|mousse|pudding|bavarois|chips|dip\b|nacho|bitterbal|kroket|popcorn|energieballetjes|granolareep/;
 function guessCategory(r: Recipe): MealCategory {
-  const t = r.tags.join(" ").toLowerCase();
-  if (/ontbijt|brunch/.test(t)) return "ontbijt";
-  if (/lunch/.test(t)) return "lunch";
-  if (/borrel|snack|tussendoor|toetje|dessert|nagerecht|koffietijd/.test(t)) return "snacks";
+  const tags = r.tags.join(" ").toLowerCase();
+  const title = r.title.toLowerCase();
+  if (/ontbijt|brunch/.test(tags) && !/ontbijtkoek/.test(title)) return "ontbijt";
+  if (SNACK_RE.test(title)) return "snacks";
+  if (/lunch/.test(tags)) return "lunch";
+  if (/hoofdgerecht|avondeten|diner/.test(tags)) return "avondeten";
+  if (SNACK_RE.test(tags)) return "snacks";
+  if (/pannenkoek|wentelteefje|omelet|ontbijt|porridge|havermout|overnight|yoghurt|granola/.test(title)) return "ontbijt";
+  if (/tosti|sandwich|broodje|wrap|salade/.test(title)) return "lunch";
   return "avondeten";
 }
 
