@@ -3354,6 +3354,10 @@ def _rank_food(hits: list, words: list) -> list:
             nw = nw[len(brand.split()):]
         pos = next((k for k, w in enumerate(nw) if any(w.startswith(q) for q in words)), 6)
         pen = rank * 0.4 + pos * 2 + len(nw) * 0.3
+        if not any(w == q or w in _stems(q) or q in _stems(w) for w in nw for q in words):
+            pen += 4  # "bloem" is geen "bloemkool"
+        if d.get("aisle") == "Dranken, sap, koffie & thee" and not any(q in ("sap", "melk", "wijn", "bier", "koffie", "thee", "water") for q in words):
+            pen += 6
         if d.get("aisle") in _NONFOOD:
             pen += 30
         if d.get("aisle") == "Snacks & snoep" and not any(_CANDY_RE.search(q) for q in words):
@@ -3382,6 +3386,9 @@ _PANTRY_RE = re.compile(r"\b(zout|peper|zeezout|olie|olijfolie|zonnebloemolie|az
                         r"provencaalse kruiden|mosterd|ketjap|sojasaus|honing|vanille\w*|boter|roomboter|bakboter|margarine|kipkruiden|gehaktkruiden)\b")
 
 
+_ALWAYS_HOME = {"water", "kraanwater", "lauw water", "kokend water", "zout", "peper", "zout en peper", "peper en zout", "ijsblokjes"}
+
+
 def _is_pantry(name: str) -> bool:
     return bool(_PANTRY_RE.search(_norm_text(name)))
 
@@ -3398,7 +3405,7 @@ def _recipe_with_products(rec: dict, user: dict, matches: Optional[dict] = None)
             doc = matches[i["name"]]
             p = {"store": doc["_src"]}
         # Niet door de site gekoppeld (of typisch voorraadkast): waarschijnlijk al in huis
-        pantry = not site_linked and (rec["store"] != "ah" or _is_pantry(i["name"]))
+        pantry = (not site_linked and (rec["store"] != "ah" or _is_pantry(i["name"]))) or _norm_text(i["name"]) in _ALWAYS_HOME
         ings.append({**i, "pantry": pantry, "product": product_public(_clean(doc), p["store"], user["user_id"], favs) if doc else None})
     return {**rec, "ingredients": ings}
 
@@ -3461,10 +3468,13 @@ async def _selftest2() -> None:
     try:
         docs = await _global_products()
         await _folders_fresh()
-        aard = next((d for d in docs if d.get("_src") == "Dirk" and "aardappelen kruimig" in d["_norm"]), None)
-        if aard:
-            logger.info("Stest aardappel %s id=%s %s on_offer=%s promo=%s", aard["name"], aard.get("dirk_id"), aard.get("prices"), aard.get("on_offer"),
-                        _promo_public(aard, _doc_price(aard)))
+        for aard in [d for d in docs if d.get("_src") == "Dirk" and "aardappel" in d["_norm"] and "kruimig" in d["_norm"]]:
+            logger.info("Stest aardappel %s id=%s unit=%s %s on_offer=%s promo=%s", aard["name"], aard.get("dirk_id"), aard.get("unit"), aard.get("prices"),
+                        aard.get("on_offer"), _promo_public(aard, _doc_price(aard)))
+        by_sid = _product_cache.get("by_sid") or {}
+        for x in ("108146", "108147"):
+            dd = by_sid.get(("Dirk", x))
+            logger.info("Stest dirk %s in db: %s", x, (dd or {}).get("name"))
         for per in (_folders.get("data") or {}).get("Dirk") or []:
             for it in per["items"]:
                 if "aardappel" in (it["title"] or "").lower():
@@ -3474,7 +3484,7 @@ async def _selftest2() -> None:
             res = _alternatives(docs, base["name"], base)
             logger.info("Stest alt %s terms=%r %s", base["name"], res["terms"],
                         {k: [(d["name"], _doc_price(d), _alt_note(d, res["base_up"], res["base_price"])) for d in v[:3]] for k, v in res["by_store"].items()})
-        for rid in ("ah-1302917", "dirk-aardbeien-caprese", "dirk-aspergesoep"):
+        for rid in ("ah-1302917", "dirk-aardbeien-caprese", "dirk-aspergesoep", "ah-1302830"):
             rec = await _recipe_products(await _recipe_detail(rid), {"user_id": "x"})
             logger.info("Stest recept %s: %s", rid, [(i["name"], i["pantry"], (i["product"] or {}).get("name")) for i in rec["ingredients"]])
     except Exception as e:
