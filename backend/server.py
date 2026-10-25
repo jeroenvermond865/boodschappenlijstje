@@ -726,6 +726,53 @@ def dish_public(doc: dict) -> dict:
     }
 
 
+# ---- Pakketten: vaste spullen die je elke keer nodig hebt (afwasborstel, vuilniszakken) ----
+class PackageInput(BaseModel):
+    name: str
+    items: List[ExtraItem] = []
+
+
+def package_public(doc: dict) -> dict:
+    return {"id": doc["package_id"], "name": doc["name"], "items": doc.get("items") or [], "owner_id": doc.get("owner_id")}
+
+
+@api_router.get("/packages")
+async def list_packages(user: dict = Depends(get_current_user)):
+    docs = await db.packages.find({"owner_id": user["user_id"], "deleted_at": None}, {"_id": 0}).sort("name", 1).to_list(500)
+    return {"packages": [package_public(d) for d in docs]}
+
+
+@api_router.get("/packages/{package_id}")
+async def get_package(package_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.packages.find_one({"package_id": package_id, "owner_id": user["user_id"], "deleted_at": None}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Pakket niet gevonden")
+    return package_public(doc)
+
+
+@api_router.post("/packages")
+async def create_package(data: PackageInput, user: dict = Depends(get_current_user)):
+    doc = {"package_id": f"pkg_{uuid.uuid4().hex[:12]}", "owner_id": user["user_id"], "name": data.name.strip()[:80] or "Pakket",
+           "items": [i.model_dump() for i in data.items], "deleted_at": None, "created_at": now_utc()}
+    await db.packages.insert_one(doc)
+    return package_public(doc)
+
+
+@api_router.put("/packages/{package_id}")
+async def update_package(package_id: str, data: PackageInput, user: dict = Depends(get_current_user)):
+    res = await db.packages.update_one({"package_id": package_id, "owner_id": user["user_id"], "deleted_at": None},
+                                       {"$set": {"name": data.name.strip()[:80] or "Pakket", "items": [i.model_dump() for i in data.items]}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Pakket niet gevonden")
+    return await get_package(package_id, user)
+
+
+@api_router.delete("/packages/{package_id}")
+async def delete_package(package_id: str, user: dict = Depends(get_current_user)):
+    await db.packages.update_one({"package_id": package_id, "owner_id": user["user_id"]}, {"$set": {"deleted_at": now_utc()}})
+    return {"ok": True}
+
+
 @api_router.get("/dishes")
 async def list_dishes(user: dict = Depends(get_current_user)):
     cursor = db.dishes.find(

@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
+import type { Package } from "@/app/package/edit";
 import { OnlineRecipes } from "@/src/OnlineRecipes";
 import { api } from "@/src/api";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory } from "@/src/constants";
@@ -25,6 +26,7 @@ export type Dish = {
 const TABS = [
   { key: "own", label: "Eigen gerechten" },
   { key: "online", label: "Online gerechten" },
+  { key: "packages", label: "Pakketten" },
 ] as const;
 
 export default function DishesScreen() {
@@ -38,10 +40,17 @@ export default function DishesScreen() {
   const [search, setSearch] = useState("");
   const [cat, setCat] = useState<MealCategory | "all">("all");
   const params = useLocalSearchParams<{ tab?: string }>();
-  const [tab, setTab] = useState<(typeof TABS)[number]["key"]>(params.tab === "online" ? "online" : "own");
+  const [tab, setTab] = useState<(typeof TABS)[number]["key"]>(
+    params.tab === "online" || params.tab === "packages" ? params.tab : "own",
+  );
   useEffect(() => {
-    if (params.tab === "online" || params.tab === "own") setTab(params.tab);
+    if (params.tab === "online" || params.tab === "own" || params.tab === "packages") setTab(params.tab);
   }, [params.tab]);
+  const packages = useQuery({
+    queryKey: ["packages"],
+    queryFn: () => api<{ packages: Package[] }>("/packages"),
+    enabled: tab === "packages",
+  });
 
   const { data, isLoading } = useQuery({
     queryKey: ["dishes"],
@@ -118,6 +127,44 @@ export default function DishesScreen() {
 
       {tab === "online" ? (
         <OnlineRecipes bottomPadding={bottomChrome + 24} />
+      ) : tab === "packages" ? (
+        <FlatList
+          data={packages.data?.packages ?? []}
+          keyExtractor={(p) => p.id}
+          contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomChrome + 96, gap: 10 }}
+          ListHeaderComponent={
+            <Text style={[styles.rowSub, { marginBottom: 4 }]}>
+              Vaste spullen die je elke keer nodig hebt, zoals een afwasborstel of vuilniszakken. Zet een pakket in één keer bij de algemene
+              boodschappen van een activiteit.
+            </Text>
+          }
+          renderItem={({ item }) => (
+            <Pressable
+              testID={`package-row-${item.id}`}
+              onPress={() => router.push({ pathname: "/package/edit", params: { id: item.id } })}
+              style={({ pressed }) => [styles.row, pressed && { opacity: 0.9 }]}
+            >
+              <View style={styles.rowIcon}>
+                <Icon name="package-variant-closed" size={20} color={colors.brandPrimary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle} numberOfLines={1}>{item.name}</Text>
+                <Text style={styles.rowSub} numberOfLines={1}>
+                  {item.items.length} {item.items.length === 1 ? "product" : "producten"}
+                  {item.items.length ? ` · ${item.items.slice(0, 3).map((i) => i.name).join(", ")}` : ""}
+                </Text>
+              </View>
+              <Icon name="chevron-right" size={22} color={colors.muted} />
+            </Pressable>
+          )}
+          ListEmptyComponent={
+            packages.isLoading ? (
+              <ActivityIndicator color={colors.brandPrimary} />
+            ) : (
+              <EmptyState icon="package-variant" title="Nog geen pakketten" subtitle="Maak een pakket met de knop hieronder, bijvoorbeeld 'Schoonmaak'." />
+            )
+          }
+        />
       ) : isLoading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
@@ -162,6 +209,16 @@ export default function DishesScreen() {
         />
       )}
 
+      {tab === "packages" ? (
+        <Pressable
+          testID="new-package-fab"
+          onPress={() => router.push("/package/edit")}
+          style={({ pressed }) => [styles.fab, { bottom: bottomChrome + 16 }, pressed && { opacity: 0.9 }]}
+        >
+          <Icon name="plus" size={22} color={colors.onBrandPrimary} />
+          <Text style={styles.fabText}>Pakket</Text>
+        </Pressable>
+      ) : null}
       {tab === "own" ? (
       <Pressable
         testID="new-dish-fab"

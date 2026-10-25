@@ -12,6 +12,7 @@ import { ProductBrowser } from "@/src/ProductBrowser";
 import { OnlineRecipes, type RecipeTile } from "@/src/OnlineRecipes";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory, formatQty } from "@/src/constants";
 import type { Dish } from "@/app/(tabs)/dishes";
+import type { Package } from "@/app/package/edit";
 import type { Product } from "@/app/(tabs)/products";
 import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
@@ -55,6 +56,7 @@ export default function CampDetailScreen() {
   const [membersOpen, setMembersOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [extraTarget, setExtraTarget] = useState<"day" | "general" | null>(null);
+  const [packOpen, setPackOpen] = useState(false);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
 
@@ -154,6 +156,20 @@ export default function CampDetailScreen() {
       applyDays(days);
     }
     setExtraTarget(null);
+  };
+
+  // Een pakket in één keer bij de algemene boodschappen; wat er al staat wordt opgeteld
+  const addPackage = (p: Package) => {
+    if (!camp) return;
+    const general = [...(camp.general ?? [])];
+    for (const it of p.items) {
+      const k = general.findIndex((g) => (it.product_id ? g.product_id === it.product_id : g.name.toLowerCase() === it.name.toLowerCase() && g.unit === it.unit));
+      if (k >= 0) general[k] = { ...general[k], qty: general[k].qty + it.qty };
+      else general.push({ name: it.name, unit: it.unit, qty: it.qty, aisle: it.aisle, product_id: it.product_id ?? undefined, store: it.store ?? undefined } as Extra);
+    }
+    patchCamp.mutate({ general });
+    setPackOpen(false);
+    toast.show(`${p.name} toegevoegd`, "success");
   };
 
   const removeExtra = (where: "day" | "general", idx: number) => {
@@ -288,10 +304,16 @@ export default function CampDetailScreen() {
                 </View>
                 <Text style={styles.mealTitle}>Algemene boodschappen</Text>
               </View>
-              <Pressable testID="add-general-extra" onPress={() => setExtraTarget("general")} style={styles.addBtn}>
-                <Icon name="plus" size={16} color={colors.onBrandTertiary} />
-                <Text style={styles.addBtnText}>Product</Text>
-              </Pressable>
+              <View style={{ flexDirection: "row", gap: 6 }}>
+                <Pressable testID="add-general-package" onPress={() => setPackOpen(true)} style={styles.addBtn}>
+                  <Icon name="package-variant-closed" size={16} color={colors.onBrandTertiary} />
+                  <Text style={styles.addBtnText}>Pakket</Text>
+                </Pressable>
+                <Pressable testID="add-general-extra" onPress={() => setExtraTarget("general")} style={styles.addBtn}>
+                  <Icon name="plus" size={16} color={colors.onBrandTertiary} />
+                  <Text style={styles.addBtnText}>Product</Text>
+                </Pressable>
+              </View>
             </View>
             <Text style={styles.counterSub}>{`Losse spullen voor ${T.de} hele ${T.one} (komt op de lijst bij dag 1).`}</Text>
             {(camp.general ?? []).length === 0 ? (
@@ -438,6 +460,8 @@ export default function CampDetailScreen() {
         </>
         )}
       </ScrollView>
+
+      <PackagePickerModal visible={packOpen} onClose={() => setPackOpen(false)} onPick={addPackage} />
 
       {/* Dish picker */}
       <DishPickerModal
@@ -812,6 +836,55 @@ function MembersModal({
             </View>
           ))}
         </View>
+      </View>
+    </Modal>
+  );
+}
+
+function PackagePickerModal({ visible, onClose, onPick }: { visible: boolean; onClose: () => void; onPick: (p: Package) => void }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { data, isLoading } = useQuery({ queryKey: ["packages"], queryFn: () => api<{ packages: Package[] }>("/packages"), enabled: visible });
+  const list = data?.packages ?? [];
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <Pressable style={styles.modalBackdrop} onPress={onClose} />
+      <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
+        <View style={styles.sheetHandle} />
+        <View style={styles.sheetHeader}>
+          <Text style={styles.sheetTitle}>Pakket toevoegen</Text>
+          <Pressable onPress={onClose} hitSlop={8}>
+            <Icon name="close" size={22} color={colors.onSurface} />
+          </Pressable>
+        </View>
+        {isLoading ? <Text style={styles.noMeal}>Laden…</Text> : null}
+        {!isLoading && !list.length ? <Text style={styles.noMeal}>Je hebt nog geen pakketten.</Text> : null}
+        <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 8 }}>
+          {list.map((p) => (
+            <Pressable key={p.id} testID={`package-${p.id}`} onPress={() => onPick(p)} style={styles.pickerRow}>
+              <Icon name="package-variant-closed" size={22} color={colors.brandPrimary} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pickerName}>{p.name}</Text>
+                <Text style={styles.pickerSub} numberOfLines={1}>
+                  {p.items.length} producten{p.items.length ? ` · ${p.items.slice(0, 3).map((i) => i.name).join(", ")}` : ""}
+                </Text>
+              </View>
+              <Icon name="plus-circle-outline" size={22} color={colors.brandPrimary} />
+            </Pressable>
+          ))}
+        </ScrollView>
+        <Pressable
+          onPress={() => {
+            onClose();
+            router.push("/package/edit");
+          }}
+          style={styles.createRow}
+        >
+          <Icon name="plus-circle-outline" size={20} color={colors.brandPrimary} />
+          <Text style={styles.createText}>Nieuw pakket maken</Text>
+        </Pressable>
       </View>
     </Modal>
   );

@@ -48,6 +48,7 @@ function Gate() {
       <Stack.Screen name="camp/[id]" />
       <Stack.Screen name="shopping/[id]" />
       <Stack.Screen name="dish/edit" options={{ presentation: "modal" }} />
+      <Stack.Screen name="package/edit" options={{ presentation: "modal" }} />
       <Stack.Screen name="dish/shared/[token]" />
       <Stack.Screen name="admin/submissions" />
       <Stack.Screen name="admin/store-requests" />
