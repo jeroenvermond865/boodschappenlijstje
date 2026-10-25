@@ -1823,7 +1823,7 @@ def _run_search(docs: list, q: str, source: str, aisle: str, favs: Optional[set]
     if aisle:
         docs = [d for d in docs if d.get("aisle") == aisle]
     if q.strip():
-        docs = _search_products(docs, q)
+        docs = _relevant_products(docs, q) if sort in ("", "relevance") else _search_products(docs, q)
 
     # Filters zoals op de sites; de keuzes (soort, merk) hangen af van de afdeling en zoekterm.
     # Elke lijst telt mee met de andere filters, maar niet met zichzelf.
@@ -3435,6 +3435,11 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     # Het laatste zoekwoord is het hoofdwoord ("witte wijn" is wijn, geen wijnazijn)
     head = place(words[-1])
     pos = head if head is not None else min((p for p in map(place, words) if p is not None), default=11) + 3
+    if head is None:
+        # Soort van de winkel telt ook: "Bakker van der Akker Rond wit heel" is gewoon brood
+        sub = _norm_text(d.get("subcategory") or "").split()
+        if any(w == words[-1] or w in _stems(words[-1]) or words[-1] in _stems(w) for w in sub):
+            pos = min(pos, 3.5)
     pen = rank * 0.01 + pos
     # Een zelfstandig naamwoord ná het gezochte woord maakt er iets anders van ("bloemen honing", "citroen kogels")
     hq = words[-1]
@@ -3466,6 +3471,24 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     if d.get("aisle") == "Dranken, sap, koffie & thee" and not any(q in ("sap", "melk", "wijn", "bier", "koffie", "thee", "water") for q in words):
         pen += 6
     return pen
+
+
+def _relevant_products(docs: list, q: str) -> list:
+    # Zoeken in Producten: "brood" geeft eerst echte broden (witbrood, volkoren), niet broodbeleg of broodjes kroket;
+    # meervoud en enkelvoud vinden elkaar ("broden", "tomaat")
+    words = _norm_text(q).split()
+    if not words:
+        return docs
+    hits, ids = [], set()
+    last = words[-1]
+    # "brood" -> "brod" vindt ook broden, "tomaat" -> "tomat" ook tomaten
+    short = re.sub(r"(aa|ee|oo|uu)([^aeiou])$", lambda m: m.group(1)[0] + m.group(2), last)
+    for st in _stems(last) + ([short] if short != last and len(short) >= 3 else []):
+        for d in _search_products(docs, " ".join(words[:-1] + [st])):
+            if id(d) not in ids:
+                ids.add(id(d))
+                hits.append(d)
+    return _rank_food(hits, words)
 
 
 def _rank_food(hits: list, words: list) -> list:
@@ -3573,6 +3596,9 @@ async def _selftest2() -> None:
     await asyncio.sleep(45)
     try:
         docs = await _global_products()
+        for q in ("brood", "melk", "kaas", "tomaat", "kip", "appel", "pasta", "chips"):
+            res, _, _ = _run_search(docs, q, "", "", None, "", "", False, False, "", "Albert Heijn")
+            logger.info("Stest zoek %r (%d): %s", q, len(res), [d["name"] for d in res[:12]])
         for st in ("Albert Heijn", "Jumbo", "Dirk"):
             pool = [d for d in docs if d.get("_src") == st and d.get("is_global")]
             for q in ("middelgrote ui", "witte wijn", "zwarte olijf zonder pit", "maizena", "vanille-extract", "aardbeienjam", "poedersuiker", "lasagnevel"):
