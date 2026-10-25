@@ -159,12 +159,12 @@ export default function DirkImportScreen() {
           </Pressable>
         </View>
         <Pressable
-          testID="import-jumbo"
-          onPress={() => importAllMut.mutate("jumbo")}
+          testID="import-only-store"
+          onPress={() => importAllMut.mutate(store === "Jumbo" ? "jumbo" : store === "Albert Heijn" ? "ah" : "dirk")}
           disabled={importAllMut.isPending || !!wasRunning}
           style={styles.storeChip}
         >
-          <Text style={styles.storeChipText}>Alleen Jumbo importeren</Text>
+          <Text style={styles.storeChipText}>Alleen {store} importeren</Text>
         </Pressable>
 
         <Text style={styles.hint}>Zoek een product bij {store} en voeg het toe aan de algemene productenlijst. Prijzen worden daarna elke dag automatisch bijgewerkt.</Text>

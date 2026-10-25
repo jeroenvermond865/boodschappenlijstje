@@ -2400,7 +2400,7 @@ async def _import_all_jumbo(mults: dict) -> int:
     return added
 
 
-async def _import_all_dirk() -> None:
+async def _import_all_dirk(with_others: bool = True) -> None:
     global _dirk_import_running
     _dirk_import_running = True
     try:
@@ -2456,16 +2456,16 @@ async def _import_all_dirk() -> None:
                 await _set_import_status(added=added)
         logger.info("Dirk-import klaar: %d gevonden, %d toegevoegd, %d niet leverbaar", len(ids), added, skipped)
         await _set_import_status(skipped=skipped)
-        try:
-            added_ah = await _import_all_ah(mults)
-        except Exception as e:
-            logger.warning("AH-import mislukt: %s", e)
-            added_ah = 0
-        try:
-            added_jumbo = await _import_all_jumbo(mults)
-        except Exception as e:
-            logger.warning("Jumbo-import mislukt: %s", e)
-            added_jumbo = 0
+        added_ah = added_jumbo = 0
+        if with_others:
+            try:
+                added_ah = await _import_all_ah(mults)
+            except Exception as e:
+                logger.warning("AH-import mislukt: %s", e)
+            try:
+                added_jumbo = await _import_all_jumbo(mults)
+            except Exception as e:
+                logger.warning("Jumbo-import mislukt: %s", e)
         await _set_import_status(status="klaar", added=added, added_ah=added_ah, added_jumbo=added_jumbo, finished_at=now_utc())
     except Exception as e:
         logger.error("Dirk-import mislukt: %s", e)
@@ -2478,20 +2478,27 @@ async def _import_all_dirk() -> None:
 async def start_import_all_dirk(only: str = "", user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_products")
     if not _dirk_import_running:
-        asyncio.create_task(_import_only_jumbo() if only == "jumbo" else _import_all_dirk())
+        if only in ("ah", "jumbo"):
+            asyncio.create_task(_import_only(only))
+        else:
+            asyncio.create_task(_import_all_dirk(with_others=only != "dirk"))
     return {"ok": True}
 
 
-async def _import_only_jumbo() -> None:
+async def _import_only(which: str) -> None:
     global _dirk_import_running
     _dirk_import_running = True
+    name = "Jumbo" if which == "jumbo" else "Albert Heijn"
     try:
-        await _set_import_status(status="Jumbo", found=0, added=0, added_ah=0, added_jumbo=0, skipped=0, started_at=now_utc(), finished_at=None, error=None)
-        added_jumbo = await _import_all_jumbo(await _store_mults())
-        await _set_import_status(status="klaar", added_jumbo=added_jumbo, finished_at=now_utc())
+        await _set_import_status(status=name, found=0, added=0, added_ah=0, added_jumbo=0, skipped=0, started_at=now_utc(), finished_at=None, error=None)
+        mults = await _store_mults()
+        if which == "jumbo":
+            await _set_import_status(status="klaar", added_jumbo=await _import_all_jumbo(mults), finished_at=now_utc())
+        else:
+            await _set_import_status(status="klaar", added_ah=await _import_all_ah(mults), finished_at=now_utc())
     except Exception as e:
-        logger.warning("Jumbo-import mislukt: %s", e)
-        await _set_import_status(status="mislukt", error=f"Jumbo is nu niet bereikbaar: {str(e)[:150]}", finished_at=now_utc())
+        logger.warning("%s-import mislukt: %s", name, e)
+        await _set_import_status(status="mislukt", error=f"{name} is nu niet bereikbaar: {str(e)[:150]}", finished_at=now_utc())
     finally:
         _dirk_import_running = False
 
