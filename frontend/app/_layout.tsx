@@ -49,8 +49,6 @@ function Gate() {
       <Stack.Screen name="shopping/[id]" />
       <Stack.Screen name="dish/edit" options={{ presentation: "modal" }} />
       <Stack.Screen name="dish/shared/[token]" />
-      <Stack.Screen name="product/edit" options={{ presentation: "modal" }} />
-      <Stack.Screen name="product/scan" options={{ presentation: "modal" }} />
       <Stack.Screen name="admin/submissions" />
       <Stack.Screen name="admin/store-requests" />
       <Stack.Screen name="store-request" options={{ presentation: "modal" }} />

@@ -1986,6 +1986,34 @@ def _dirk_aisle(department: str, webgroup: str, name: str = "") -> str:
     return "Overig"
 
 
+async def _probe_barcodes() -> None:
+    # Tijdelijk: uitzoeken waar Dirk, AH en Jumbo de barcode (EAN) meegeven
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
+            for f in ["ean", "eanCode", "eans", "barcode", "gtin", "gtins", "articleNumber"]:
+                r = await c.post(DIRK_GQL, json={"query": "query{products(productIds:[101229],storeId:66){productId productInformation{headerText %s}}}" % f})
+                logger.info("Barcode probe Dirk %s -> %s", f, r.text[:250])
+            for f in ["ean", "eanCode", "barcode", "gtin"]:
+                r = await c.post(DIRK_GQL, json={"query": "query{products(productIds:[101229],storeId:66){productId %s}}" % f})
+                logger.info("Barcode probe Dirk top %s -> %s", f, r.text[:250])
+        ah = await db.products.find_one({"ah_id": {"$exists": True}}, {"_id": 0, "ah_id": 1})
+        if ah:
+            async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
+                tok = await _ah_token(c)
+                r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{ah['ah_id']}", headers={"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"})
+                body = r.json() or {}
+                logger.info("Barcode probe AH keys %s", list(body.keys()))
+                logger.info("Barcode probe AH tradeItem %s", str(body.get("tradeItem"))[:600])
+        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
+            for f in ["ean", "eans", "gtin", "barcode", "sku"]:
+                q = "query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { products { id %s } } }" % f
+                v = {"input": {"searchType": "keyword", "searchTerms": "melk", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=melk", "previousUrl": "", "bloomreachCookieId": ""}}
+                r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": q, "variables": v})
+                logger.info("Barcode probe Jumbo %s -> %s", f, r.text[:300])
+    except Exception as e:
+        logger.warning("Barcode probe mislukt: %s", e)
+
+
 async def _dirk_post(client, query, variables):
     r = await client.post(DIRK_GQL, json={"query": query, "variables": variables})
     if r.status_code >= 500:
@@ -3447,6 +3475,7 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
+    asyncio.create_task(_probe_barcodes())
 
 
 async def _daily_refresh_loop():

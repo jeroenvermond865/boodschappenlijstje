@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -42,7 +41,6 @@ export default function ProductsScreen() {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const router = useRouter();
   const { user } = useAuth();
   const s = useAppSettings();
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
@@ -175,11 +173,7 @@ export default function ProductsScreen() {
           ListFooterComponent={isFetchingNextPage ? <ActivityIndicator color={colors.brandPrimary} style={{ marginTop: 8 }} /> : null}
           contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomChrome + 96, gap: 10 }}
           renderItem={({ item }) => (
-            <Pressable
-              testID={`product-row-${item.id}`}
-              onPress={() => router.push({ pathname: "/product/edit", params: { id: item.id } })}
-              style={({ pressed }) => [styles.row, pressed && { opacity: 0.9 }]}
-            >
+            <View testID={`product-row-${item.id}`} style={styles.row}>
               {item.image ? (
                 <Image source={{ uri: item.image }} style={styles.rowImage} resizeMode="contain" />
               ) : (
@@ -208,8 +202,7 @@ export default function ProductsScreen() {
               ) : (
                 <Text style={styles.price}>{item.price > 0 ? `€ ${item.price.toFixed(2)}` : "—"}</Text>
               )}
-              <Icon name="chevron-right" size={20} color={colors.muted} />
-            </Pressable>
+            </View>
           )}
           ListEmptyComponent={
             onlyFavorites ? (
