@@ -6,6 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import asyncio
+import functools
 import itertools
 import time
 import uuid
@@ -1234,11 +1235,11 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
     products_by_id = {p["product_id"]: p for p in prod_docs}
 
     def unit_price(item: dict, store: str) -> float:
+        # Prijs per eenheid van het ingrediënt: 150 gram van een pak van 500 gram is 0,3 pak, niet 150 pakken
         pid = item.get("product_id")
-        if pid and pid in products_by_id:
-            p = products_by_id[pid]
-            return resolve_price(p.get("prices", {}), store, p.get("unavailable", []))
-        return item.get("price", 0) or 0
+        p = products_by_id.get(pid) if pid else None
+        price = resolve_price(p.get("prices", {}), store, p.get("unavailable", [])) if p else (item.get("price", 0) or 0)
+        return price * _pack_share(item.get("unit") or "stuks", (p or {}).get("unit") or "")
 
     total_cost = 0.0
     total_person_days = 0
@@ -1988,6 +1989,33 @@ def _unit_price_from(price: float, qty: str) -> Optional[str]:
 
 
 _UNIT_RE = re.compile(r"(?:(\d+)\s*x\s*)?(\d+(?:[.,]\d+)?)\s*(kg|kilo|kilogram|gram|gr|g|liter|ltr|l|cl|ml)\b")
+
+
+# Maten in een recept, omgerekend naar gram of milliliter (eetlepel, theelepel en snufje bij benadering)
+_MEASURE = {"gram": 1, "g": 1, "kg": 1000, "ml": 1, "cl": 10, "dl": 100, "liter": 1000, "l": 1000, "el": 15, "tl": 5, "snuf": 0.5,
+            "scheut": 15}
+# Losse delen van een verpakking: een teen van een bol knoflook, een takje van een bosje
+_PART_OF_PACK = {"teen": 0.1, "takje": 0.1, "handje": 0.25, "plak": 0.1}
+
+
+def _pack_share(item_unit: str, pack: str) -> float:
+    # Welk deel van één verpakking is één eenheid van het ingrediënt?
+    u = (item_unit or "").lower().strip()
+    if u in _MEASURE:
+        m = _UNIT_RE.search((pack or "").lower())
+        if m:
+            amount = float(m.group(2).replace(",", ".")) * int(m.group(1) or 1)
+            base = {"kg": 1000, "kilo": 1000, "kilogram": 1000, "liter": 1000, "ltr": 1000, "l": 1000, "cl": 10}.get(m.group(3), 1)
+            if amount * base > 0:
+                return _MEASURE[u] / (amount * base)
+        return _MEASURE[u] / 500  # onbekende verpakking: reken met een gewoon pak van 500 gram
+    if u in _PART_OF_PACK:
+        if u == "plak":
+            m = re.search(r"(\d+)\s*(plakken|plakjes|st)", (pack or "").lower())
+            if m and int(m.group(1)) > 0:
+                return 1 / int(m.group(1))
+        return _PART_OF_PACK[u]
+    return 1.0
 
 
 def _unit_value(price: float, qty: str) -> Optional[tuple]:
@@ -3313,6 +3341,11 @@ _FILLER = {"middelgrote", "grote", "kleine", "verse", "vers", "milde", "mild", "
 
 
 def _stems(w: str) -> list:
+    return list(_stems_t(w))
+
+
+@functools.lru_cache(maxsize=20000)
+def _stems_t(w: str) -> tuple:
     # appels -> appel, uien -> ui, worstjes -> worst, tomaten -> tomaat (ruw, maar genoeg om te zoeken)
     out = [w]
     for suf, rep in (("jes", ""), ("tjes", ""), ("en", ""), ("s", ""), ("ten", "t"), ("aten", "aat"), ("ien", "i"), ("eren", "eer"), ("ven", "f"), ("zen", "s"), ("aatjes", "at")):
@@ -3320,7 +3353,7 @@ def _stems(w: str) -> list:
             out.append(w[: -len(suf)] + rep)
     if len(w) >= 4 and w.endswith("f"):
         out.append(w[:-1] + "v")  # olijf -> olijv(en)
-    return list(dict.fromkeys(out))
+    return tuple(dict.fromkeys(out))
 
 
 _PREPS = {"zonder", "met", "in", "uit", "van", "voor", "op", "naar", "of", "en", "à", "a", "ca", "circa", "om"}
@@ -3427,7 +3460,8 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
             elif w.endswith(q) or any(w.endswith(st) for st in _stems(q) if len(st) >= 3):
                 v = 3 + k + (1 if len(w) - len(q) > 6 else 0)
             elif w.startswith(q):
-                v = 8 + k
+                v = 3.5 + k  # kipfilet, appelmoes: vaak precies wat je zoekt
+
             else:
                 continue
             best = v if best is None else min(best, v)
@@ -3440,7 +3474,9 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
         sub = _norm_text(d.get("subcategory") or "").split()
         if any(w == words[-1] or w in _stems(words[-1]) or words[-1] in _stems(w) for w in sub):
             pos = min(pos, 3.5)
-    pen = rank * 0.01 + pos
+    elif any(words[-1] in w for w in _norm_text(d.get("subcategory") or "").split()):
+        pos -= 0.5  # soort past ook: kipfilet bij kip, broden bij brood
+    pen = min(rank, 100) * 0.01 + pos
     # Een zelfstandig naamwoord ná het gezochte woord maakt er iets anders van ("bloemen honing", "citroen kogels")
     hq = words[-1]
     hk = next((k for k, w in enumerate(nw) if hq in w or w in _stems(hq) or any(st in w for st in _stems(hq) if len(st) >= 3)), None)
@@ -3452,6 +3488,8 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
             continue
         if hk is not None and k > hk and not stop and w not in _DESCRIPTORS and w not in _FILLER and w not in _PREPS:
             pen += 2
+        elif hk is not None and k < hk and w not in _DESCRIPTORS and w not in _FILLER:
+            pen += 1.2  # "Gyoza kip", "Mozzarella tomaat": het gezochte woord is hier bijzaak
         else:
             pen += 0.7
 
@@ -3598,7 +3636,9 @@ async def _selftest2() -> None:
         docs = await _global_products()
         for q in ("brood", "melk", "kaas", "tomaat", "kip", "appel", "pasta", "chips"):
             res, _, _ = _run_search(docs, q, "", "", None, "", "", False, False, "", "Albert Heijn")
-            logger.info("Stest zoek %r (%d): %s", q, len(res), [d["name"] for d in res[:12]])
+            t0 = time.time()
+            res, _, _ = _run_search(docs, q, "", "", None, "", "", False, False, "", "Albert Heijn")
+            logger.info("Stest zoek %r (%d, %.2fs): %s", q, len(res), time.time() - t0, [d["name"] for d in res[:12]])
         for st in ("Albert Heijn", "Jumbo", "Dirk"):
             pool = [d for d in docs if d.get("_src") == st and d.get("is_global")]
             for q in ("middelgrote ui", "witte wijn", "zwarte olijf zonder pit", "maizena", "vanille-extract", "aardbeienjam", "poedersuiker", "lasagnevel"):
