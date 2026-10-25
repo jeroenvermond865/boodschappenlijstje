@@ -716,6 +716,25 @@ async def logout(authorization: Optional[str] = Header(None)):
 # ---------------------------------------------------------------------------
 # Dishes
 # ---------------------------------------------------------------------------
+# Vlees en vis in een gerecht: daar hebben vega-eters een vervanger voor nodig
+_MEAT_RE = re.compile(r"kip|gehakt|rookworst|worst|spek|\bham\b|hamlap|beenham|bacon|biefstuk|varken|rund|kalkoen|kalfs|lams|\blam\b|"
+                      r"hamburger|burger|schnitzel|shoarma|gyros|saucijs|slavink|frikandel|kroket|salami|chorizo|pancetta|prosciutto|"
+                      r"filet americain|ossenhaas|entrecote|steak|stoofvlees|riblap|sukade|vlees|karbonade|speklap|braadworst|knakworst|"
+                      r"\bvis\b|visstick|zalm|tonijn|kabeljauw|pangasius|koolvis|tilapia|garnaal|garnalen|kibbeling|lekkerbek|makreel|haring|mosselen|inktvis|ansjovis|surimi")
+_VEGA_RE = re.compile(r"vega|vegetari|plantaardig|vegan|veggie|garden gourmet|beyond|valess|like meat|vegetarische slager|vivera|quorn|"
+                      r"tofu|tempeh|seitan|falafel|groenteburger|zonder vlees|vleesvervang|kikkererwt|linzen")
+
+
+def _is_meat(ing: dict) -> bool:
+    name = _norm_text(ing.get("name") or "")
+    return bool(_MEAT_RE.search(name)) and not _VEGA_RE.search(name) and not re.search(r"bouillon|fond\b|kruiden|saus|vleestomaat|speculaas|eieren|\bei\b|jus\b|smaak", name)
+
+
+def _needs_vega(doc: dict) -> list:
+    # Vlees dat ook naar de vega-eters gaat: nog geen vega-vervanger gekozen
+    return [k for k, i in enumerate(doc.get("ingredients") or []) if (i.get("diet") or "all") == "all" and _is_meat(i)]
+
+
 def dish_public(doc: dict) -> dict:
     return {
         "id": doc["dish_id"],
@@ -725,7 +744,49 @@ def dish_public(doc: dict) -> dict:
         "ingredients": doc.get("ingredients", []),
         "source": doc.get("source"),
         "pantry": doc.get("pantry") or [],
+        "needs_vega": bool(_needs_vega(doc)),
+        "owner_id": doc.get("owner_id"),
     }
+
+
+# Vega-vervangers: "kipfilet" -> vegetarische kipstukjes, "gehakt" -> vegetarisch gehakt
+_VEGA_FOR = [(r"kip", ["vegetarische kipstukjes", "vega kip", "plantaardige kipstukjes"]),
+             (r"gehakt", ["vegetarisch gehakt", "vega gehakt", "plantaardig gehakt"]),
+             (r"rookworst", ["vegetarische rookworst", "vega rookworst"]),
+             (r"worst|saucijs|braadworst|knakworst", ["vegetarische worst", "vega worstjes"]),
+             (r"spek|bacon|pancetta", ["vegetarische spekjes", "vega spekreepjes"]),
+             (r"burger", ["vegaburger", "vegetarische burger", "groenteburger"]),
+             (r"schnitzel", ["vegetarische schnitzel", "vega schnitzel"]),
+             (r"shoarma|gyros|kebab", ["vegetarische shoarma", "vega shoarma"]),
+             (r"ham|salami|filet americain", ["vegetarische ham", "vega beleg"]),
+             (r"zalm|tonijn|kabeljauw|vis|pangasius|koolvis|kibbeling|lekkerbek", ["vegetarische vis", "vega visstick", "tofu"]),
+             (r"garna", ["vegetarische garnalen", "tofu"]),
+             (r"biefstuk|steak|stoofvlees|riblap|sukade|rund|varken|vlees|lap|karbonade", ["vegetarische stukjes", "vega reepjes", "tempeh"])]
+
+
+def _vega_options(ing: dict, docs: list, limit: int = 5) -> list:
+    name = _norm_text(ing.get("name") or "")
+    store = ing.get("store")
+    pool = [d for d in docs if d.get("is_global") and (not store or d.get("_src") == store)] or [d for d in docs if d.get("is_global")]
+    core = _alt_terms(name, None) or name
+    queries = [f"vegetarische {core}", f"vega {core}"]
+    for rx, qs in _VEGA_FOR:
+        if re.search(rx, name):
+            queries += qs
+            break
+    queries += ["vegetarische stukjes", "tofu"]
+    seen, out = set(), []
+    for q in queries:
+        for d in _best_matches(pool, q, 12):
+            if d["product_id"] in seen or not _VEGA_RE.search(d["_norm"] + " " + _norm_text(d.get("brand") or "")):
+                continue
+            if _NONFOOD_RE.search(d["_norm"]):
+                continue
+            seen.add(d["product_id"])
+            out.append(d)
+        if len(out) >= limit:
+            break
+    return out[:limit]
 
 
 # ---- Pakketten: vaste spullen die je elke keer nodig hebt (afwasborstel, vuilniszakken) ----
@@ -835,6 +896,65 @@ async def update_dish(dish_id: str, data: DishInput, user: dict = Depends(get_cu
     )
     updated = await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0})
     return dish_public(updated)
+
+
+async def _editable_dish(dish_id: str, user: dict) -> dict:
+    doc = await db.dishes.find_one({"dish_id": dish_id, "deleted_at": None}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Gerecht niet gevonden")
+    if doc.get("is_standard"):
+        await require_perm(user, "manage_standard_dishes")
+    elif doc.get("owner_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Je kunt alleen je eigen gerechten aanpassen")
+    return doc
+
+
+@api_router.get("/dishes/{dish_id}/vega")
+async def vega_suggestions(dish_id: str, user: dict = Depends(get_current_user)):
+    # Per stuk vlees of vis in het gerecht een paar vega-vervangers uit dezelfde winkel
+    doc = await db.dishes.find_one({"dish_id": dish_id, "deleted_at": None}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Gerecht niet gevonden")
+    docs = await _global_products()
+    favs = set(user.get("favorite_products") or [])
+    ings = doc.get("ingredients") or []
+
+    def run():
+        return [{"index": k, "name": ings[k]["name"], "unit": ings[k].get("unit"), "qty_adult": ings[k].get("qty_adult"),
+                 "options": [product_public(_clean(d), ings[k].get("store") or d["_src"], user["user_id"], favs) for d in _vega_options(ings[k], docs)]}
+                for k in _needs_vega(doc)]
+    return {"items": await asyncio.to_thread(run)}
+
+
+class VegaChoice(BaseModel):
+    index: int
+    product_id: Optional[str] = None  # leeg: vega-eters slaan dit over
+
+
+class VegaInput(BaseModel):
+    choices: List[VegaChoice]
+
+
+@api_router.post("/dishes/{dish_id}/vega")
+async def set_vega(dish_id: str, body: VegaInput, user: dict = Depends(get_current_user)):
+    # Het vlees gaat alleen naar de vleeseters, de vervanger met dezelfde hoeveelheid naar de vega-eters
+    doc = await _editable_dish(dish_id, user)
+    ings = list(doc.get("ingredients") or [])
+    extra = []
+    for ch in body.choices:
+        if not (0 <= ch.index < len(ings)):
+            continue
+        meat = {**ings[ch.index], "diet": "meat"}
+        ings[ch.index] = meat
+        if ch.product_id:
+            p = await db.products.find_one({"product_id": ch.product_id, "deleted_at": None}, {"_id": 0})
+            if not p:
+                continue
+            extra.append({**meat, "name": p["name"], "product_id": p["product_id"], "aisle": p.get("aisle") or meat.get("aisle") or "Overig",
+                          "diet": "vega", "store": meat.get("store") or product_source(p), "recipe_text": None,
+                          "price": resolve_price(p.get("prices") or {}, meat.get("store") or product_source(p), p.get("unavailable") or [])})
+    await db.dishes.update_one({"dish_id": dish_id}, {"$set": {"ingredients": ings + extra}})
+    return dish_public(await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0}))
 
 
 @api_router.delete("/dishes/{dish_id}")
@@ -3887,6 +4007,8 @@ async def _selftest3() -> None:
             pool = [d for d in docs if d.get("_src") == st and d.get("is_global")]
             for q in ("kaneelpoeder", "kerriepoeder", "kip", "kaas", "volkoren brood", "aardappelen"):
                 logger.info("Stest3 %s %s -> %s", st, q, [d["name"] for d in _best_matches(pool, q, 3)])
+            for name in ("kipfilet", "rundergehakt", "rookworst", "spekjes", "zalmfilet"):
+                logger.info("Stest8 %s %s -> %s", st, name, [d["name"] for d in _vega_options({"name": name, "store": st}, docs)])
             for name in ("aardappelen", "uien", "winterpeen", "rookworst"):
                 d = (_best_matches(pool, name, 1) or [None])[0]
                 if d:

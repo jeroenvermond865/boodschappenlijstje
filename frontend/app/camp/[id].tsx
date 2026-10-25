@@ -16,6 +16,7 @@ import type { Package } from "@/app/package/edit";
 import type { Product } from "@/app/(tabs)/products";
 import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
+import { VegaPicker } from "@/src/VegaPicker";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -57,6 +58,7 @@ export default function CampDetailScreen() {
   const [editOpen, setEditOpen] = useState(false);
   const [extraTarget, setExtraTarget] = useState<"day" | "general" | null>(null);
   const [packOpen, setPackOpen] = useState(false);
+  const [vegaDish, setVegaDish] = useState<Dish | null>(null);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
 
@@ -194,6 +196,10 @@ export default function CampDetailScreen() {
   const maxPerDay = Math.max(0, ...camp.days.map((d) => (d.adults || 0) + (d.children || 0)));
   const vegaA = camp.vega_adults ?? 0;
   const vegaC = camp.vega_children ?? 0;
+  // Gerechten met vlees of vis waar de vega-eters nog niets voor hebben
+  const vegaTodo = (d: Day) =>
+    vegaA + vegaC > 0 ? MEAL_CATEGORIES.flatMap((c) => (d.meals[c] ?? []).map((x) => dishesById[x]).filter((x) => x?.needs_vega)) : [];
+  const vegaOpen = [...new Map(camp.days.flatMap((d) => vegaTodo(d)).map((x) => [x.id, x])).values()];
 
   return (
     <View style={styles.root}>
@@ -259,6 +265,7 @@ export default function CampDetailScreen() {
                 style={[styles.pill, active && styles.pillActive]}
               >
                 <Text style={[styles.pillText, active && styles.pillTextActive]}>Dag {d.index + 1}</Text>
+                {vegaTodo(d).length ? <Icon name="leaf-off" size={13} color={active ? colors.onBrandPrimary : colors.warning} /> : null}
                 {d.is_shopping_day ? (
                   <View style={[styles.pillDot, { backgroundColor: active ? colors.onBrandPrimary : colors.brandSecondary }]} />
                 ) : null}
@@ -293,6 +300,26 @@ export default function CampDetailScreen() {
               <Text style={styles.budgetSetText}>{`Budget instellen`}</Text>
             </Pressable>
           ) : null
+        ) : null}
+
+        {vegaOpen.length ? (
+          <View testID="vega-todo" style={styles.vegaBanner}>
+            <View style={styles.rowLabel}>
+              <Icon name="leaf" size={18} color={colors.warning} />
+              <Text style={styles.vegaTitle}>
+                {vegaOpen.length === 1 ? "1 gerecht heeft nog geen vega-optie" : `${vegaOpen.length} gerechten hebben nog geen vega-optie`}
+              </Text>
+            </View>
+            <Text style={styles.vegaSub}>Er {vegaA + vegaC === 1 ? "eet 1 persoon" : `eten ${vegaA + vegaC} personen`} vega mee. Kies een vervanger voor het vlees of de vis:</Text>
+            <View style={styles.vegaChips}>
+              {vegaOpen.map((x) => (
+                <Pressable key={x.id} onPress={() => setVegaDish(x)} style={styles.vegaChip}>
+                  <Text style={styles.vegaChipText} numberOfLines={1}>{x.name}</Text>
+                  <Icon name="chevron-right" size={16} color={colors.warning} />
+                </Pressable>
+              ))}
+            </View>
+          </View>
         ) : null}
 
         {selected === -1 ? (
@@ -410,6 +437,12 @@ export default function CampDetailScreen() {
                         <Text style={styles.dishName} numberOfLines={1}>
                           {dish?.name ?? "Onbekend gerecht"}
                         </Text>
+                        {dish?.needs_vega && vegaA + vegaC > 0 ? (
+                          <Pressable testID={`vega-${dishId}`} onPress={() => setVegaDish(dish)} style={styles.vegaBadge}>
+                            <Icon name="leaf" size={13} color={colors.onWarning} />
+                            <Text style={styles.vegaBadgeText}>Vega-optie kiezen</Text>
+                          </Pressable>
+                        ) : null}
                         <Pressable
                           testID={`remove-dish-${cat}-${dishId}`}
                           hitSlop={8}
@@ -461,6 +494,7 @@ export default function CampDetailScreen() {
         )}
       </ScrollView>
 
+      <VegaPicker dish={vegaDish} onClose={() => setVegaDish(null)} />
       <PackagePickerModal visible={packOpen} onClose={() => setPackOpen(false)} onPick={addPackage} />
 
       {/* Dish picker */}
@@ -1053,6 +1087,14 @@ function DishPickerModal({
 }
 
 const useStyles = makeStyles((colors) => ({
+  vegaBanner: { borderRadius: 16, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.surface, padding: 14, gap: 8 },
+  vegaTitle: { fontSize: 15, fontFamily: fonts.bold, color: colors.warning, flexShrink: 1 },
+  vegaSub: { fontSize: 13, fontFamily: fonts.regular, color: colors.onSurfaceSecondary },
+  vegaChips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  vegaChip: { flexDirection: "row", alignItems: "center", gap: 4, maxWidth: "100%", paddingVertical: 7, paddingLeft: 12, paddingRight: 8, borderRadius: 999, borderWidth: 1, borderColor: colors.warning },
+  vegaChipText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.warning, flexShrink: 1 },
+  vegaBadge: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.warning, borderRadius: 999, paddingVertical: 4, paddingHorizontal: 8 },
+  vegaBadgeText: { fontSize: 11, fontFamily: fonts.semibold, color: colors.onWarning },
   pickTabs: { flexDirection: "row", backgroundColor: colors.surfaceTertiary, borderRadius: 10, padding: 3, marginBottom: 6 },
   pickTab: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: "center" },
   pickTabActive: { backgroundColor: colors.surface },

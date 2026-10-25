@@ -21,6 +21,7 @@ export type Dish = {
   ingredients: { name: string; unit: string; qty_adult: number; qty_child: number; aisle: string; price?: number; product_id?: string | null; store?: string | null; recipe_text?: string | null }[];
   pantry?: Dish["ingredients"];
   source?: { recipe_id: string; url?: string; image?: string; store?: string; servings?: number } | null;
+  needs_vega?: boolean; // vlees of vis zonder vega-vervanger
 };
 
 const TABS = [
