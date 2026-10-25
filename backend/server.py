@@ -1888,9 +1888,9 @@ async def _dirk_details(doc: dict) -> dict:
     ni = decl.get("nutritionalInformation") or {}
     rows = []
     for nv in ni.get("nutritionalValues") or []:
-        rows.append([nv.get("text") or "", nv.get("value") or ""])
+        rows.append([nv.get("text") or "", str(nv.get("value") or "").replace(".", ",")])
         for sv in nv.get("nutritionalSubValues") or []:
-            rows.append(["  " + (sv.get("text") or ""), sv.get("value") or ""])
+            rows.append(["  " + (sv.get("text") or ""), str(sv.get("value") or "").replace(".", ",")])
     if rows:
         basis = (ni.get("standardPackagingUnit") or "100 g").replace("MLT", "ml").replace("GRM", "g")
         out["nutrition"] = {"columns": ["", f"Per {basis}"], "rows": rows}
@@ -2043,9 +2043,12 @@ async def _jumbo_details(doc: dict) -> dict:
                     _json.dumps(p.get("nutriScore"), default=str)[:200])
     out["description"] = _strip_html(p.get("description") or "") or None
     ppu = (p.get("price") or {}).get("pricePerUnit") or {}
-    if ppu.get("price"):
-        unit = {"l": "liter", "kg": "kilo", "st": "stuk", "stk": "stuk", "pce": "stuk"}.get(str(ppu.get("unit") or "").lower(), ppu.get("unit") or "")
-        out["unit_price"] = f"{_euro(ppu['price'] / 100)} per {unit}".strip()
+    unit = {"l": "liter", "kg": "kilo"}.get(str(ppu.get("unit") or "").lower())
+    if ppu.get("price") and unit:
+        out["unit_price"] = f"{_euro(ppu['price'] / 100)} per {unit}"
+    else:
+        cents = (p.get("price") or {}).get("promoPrice") or (p.get("price") or {}).get("price") or 0
+        out["unit_price"] = _unit_price_from(cents / 100, doc.get("unit") or p.get("subtitle") or "")
     out["ingredients"] = ", ".join(_texts(p.get("ingredients"))) or None
     al = p.get("productAllergens")
     if isinstance(al, dict):
@@ -2066,29 +2069,15 @@ async def _jumbo_details(doc: dict) -> dict:
     ns_t = _texts(ns.get("value") if isinstance(ns, dict) and "value" in ns else ns)
     out["nutriscore"] = next((x.upper() for x in ns_t if re.fullmatch(r"[A-Ea-e]", x)), None)
     out["labels"] = _texts((p.get("characteristics") or {}).get("thirdPartyLogos"))
-    out["diets"] = _texts(p.get("nutritionHealthClaims"))
     cats = [c.get("name") for c in (p.get("categories") or []) if isinstance(c, dict) and c.get("name")]
     if cats:
         out["extra"].append({"label": "Categorie", "value": " › ".join(cats)})
     for key, label in (("additives", "Toevoegingen"), ("alcoholByVolume", "Alcoholpercentage"), ("drainedWeight", "Uitlekgewicht"),
                        ("safetyWarning", "Waarschuwing"), ("manufacturer", "Fabrikant"), ("regulatedProductName", "Wettelijke naam")):
         v = _join(p.get(key))
-        if v:
+        if v and v not in ("0", "0.0"):
             out["extra"].append({"label": label, "value": v})
     return out
-
-
-async def _check_details() -> None:
-    # Tijdelijk: na de deploy één product per winkel proberen
-    import json as _json
-    await asyncio.sleep(15)
-    for field, fn in (("dirk_id", _dirk_details), ("ah_id", _ah_details), ("jumbo_id", _jumbo_details)):
-        try:
-            doc = await db.products.find_one({field: {"$exists": True}, "deleted_at": None, "name": {"$regex": "melk", "$options": "i"}}, {"_id": 0})
-            out = await fn(doc)
-            logger.info("Detailcheck %s %s -> %s", field, doc.get("name"), _json.dumps(out, ensure_ascii=False)[:2500])
-        except Exception as e:
-            logger.warning("Detailcheck %s mislukt: %r", field, e)
 
 
 @api_router.get("/products/{product_id}/details")
@@ -4075,7 +4064,6 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
-    asyncio.create_task(_check_details())
 
 
 async def _daily_refresh_loop():
