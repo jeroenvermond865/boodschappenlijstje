@@ -17,7 +17,9 @@ export type Dish = {
   name: string;
   category: MealCategory;
   is_standard: boolean;
-  ingredients: { name: string; unit: string; qty_adult: number; qty_child: number; aisle: string; price?: number; product_id?: string | null }[];
+  ingredients: { name: string; unit: string; qty_adult: number; qty_child: number; aisle: string; price?: number; product_id?: string | null; store?: string | null; recipe_text?: string | null }[];
+  pantry?: Dish["ingredients"];
+  source?: { recipe_id: string; url?: string; image?: string; store?: string; servings?: number } | null;
 };
 
 const TABS = [

@@ -60,20 +60,24 @@ export function OnlineRecipes({ bottomPadding }: { bottomPadding: number }) {
   useEffect(() => setFilters({}), [store]);
 
   const query = useInfiniteQuery({
-    queryKey: ["recipes", q, store, filters],
+    queryKey: store === "fav" ? ["recipes", "favorites"] : ["recipes", q, store, filters],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
-      api<Page>(
+      store === "fav"
+        ? api<Page>("/recipes/favorites")
+        : api<Page>(
         `/recipes/search?q=${encodeURIComponent(q)}&store=${store}&page=${pageParam}&filters=${encodeURIComponent(JSON.stringify(filters))}`,
       ),
     getNextPageParam: (last, all) => (last.has_more ? all.length : undefined),
     staleTime: 10 * 60 * 1000,
   });
+  const favQuery = store === "fav";
 
   const recipes = useMemo(() => {
     const seen = new Set<string>();
-    return (query.data?.pages ?? []).flatMap((p) => p.recipes).filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
-  }, [query.data]);
+    const all = (query.data?.pages ?? []).flatMap((p) => p.recipes).filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
+    return store === "fav" && q ? all.filter((r) => r.title.toLowerCase().includes(q.toLowerCase())) : all;
+  }, [query.data, store, q]);
   const first = query.data?.pages[0];
   const facets = first?.facets ?? [];
   const active = Object.values(filters).reduce((n, v) => n + v.length, 0);
@@ -109,9 +113,13 @@ export function OnlineRecipes({ bottomPadding }: { bottomPadding: number }) {
           ) : null}
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScroll} contentContainerStyle={styles.chipRow}>
-          <Pressable onPress={() => setOpen(true)} style={[styles.chip, active > 0 && styles.chipActive]} testID="recipe-filters">
+          <Pressable onPress={() => setOpen(true)} style={[styles.chip, active > 0 && styles.chipActive, favQuery && { display: "none" }]} testID="recipe-filters">
             <Icon name="tune-variant" size={16} color={active ? colors.onBrandPrimary : colors.onSurfaceTertiary} />
             <Text style={[styles.chipText, active > 0 && styles.chipTextActive]}>Filters{active ? ` (${active})` : ""}</Text>
+          </Pressable>
+          <Pressable onPress={() => setStore("fav")} style={[styles.chip, store === "fav" && styles.chipActive]} testID="recipe-favorites">
+            <Icon name={store === "fav" ? "heart" : "heart-outline"} size={15} color={store === "fav" ? colors.onBrandPrimary : "#E0245E"} />
+            <Text style={[styles.chipText, store === "fav" && styles.chipTextActive]}>Favorieten</Text>
           </Pressable>
           {RECIPE_STORES.map((s) => (
             <Pressable key={s.key} onPress={() => setStore(s.key)} style={[styles.chip, store === s.key && styles.chipActive]}>
@@ -191,7 +199,11 @@ export function OnlineRecipes({ bottomPadding }: { bottomPadding: number }) {
           )}
           ListFooterComponent={query.isFetchingNextPage ? <ActivityIndicator color={colors.brandPrimary} style={{ marginTop: 12 }} /> : null}
           ListEmptyComponent={
-            <EmptyState icon="silverware-variant" title="Geen recepten gevonden" subtitle={query.isError ? (query.error as Error).message : "Probeer een ander woord of minder filters."} />
+            store === "fav" && !query.isError ? (
+              <EmptyState icon="heart-outline" title="Nog geen favorieten" subtitle="Tik op het hartje bij een recept om het hier te bewaren." />
+            ) : (
+              <EmptyState icon="silverware-variant" title="Geen recepten gevonden" subtitle={query.isError ? (query.error as Error).message : "Probeer een ander woord of minder filters."} />
+            )
           }
         />
       )}

@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
-import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory } from "@/src/constants";
+import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory, formatQty } from "@/src/constants";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { euro } from "@/src/search";
 import { STORE_LABEL } from "@/src/OnlineRecipes";
@@ -25,8 +25,9 @@ type Recipe = {
   kcal?: number | null;
   tip?: string | null;
   url: string;
+  is_favorite?: boolean;
   steps: string[];
-  ingredients: { text: string; name: string; qty: number | null; unit: string; product: Product | null }[];
+  ingredients: { text: string; name: string; qty: number | null; unit: string; pantry?: boolean; product: Product | null }[];
 };
 
 const SITE: Record<string, string> = { ah: "Allerhande", jumbo: "jumbo.com", dirk: "dirk.nl" };
@@ -48,6 +49,8 @@ export default function RecipeScreen() {
   const router = useRouter();
   const qc = useQueryClient();
   const [pick, setPick] = useState(false);
+  const [campOpen, setCampOpen] = useState(false);
+  const [persons, setPersons] = useState<number | null>(null);
 
   const q = useQuery({
     queryKey: ["recipe", id],
@@ -56,9 +59,24 @@ export default function RecipeScreen() {
     retry: 1,
   });
   const r = q.data;
+  const base = r?.servings || 4;
+  const n = persons ?? base;
+  const scale = (qty: number | null) => (qty == null ? null : Math.round(((qty * n) / base) * 100) / 100);
+  const amount = (i: Recipe["ingredients"][number]) =>
+    n !== base && i.qty != null ? `${formatQty(scale(i.qty)!)} ${i.unit === "stuks" ? "" : i.unit + " "}${i.name}` : i.text;
+  const [include, setInclude] = useState<number[]>([]);
+
+  const fav = useMutation({
+    mutationFn: (on: boolean) =>
+      on
+        ? api("/recipes/favorite", { method: "POST", body: { id: r!.id, title: r!.title, image: r!.image, store: r!.store, time: r!.time, servings: r!.servings } })
+        : api(`/recipes/favorite?id=${encodeURIComponent(r!.id)}`, { method: "DELETE" }),
+    onMutate: (on: boolean) => qc.setQueryData(["recipe", id], { ...r!, is_favorite: on }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["recipes", "favorites"] }),
+  });
 
   const importMut = useMutation({
-    mutationFn: (category: MealCategory) => api<{ id: string }>("/recipes/import", { method: "POST", body: { id, category } }),
+    mutationFn: (category: MealCategory) => api<{ id: string }>("/recipes/import", { method: "POST", body: { id, category, include } }),
     onSuccess: (dish) => {
       setPick(false);
       qc.invalidateQueries({ queryKey: ["dishes"] });
@@ -75,7 +93,13 @@ export default function RecipeScreen() {
         <Text style={styles.headerTitle} numberOfLines={1}>
           {r ? `Recept van ${STORE_LABEL[r.store] ?? r.store}` : "Recept"}
         </Text>
-        <View style={styles.headerBtn} />
+        {r ? (
+          <Pressable testID="recipe-fav" onPress={() => fav.mutate(!r.is_favorite)} hitSlop={10} style={styles.headerBtn}>
+            <Icon name={r.is_favorite ? "heart" : "heart-outline"} size={24} color={r.is_favorite ? "#E0245E" : colors.muted} />
+          </Pressable>
+        ) : (
+          <View style={styles.headerBtn} />
+        )}
       </View>
 
       {q.isLoading ? (
@@ -112,34 +136,40 @@ export default function RecipeScreen() {
               ) : null}
               {r.description ? <Text style={styles.body}>{r.description}</Text> : null}
 
-              <Text style={styles.section}>Ingrediënten{r.servings ? ` voor ${r.servings} personen` : ""}</Text>
+              <View style={styles.personsRow}>
+                <Text style={[styles.section, { flex: 1, marginTop: 0 }]}>Ingrediënten</Text>
+                <Pressable onPress={() => setPersons(Math.max(1, n - 1))} hitSlop={6} style={styles.stepBtn}>
+                  <Icon name="minus" size={18} color={colors.onSurface} />
+                </Pressable>
+                <Text style={styles.personsText}>{n === 1 ? "1 persoon" : `${n} personen`}</Text>
+                <Pressable onPress={() => setPersons(n + 1)} hitSlop={6} style={styles.stepBtn}>
+                  <Icon name="plus" size={18} color={colors.onSurface} />
+                </Pressable>
+              </View>
+              {n !== base ? <Text style={styles.muted}>Omgerekend van {base} naar {n === 1 ? "1 persoon" : `${n} personen`}.</Text> : null}
               <View style={styles.card}>
-                {r.ingredients.map((i, n) => (
-                  <Pressable
-                    key={n}
-                    disabled={!i.product}
-                    onPress={() => i.product && router.push(`/product/${i.product.id}`)}
-                    style={[styles.ingRow, n > 0 && styles.ingBorder]}
-                  >
-                    {i.product?.image ? (
-                      <Image source={{ uri: i.product.image }} style={styles.ingImg} resizeMode="contain" />
-                    ) : (
-                      <View style={[styles.ingImg, styles.ingDot]}>
-                        <Icon name="circle-small" size={22} color={colors.muted} />
-                      </View>
-                    )}
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.ingText}>{i.text}</Text>
-                      {i.product ? (
-                        <Text style={styles.ingProd} numberOfLines={1}>
-                          {i.product.name} · {euro(i.product.promo?.price ?? i.product.price)}
-                        </Text>
-                      ) : null}
-                    </View>
-                    {i.product ? <Icon name="chevron-right" size={20} color={colors.muted} /> : null}
-                  </Pressable>
+                {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => !x.i.pantry).map(({ i, idx }, k) => (
+                  <IngRow key={idx} i={i} first={k === 0} label={amount(i)} />
                 ))}
               </View>
+
+              {r.ingredients.some((i) => i.pantry) ? (
+                <>
+                  <Text style={styles.section}>Waarschijnlijk al in huis</Text>
+                  <Text style={styles.muted}>Deze gaan niet mee op je boodschappenlijst. Tik op + als je ze toch wilt kopen.</Text>
+                  <View style={styles.card}>
+                    {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => x.i.pantry).map(({ i, idx }, k) => (
+                      <IngRow
+                        key={idx}
+                        i={i}
+                        first={k === 0}
+                        label={amount(i)}
+                        toggle={{ on: include.includes(idx), onPress: () => setInclude((x) => (x.includes(idx) ? x.filter((v) => v !== idx) : [...x, idx])) }}
+                      />
+                    ))}
+                  </View>
+                </>
+              ) : null}
 
               {r.steps.length ? (
                 <>
@@ -169,18 +199,24 @@ export default function RecipeScreen() {
           </ScrollView>
 
           <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
-            <Pressable testID="recipe-import" onPress={() => setPick(true)} style={styles.primary}>
-              <Icon name="plus" size={20} color={colors.onBrandPrimary} />
-              <Text style={styles.primaryText}>Toevoegen aan eigen gerechten</Text>
-            </Pressable>
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable testID="recipe-import" onPress={() => setPick(true)} style={[styles.primary, styles.secondary]}>
+                <Icon name="pencil-outline" size={18} color={colors.brandPrimary} />
+                <Text style={[styles.primaryText, { color: colors.brandPrimary }]}>Aanpassen</Text>
+              </Pressable>
+              <Pressable testID="recipe-to-camp" onPress={() => setCampOpen(true)} style={[styles.primary, { flex: 1 }]}>
+                <Icon name="tent" size={18} color={colors.onBrandPrimary} />
+                <Text style={styles.primaryText}>Toevoegen aan kamp</Text>
+              </Pressable>
+            </View>
           </View>
 
           <Modal visible={pick} transparent animationType="slide" onRequestClose={() => setPick(false)}>
             <Pressable style={styles.backdrop} onPress={() => setPick(false)}>
               <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
-                <Text style={styles.sheetTitle}>Bij welke maaltijd hoort dit?</Text>
+                <Text style={styles.sheetTitle}>Overnemen als eigen gerecht</Text>
                 <Text style={styles.muted}>
-                  De hoeveelheden worden omgerekend naar één persoon{r.servings ? ` (het recept is voor ${r.servings})` : ""}. Je kunt alles daarna nog aanpassen.
+                  Het recept wordt omgerekend naar één persoon{r.servings ? ` (het is voor ${r.servings})` : ""}. Daarna kun je producten wisselen, weghalen of toevoegen. Bij welke maaltijd hoort het?
                 </Text>
                 {MEAL_CATEGORIES.map((c) => (
                   <Pressable
@@ -199,8 +235,191 @@ export default function RecipeScreen() {
               </Pressable>
             </Pressable>
           </Modal>
+          <CampSheet open={campOpen} onClose={() => setCampOpen(false)} recipeId={r.id} suggested={guessCategory(r)} include={include} />
         </>
       )}
+    </View>
+  );
+}
+
+type CampLite = { id: string; name: string; days: { index: number; adults: number; children: number; meals?: Record<string, string[]> }[] };
+
+function CampSheet({
+  open,
+  onClose,
+  recipeId,
+  suggested,
+  include,
+}: {
+  open: boolean;
+  onClose: () => void;
+  recipeId: string;
+  suggested: MealCategory;
+  include: number[];
+}) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const qc = useQueryClient();
+  const router = useRouter();
+  const [campId, setCampId] = useState<string | null>(null);
+  const [day, setDay] = useState(0);
+  const [cat, setCat] = useState<MealCategory>(suggested);
+  const [done, setDone] = useState<string | null>(null);
+  const camps = useQuery({ queryKey: ["camps"], queryFn: () => api<{ camps: CampLite[] }>("/camps"), enabled: open });
+  const list = camps.data?.camps ?? [];
+  const camp = list.find((c) => c.id === campId) ?? (list.length === 1 ? list[0] : undefined);
+
+  const add = useMutation({
+    mutationFn: () => api("/recipes/add-to-camp", { method: "POST", body: { id: recipeId, camp_id: camp!.id, day_index: day, category: cat, include } }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["camps"] });
+      qc.invalidateQueries({ queryKey: ["dishes"] });
+      qc.invalidateQueries({ queryKey: ["home"] });
+      setDone(camp!.id);
+    },
+  });
+
+  const close = () => {
+    setDone(null);
+    onClose();
+  };
+
+  return (
+    <Modal visible={open} transparent animationType="slide" onRequestClose={close}>
+      <Pressable style={styles.backdrop} onPress={close}>
+        <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16, maxHeight: "85%" }]} onPress={() => {}}>
+          {done ? (
+            <View style={{ gap: 12, alignItems: "center", paddingVertical: 10 }}>
+              <Icon name="check-circle" size={44} color={colors.success} />
+              <Text style={styles.sheetTitle}>Toegevoegd aan {camp?.name}</Text>
+              <Text style={[styles.muted, { textAlign: "center" }]}>
+                Het staat ook bij je eigen gerechten, zodat je producten kunt wisselen. De boodschappenlijst rekent met het aantal mensen per dag.
+              </Text>
+              <View style={{ flexDirection: "row", gap: 10, alignSelf: "stretch" }}>
+                <Pressable onPress={close} style={[styles.primary, styles.secondary, { flex: 1 }]}>
+                  <Text style={[styles.primaryText, { color: colors.brandPrimary }]}>Sluiten</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    close();
+                    router.push(`/camp/${done}`);
+                  }}
+                  style={[styles.primary, { flex: 1 }]}
+                >
+                  <Text style={styles.primaryText}>Naar kamp</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <ScrollView contentContainerStyle={{ gap: 12 }}>
+              <Text style={styles.sheetTitle}>Toevoegen aan kamp</Text>
+              {camps.isLoading ? <ActivityIndicator color={colors.brandPrimary} /> : null}
+              {!camps.isLoading && !list.length ? (
+                <Pressable
+                  onPress={() => {
+                    close();
+                    router.push("/camp/new");
+                  }}
+                  style={styles.catRow}
+                >
+                  <Icon name="plus" size={22} color={colors.brandPrimary} />
+                  <Text style={styles.catText}>Eerst een kamp maken</Text>
+                </Pressable>
+              ) : null}
+              {list.length > 1 ? (
+                <View style={{ gap: 8 }}>
+                  <Text style={styles.label}>Kamp</Text>
+                  {list.map((c) => (
+                    <Pressable key={c.id} onPress={() => { setCampId(c.id); setDay(0); }} style={[styles.catRow, camp?.id === c.id && styles.catRowSuggested]}>
+                      <Icon name="tent" size={20} color={colors.brandPrimary} />
+                      <Text style={styles.catText}>{c.name}</Text>
+                      {camp?.id === c.id ? <Icon name="check" size={20} color={colors.brandPrimary} /> : null}
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+              {camp ? (
+                <>
+                  <Text style={styles.label}>Dag</Text>
+                  <View style={styles.tags}>
+                    {camp.days.map((d, i) => (
+                      <Pressable key={i} onPress={() => setDay(i)} style={[styles.chipSel, day === i && styles.chipSelOn]}>
+                        <Text style={[styles.chipSelText, day === i && styles.chipSelTextOn]}>
+                          Dag {i + 1} · {d.adults + d.children} p.
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <Text style={styles.label}>Maaltijd</Text>
+                  <View style={styles.tags}>
+                    {MEAL_CATEGORIES.map((c) => (
+                      <Pressable key={c} onPress={() => setCat(c)} style={[styles.chipSel, cat === c && styles.chipSelOn]}>
+                        <Icon name={CATEGORY_ICONS[c] as any} size={15} color={cat === c ? colors.onBrandPrimary : colors.onSurfaceTertiary} />
+                        <Text style={[styles.chipSelText, cat === c && styles.chipSelTextOn]}>{CATEGORY_LABELS[c]}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <Pressable disabled={add.isPending} onPress={() => add.mutate()} style={[styles.primary, add.isPending && { opacity: 0.6 }]}>
+                    {add.isPending ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Icon name="plus" size={18} color={colors.onBrandPrimary} />}
+                    <Text style={styles.primaryText}>Toevoegen aan dag {day + 1}</Text>
+                  </Pressable>
+                  {add.isError ? <Text style={{ color: colors.error }}>{(add.error as Error).message}</Text> : null}
+                </>
+              ) : null}
+            </ScrollView>
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function IngRow({
+  i,
+  first,
+  label,
+  toggle,
+}: {
+  i: Recipe["ingredients"][number];
+  first: boolean;
+  label: string;
+  toggle?: { on: boolean; onPress: () => void };
+}) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const router = useRouter();
+  return (
+    <View style={[styles.ingRow, !first && styles.ingBorder]}>
+      <Pressable
+        disabled={!i.product}
+        onPress={() => i.product && router.push(`/product/${i.product.id}`)}
+        style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }}
+      >
+        {i.product?.image ? (
+          <Image source={{ uri: i.product.image }} style={[styles.ingImg, toggle && !toggle.on && { opacity: 0.5 }]} resizeMode="contain" />
+        ) : (
+          <View style={[styles.ingImg, styles.ingDot]}>
+            <Icon name="circle-small" size={22} color={colors.muted} />
+          </View>
+        )}
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.ingText, toggle && !toggle.on && { color: colors.muted }]}>{label}</Text>
+          {i.product ? (
+            <Text style={styles.ingProd} numberOfLines={1}>
+              {toggle ? "Voorstel: " : ""}
+              {i.product.name} · {euro(i.product.promo?.price ?? i.product.price)}
+            </Text>
+          ) : null}
+        </View>
+      </Pressable>
+      {toggle ? (
+        <Pressable onPress={toggle.onPress} hitSlop={8} style={[styles.addBtn, toggle.on && styles.addBtnOn]}>
+          <Icon name={toggle.on ? "check" : "plus"} size={18} color={toggle.on ? colors.onBrandPrimary : colors.brandPrimary} />
+        </Pressable>
+      ) : i.product ? (
+        <Icon name="chevron-right" size={20} color={colors.muted} />
+      ) : null}
     </View>
   );
 }
@@ -256,4 +475,15 @@ const useStyles = makeStyles((colors) => ({
   catRowSuggested: { borderColor: colors.brandPrimary },
   catText: { flex: 1, fontSize: 16, fontFamily: fonts.medium, color: colors.onSurface },
   suggest: { fontSize: 12, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  secondary: { backgroundColor: colors.brandTertiary, paddingHorizontal: 18 },
+  addBtn: { width: 34, height: 34, borderRadius: 17, borderWidth: 1.5, borderColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
+  addBtnOn: { backgroundColor: colors.brandPrimary },
+  personsRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 },
+  personsText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface, minWidth: 82, textAlign: "center" },
+  stepBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
+  label: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurfaceSecondary },
+  chipSel: { flexDirection: "row", alignItems: "center", gap: 5, height: 34, paddingHorizontal: 12, borderRadius: 999, backgroundColor: colors.surfaceTertiary, borderWidth: 1, borderColor: colors.border },
+  chipSelOn: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  chipSelText: { fontSize: 13, fontFamily: fonts.medium, color: colors.onSurfaceTertiary },
+  chipSelTextOn: { color: colors.onBrandPrimary, fontFamily: fonts.semibold },
 }));

@@ -372,12 +372,14 @@ class Ingredient(BaseModel):
     product_id: Optional[str] = None
     diet: str = "all"  # all | vega | meat
     store: Optional[str] = None
+    recipe_text: Optional[str] = None
 
 
 class DishInput(BaseModel):
     name: str
     category: str
     ingredients: List[Ingredient] = []
+    pantry: Optional[List[Ingredient]] = None  # "waarschijnlijk al in huis", niet op de boodschappenlijst
     is_standard: bool = False
 
 
@@ -717,6 +719,8 @@ def dish_public(doc: dict) -> dict:
         "category": doc["category"],
         "is_standard": doc.get("is_standard", False),
         "ingredients": doc.get("ingredients", []),
+        "source": doc.get("source"),
+        "pantry": doc.get("pantry") or [],
     }
 
 
@@ -750,6 +754,7 @@ async def create_dish(data: DishInput, user: dict = Depends(get_current_user)):
         "is_standard": make_standard,
         "owner_id": None if make_standard else user["user_id"],
         "ingredients": [i.model_dump() for i in data.ingredients],
+        "pantry": [i.model_dump() for i in data.pantry or []],
         "deleted_at": None,
         "created_at": now_utc(),
     }
@@ -774,6 +779,7 @@ async def update_dish(dish_id: str, data: DishInput, user: dict = Depends(get_cu
             "name": data.name.strip(),
             "category": data.category,
             "ingredients": [i.model_dump() for i in data.ingredients],
+            **({"pantry": [i.model_dump() for i in data.pantry]} if data.pantry is not None else {}),
         }},
     )
     updated = await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0})
@@ -2803,6 +2809,11 @@ async def _dirk_folder() -> list:
                          price=o.get("offerPrice"), regular=o.get("normalPrice"), ids=ids, combinable=len(ids) > 1, quantity=o.get("packaging"))
         info = next((p.get("productInformation") or {} for p in o.get("products") or [] if isinstance(p, dict) and p.get("productInformation")), {})
         it["category"] = info.get("department") or None
+        # Actieprijs en normale prijs per product (op actieniveau staat de normale prijs soms op 0)
+        it["prices"] = {str(p["productId"]): (p.get("offerPrice") or o.get("offerPrice"), p.get("normalPrice"))
+                        for p in o.get("products") or [] if isinstance(p, dict) and p.get("productId") and p.get("normalPrice")}
+        if not it.get("regular") and len(it["prices"]) == 1:
+            it["regular"] = next(iter(it["prices"].values()))[1]
         periods.setdefault((it["start"], it["end"]), []).append(it)
     # De meeste acties lopen een week (wo t/m di); dagacties vallen daarbinnen
     out = []
@@ -3294,17 +3305,29 @@ async def _recipe_detail(rid: str) -> dict:
     return _rc_set(("detail", rid), out)
 
 
-def _ah_matches(names: list, docs: list) -> dict:
-    # AH koppelt recepten niet aan producten; zoek per ingrediënt het best passende AH-product
-    ah = [d for d in docs if d.get("_src") == "Albert Heijn" and d.get("is_global")]
+def _store_matches(names: list, docs: list, store: str) -> dict:
+    # Ingrediënten zonder gekoppeld product: zoek het best passende product in dezelfde winkel
+    pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
     out = {}
     for n in names:
-        if _norm_text(n) in ("water", "zout", "peper", "zout en peper", "peper en zout"):
+        if _norm_text(n) in ("water", "zout", "peper", "zout en peper", "peper en zout", "kraanwater"):
             continue
-        hits = _search_products(ah, n)[:1]
+        terms = _alt_terms(n, None)
+        hits = _search_products(pool, terms)[:1] if terms else []
         if hits:
             out[n] = hits[0]
     return out
+
+
+# Dingen die de meeste mensen al in huis hebben (kruiden, olie, basis)
+_PANTRY_RE = re.compile(r"\b(zout|peper|zeezout|olie|olijfolie|zonnebloemolie|azijn|suiker|bloem|maizena|bakpoeder|water|kraanwater|\w*bouillon\w*|"
+                        r"\w*kruiden\w*|specerij\w*|paprikapoeder|komijn\w*|kurkuma|kerrie\w*|currypoeder|kaneel|nootmuskaat|oregano|tijm|rozemarijn|"
+                        r"basilicum gedroogd|laurier\w*|chilivlokken|chilipoeder|cayennepeper|knoflookpoeder|uienpoeder|italiaanse kruiden|"
+                        r"provencaalse kruiden|mosterd|ketjap|sojasaus|honing|vanille\w*|boter|roomboter|bakboter|margarine|kipkruiden|gehaktkruiden)\b")
+
+
+def _is_pantry(name: str) -> bool:
+    return bool(_PANTRY_RE.search(_norm_text(name)))
 
 
 def _recipe_with_products(rec: dict, user: dict, matches: Optional[dict] = None) -> dict:
@@ -3313,10 +3336,14 @@ def _recipe_with_products(rec: dict, user: dict, matches: Optional[dict] = None)
     ings = []
     for i in rec["ingredients"]:
         p = i.get("product")
-        doc = by_sid.get((p["store"], p["sid"])) if p else (matches or {}).get(i["name"])
-        if doc is not None and not p:
-            p = {"store": "Albert Heijn"}
-        ings.append({**i, "product": product_public(_clean(doc), p["store"], user["user_id"], favs) if doc else None})
+        site_linked = bool(p)
+        doc = by_sid.get((p["store"], p["sid"])) if p else None
+        if doc is None and (matches or {}).get(i["name"]) is not None:
+            doc = matches[i["name"]]
+            p = {"store": doc["_src"]}
+        # Niet door de site gekoppeld (of typisch voorraadkast): waarschijnlijk al in huis
+        pantry = not site_linked and (rec["store"] != "ah" or _is_pantry(i["name"]))
+        ings.append({**i, "pantry": pantry, "product": product_public(_clean(doc), p["store"], user["user_id"], favs) if doc else None})
     return {**rec, "ingredients": ings}
 
 
@@ -3334,39 +3361,129 @@ async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
 
 async def _recipe_products(rec: dict, user: dict) -> dict:
     docs = await _global_products()
-    matches = None
-    if rec["store"] == "ah":
-        matches = _rc_get(("ahmatch", rec["id"]), 6 * 3600)
-        if matches is None:
-            matches = _rc_set(("ahmatch", rec["id"]), await asyncio.to_thread(_ah_matches, [i["name"] for i in rec["ingredients"]], docs))
-    return _recipe_with_products(rec, user, matches)
+    matches = _rc_get(("match", rec["id"]), 6 * 3600)
+    if matches is None:
+        by_sid = _product_cache.get("by_sid") or {}
+        missing = [i["name"] for i in rec["ingredients"] if not (i.get("product") and (i["product"]["store"], i["product"]["sid"]) in by_sid)]
+        matches = _rc_set(("match", rec["id"]), await asyncio.to_thread(_store_matches, missing, docs, STORE_LABELS[rec["store"]]) if missing else {})
+    out = _recipe_with_products(rec, user, matches)
+    out["is_favorite"] = any(f.get("id") == rec["id"] for f in user.get("recipe_favorites") or [])
+    return out
+
+
+class RecipeFav(BaseModel):
+    id: str
+    title: str = ""
+    image: Optional[str] = None
+    store: str = ""
+    time: Optional[int] = None
+    servings: Optional[int] = None
+
+
+@api_router.get("/recipes/favorites")
+async def recipe_favorites(user: dict = Depends(get_current_user)):
+    favs = list(reversed(user.get("recipe_favorites") or []))
+    return {"recipes": favs, "total": len(favs), "facets": [], "has_more": False}
+
+
+@api_router.post("/recipes/favorite")
+async def add_recipe_favorite(data: RecipeFav, user: dict = Depends(get_current_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$pull": {"recipe_favorites": {"id": data.id}}})
+    await db.users.update_one({"user_id": user["user_id"]}, {"$push": {"recipe_favorites": data.model_dump()}})
+    return {"ok": True}
+
+
+@api_router.delete("/recipes/favorite")
+async def remove_recipe_favorite(id: str, user: dict = Depends(get_current_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$pull": {"recipe_favorites": {"id": id}}})
+    return {"ok": True}
+
+
+async def _selftest2() -> None:
+    # Tijdelijk: alternatieven, voorraadkast en Dirk-actieprijzen controleren
+    await asyncio.sleep(45)
+    try:
+        docs = await _global_products()
+        await _folders_fresh()
+        aard = next((d for d in docs if d.get("_src") == "Dirk" and "aardappelen kruimig" in d["_norm"]), None)
+        if aard:
+            logger.info("Stest aardappel %s %s promo=%s", aard["name"], aard.get("prices"), _promo_public(aard, _doc_price(aard)))
+        base = next((d for d in docs if d.get("_src") == "Jumbo" and "olijfolie" in d["_norm"]), None)
+        if base:
+            res = _alternatives(docs, base["name"], base)
+            logger.info("Stest alt %s terms=%r %s", base["name"], res["terms"],
+                        {k: [(d["name"], _doc_price(d), _alt_note(d, res["base_up"], res["base_price"])) for d in v[:3]] for k, v in res["by_store"].items()})
+        for rid in ("ah-1302917", "jumbo-kabeljauw-met-pompoenpuree-en-gnocchi--1001249", "dirk-aardbeien-caprese"):
+            rec = await _recipe_products(await _recipe_detail(rid), {"user_id": "x"})
+            logger.info("Stest recept %s: %s", rid, [(i["name"], i["pantry"], (i["product"] or {}).get("name")) for i in rec["ingredients"]])
+    except Exception as e:
+        logger.warning("Stest: %r", e)
 
 
 class RecipeImport(BaseModel):
     id: str
     category: str = "avondeten"
+    include: List[int] = []
+
+
+async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = False, include: Optional[List[int]] = None) -> dict:
+    if category not in MEAL_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Ongeldige categorie")
+    rec = await _recipe_products(await _recipe_detail(rid), user)
+    if reuse:
+        # Al eerder overgenomen? Dan dat gerecht gebruiken (met jouw aanpassingen)
+        old = await db.dishes.find_one({"owner_id": user["user_id"], "deleted_at": None, "source.recipe_id": rec["id"]}, {"_id": 0})
+        if old:
+            return old
+    persons = rec.get("servings") or 4
+    ings, pantry = [], []
+    keep = set(include or [])
+    for n, i in enumerate(rec["ingredients"]):
+        prod = i.get("product")
+        per = round((i["qty"] or 1) / persons, 3)
+        target = pantry if i.get("pantry") and n not in keep else ings
+        target.append(Ingredient(name=(prod or {}).get("name") or i["name"] or i["text"], unit=i["unit"] or "stuks",
+                               qty_adult=per, qty_child=round(per / 2, 3),
+                               aisle=(prod or {}).get("aisle") or "Overig", price=(prod or {}).get("price") or 0,
+                               product_id=(prod or {}).get("id"), store=(prod or {}).get("source") or (STORE_LABELS.get(rec["store"]) if prod else None),
+                               recipe_text=i["text"]).model_dump())
+    dish_id = f"dish_{uuid.uuid4().hex[:12]}"
+    doc = {"dish_id": dish_id, "name": rec["title"][:80], "category": category, "is_standard": False, "owner_id": user["user_id"],
+           "ingredients": ings, "pantry": pantry, "source": {"recipe_id": rec["id"], "url": rec.get("url"), "image": rec.get("image"), "store": rec["store"],
+                                           "servings": persons},
+           "deleted_at": None, "created_at": now_utc()}
+    await db.dishes.insert_one(doc)
+    return doc
 
 
 @api_router.post("/recipes/import")
 async def import_recipe(data: RecipeImport, user: dict = Depends(get_current_user)):
-    if data.category not in MEAL_CATEGORIES:
-        raise HTTPException(status_code=400, detail="Ongeldige categorie")
-    rec = await _recipe_products(await _recipe_detail(data.id), user)
-    persons = rec.get("servings") or 4
-    ings = []
-    for i in rec["ingredients"]:
-        prod = i.get("product")
-        per = round((i["qty"] or 1) / persons, 3)
-        ings.append(Ingredient(name=(prod or {}).get("name") or i["name"] or i["text"], unit=i["unit"] or "stuks",
-                               qty_adult=per, qty_child=round(per / 2, 3),
-                               aisle=(prod or {}).get("aisle") or "Overig", price=(prod or {}).get("price") or 0,
-                               product_id=(prod or {}).get("id"), store=STORE_LABELS.get(rec["store"]) if prod else None).model_dump())
-    dish_id = f"dish_{uuid.uuid4().hex[:12]}"
-    doc = {"dish_id": dish_id, "name": rec["title"][:80], "category": data.category, "is_standard": False, "owner_id": user["user_id"],
-           "ingredients": ings, "source": {"recipe_id": rec["id"], "url": rec.get("url"), "image": rec.get("image")},
-           "deleted_at": None, "created_at": now_utc()}
-    await db.dishes.insert_one(doc)
-    return dish_public(doc)
+    return dish_public(await _recipe_to_dish(data.id, data.category, user, include=data.include))
+
+
+class RecipeToCamp(BaseModel):
+    id: str
+    camp_id: str
+    day_index: int
+    category: str
+    include: List[int] = []
+
+
+@api_router.post("/recipes/add-to-camp")
+async def recipe_to_camp(data: RecipeToCamp, user: dict = Depends(get_current_user)):
+    camp = await db.camps.find_one({"camp_id": data.camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+    days = camp.get("days") or []
+    if not 0 <= data.day_index < len(days):
+        raise HTTPException(status_code=400, detail="Die dag bestaat niet in dit kamp")
+    dish = await _recipe_to_dish(data.id, data.category, user, reuse=True, include=data.include)
+    meals = days[data.day_index].setdefault("meals", {})
+    lst = meals.setdefault(data.category, [])
+    if dish["dish_id"] not in lst:
+        lst.append(dish["dish_id"])
+    await db.camps.update_one({"camp_id": data.camp_id}, {"$set": {"days": days}})
+    return {"ok": True, "dish": dish_public(dish)}
 
 
 # --- Home: overzicht met je kamp, acties, recepten en een prijsvergelijking ---
@@ -3490,6 +3607,108 @@ async def home(user: dict = Depends(get_current_user)):
     own_dishes = await db.dishes.count_documents({"owner_id": user["user_id"], "deleted_at": None})
     return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "promos": promos,
             "recipes": recipes, "todo": todo, "own_dishes": own_dishes}
+
+
+# --- Andere producten voor een ingrediënt: logische voorstellen per winkel, goedkoper of in de aanbieding ---
+ALT_STORES = ["Albert Heijn", "Jumbo", "Dirk"]
+
+
+def _doc_price(d: dict) -> float:
+    return resolve_price(d.get("prices") or {}, d.get("_src") or DEFAULT_STORE, d.get("unavailable") or [])
+
+
+def _alt_terms(name: str, base: Optional[dict]) -> str:
+    # Merknaam en verpakking eruit: "AH Biologische halfvolle melk 1 l" -> "biologische halfvolle melk"
+    n = _norm_text(name)
+    if base and base.get("brand"):
+        b = _norm_text(base["brand"])
+        if b and n.startswith(b + " "):
+            n = n[len(b) + 1:]
+    n = re.sub(r"\b\d+([.,]\d+)?\s*(x\s*)?\d*\s*(g|gr|gram|kg|ml|cl|l|liter|stuks?|st)\b", " ", n)
+    words = [w for w in n.split() if len(w) > 1 and not w.isdigit()]
+    return " ".join(words[:4])
+
+
+def _alternatives(docs: list, name: str, base: Optional[dict], per_store: int = 6) -> dict:
+    terms = _alt_terms(name, base)
+    pool = [d for d in docs if d.get("is_global") and d.get("_src") in ALT_STORES]
+    hits = _search_products(pool, terms) if terms else []
+    if len(hits) < 3 and terms and len(terms.split()) > 1:
+        hits = _search_products(pool, terms.split()[-1])  # "verse gnocchi" -> "gnocchi"
+    sub = (base or {}).get("subcategory")
+    base_up = (base or {}).get("_up")
+    base_price = _doc_price(base) if base else 0
+    out: dict = {}
+    for s in ALT_STORES:
+        mine = [d for d in hits if d["_src"] == s and (not base or d["product_id"] != base["product_id"])][:40]
+        if sub:
+            mine.sort(key=lambda d: 0 if d.get("subcategory") == sub else 1)  # zelfde soort eerst
+        out[s] = mine[:per_store]
+    return {"terms": terms, "by_store": out, "base_up": base_up, "base_price": base_price}
+
+
+def _alt_note(d: dict, base_up, base_price: float) -> Optional[str]:
+    up = d.get("_up")
+    if base_up and up and up[1] == base_up[1] and base_up[0] > 0 and up[0] < base_up[0] * 0.95:
+        return f"{round((1 - up[0] / base_up[0]) * 100)}% goedkoper per {'kilo' if up[1] == 'kilo' else 'liter'}"
+    p = _doc_price(d)
+    if not base_up and base_price and p and p < base_price * 0.95:
+        return f"{_euro(base_price - p)} goedkoper"
+    return None
+
+
+@api_router.get("/alternatives")
+async def product_alternatives(name: str = "", product_id: str = "", user: dict = Depends(get_current_user)):
+    docs = await _global_products()
+    base = next((d for d in docs if d["product_id"] == product_id), None) if product_id else None
+    res = await asyncio.to_thread(_alternatives, docs, name or (base or {}).get("name") or "", base)
+    favs = set(user.get("favorite_products") or [])
+    groups = []
+    for s, items in res["by_store"].items():
+        rows = []
+        for d in items:
+            pub = product_public(_clean(d), s, user["user_id"], favs)
+            pub["note"] = _alt_note(d, res["base_up"], res["base_price"])
+            pub["offer"] = _has_offer(d)
+            rows.append(pub)
+        # Goedkoopste per kilo/liter eerst, binnen de goede treffers
+        rows.sort(key=lambda r: (0 if r["note"] else 1, (_unit_value(r["price"], r["unit"]) or (r["price"] or 999,))[0]))
+        groups.append({"store": s, "same_store": bool(base and base.get("_src") == s), "products": rows})
+    groups.sort(key=lambda g: 0 if g["same_store"] else 1)
+    return {"terms": res["terms"], "groups": groups,
+            "base": product_public(_clean(base), base["_src"], user["user_id"], favs) if base else None}
+
+
+class SuggestIn(BaseModel):
+    ingredients: List[Dict] = []
+
+
+@api_router.post("/dishes/suggestions")
+async def dish_suggestions(data: SuggestIn, user: dict = Depends(get_current_user)):
+    # Per gekoppeld ingrediënt: is hetzelfde soort product bij een andere winkel duidelijk goedkoper?
+    docs = await _global_products()
+    by_id = {d["product_id"]: d for d in docs}
+    favs = set(user.get("favorite_products") or [])
+
+    def work():
+        out = []
+        for ing in data.ingredients[:60]:
+            base = by_id.get(ing.get("product_id") or "")
+            if not base:
+                out.append(None)
+                continue
+            res = _alternatives(docs, ing.get("name") or base["name"], base, per_store=3)
+            best = None
+            for s, items in res["by_store"].items():
+                for d in items:
+                    note = _alt_note(d, res["base_up"], res["base_price"])
+                    if note and (best is None or (d.get("_up") or (_doc_price(d),))[0] < (best[0].get("_up") or (_doc_price(best[0]),))[0]):
+                        best = (d, note)
+            out.append(best)
+        return out
+
+    found = await asyncio.to_thread(work)
+    return {"suggestions": [{**product_public(_clean(b[0]), b[0]["_src"], user["user_id"], favs), "note": b[1]} if b else None for b in found]}
 
 
 async def _dirk_post(client, query, variables):
@@ -5265,6 +5484,7 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
+    asyncio.create_task(_selftest2())
 
 
 async def _daily_refresh_loop():

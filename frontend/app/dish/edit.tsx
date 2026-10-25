@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { FlatList, Modal, Pressable, ScrollView, Share, Text, TextInput, View } from "react-native";
+import { FlatList, Image, Modal, Pressable, ScrollView, Share, Text, TextInput, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Linking from "expo-linking";
@@ -24,7 +24,20 @@ import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Ing = { name: string; unit: string; qtyAdult: string; qtyChild: string; aisle: string; price: string; productId?: string | null; diet: "all" | "vega" | "meat" };
+type Ing = {
+  name: string;
+  unit: string;
+  qtyAdult: string;
+  qtyChild: string;
+  aisle: string;
+  price: string;
+  productId?: string | null;
+  store?: string | null;
+  recipeText?: string | null;
+  diet: "all" | "vega" | "meat";
+};
+type AltProduct = Product & { note?: string | null; offer?: boolean };
+const STORE_SHORT: Record<string, string> = { "Albert Heijn": "AH", Jumbo: "Jumbo", Dirk: "Dirk" };
 
 const DIET_OPTS: { key: "all" | "vega" | "meat"; label: string; icon: string }[] = [
   { key: "all", label: "Iedereen", icon: "account-group-outline" },
@@ -60,6 +73,19 @@ export default function DishEditScreen() {
   const [category, setCategory] = useState<MealCategory>(
     existing?.category ?? ((params.category as MealCategory) || "avondeten"),
   );
+  const toIng = (i: Dish["ingredients"][number]): Ing => ({
+    name: i.name,
+    unit: i.unit,
+    qtyAdult: formatQty(i.qty_adult),
+    qtyChild: formatQty(i.qty_child),
+    aisle: i.aisle,
+    price: formatQty(i.price ?? 0),
+    productId: i.product_id ?? null,
+    store: i.store ?? null,
+    recipeText: i.recipe_text ?? null,
+    diet: ((i as any).diet as "all" | "vega" | "meat") ?? "all",
+  });
+  const [pantry, setPantry] = useState<Ing[]>((existing?.pantry ?? []).map(toIng));
   const [ings, setIngs] = useState<Ing[]>(
     existing
       ? existing.ingredients.map((i) => ({
@@ -70,16 +96,54 @@ export default function DishEditScreen() {
           aisle: i.aisle,
           price: formatQty(i.price ?? 0),
           productId: i.product_id ?? null,
+          store: i.store ?? null,
+          recipeText: i.recipe_text ?? null,
           diet: ((i as any).diet as "all" | "vega" | "meat") ?? "all",
         }))
       : [],
   );
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [swapIdx, setSwapIdx] = useState<number | null>(null);
 
+  // Gekoppelde producten (foto, winkel, prijs) en voorstellen om te wisselen
+  const linkedIds = ings.map((i) => i.productId).filter(Boolean) as string[];
+  const linked = useQuery({
+    queryKey: ["products", "by-ids", linkedIds.join(",")],
+    queryFn: () => api<{ products: Product[] }>(`/products/by-ids?ids=${linkedIds.join(",")}`),
+    enabled: linkedIds.length > 0,
+    placeholderData: (prev) => prev,
+  });
+  const byId = useMemo(() => Object.fromEntries((linked.data?.products ?? []).map((p) => [p.id, p])), [linked.data]);
+  const suggest = useQuery({
+    queryKey: ["dish-suggestions", ings.map((i) => `${i.productId ?? ""}:${i.name}`).join("|")],
+    queryFn: () =>
+      api<{ suggestions: (AltProduct | null)[] }>("/dishes/suggestions", {
+        method: "POST",
+        body: { ingredients: ings.map((i) => ({ product_id: i.productId ?? null, name: i.name })) },
+      }),
+    enabled: !readOnly && linkedIds.length > 0,
+    staleTime: 10 * 60 * 1000,
+    placeholderData: (prev) => prev,
+  });
+  const [dismissed, setDismissed] = useState<Record<string, boolean>>({});
+
+  const toBody = (i: Ing) => ({
+    name: i.name.trim(),
+    unit: i.unit,
+    qty_adult: parseFloat(i.qtyAdult.replace(",", ".")) || 0,
+    qty_child: parseFloat(i.qtyChild.replace(",", ".")) || 0,
+    aisle: i.aisle,
+    price: parseFloat(i.price.replace(",", ".")) || 0,
+    product_id: i.productId ?? null,
+    store: i.store ?? null,
+    recipe_text: i.recipeText ?? null,
+    diet: i.diet,
+  });
   const buildBody = () => ({
     name: name.trim(),
     category,
     is_standard: asStandard,
+    pantry: pantry.map(toBody),
     ingredients: ings
       .filter((i) => i.name.trim())
       .map((i) => ({
@@ -90,6 +154,8 @@ export default function DishEditScreen() {
         aisle: i.aisle,
         price: parseFloat(i.price.replace(",", ".")) || 0,
         product_id: i.productId ?? null,
+        store: i.store ?? null,
+        recipe_text: i.recipeText ?? null,
         diet: i.diet,
       })),
   });
@@ -171,9 +237,14 @@ export default function DishEditScreen() {
   const addProductIngredient = (p: Product) => {
     setIngs((prev) => [
       ...prev,
-      { name: p.name, unit: p.unit, qtyAdult: "1", qtyChild: "1", aisle: p.aisle, price: "0", productId: p.id, diet: "all" },
+      { name: p.name, unit: p.unit, qtyAdult: "1", qtyChild: "1", aisle: p.aisle, price: "0", productId: p.id, store: p.source ?? null, diet: "all" },
     ]);
     setPickerOpen(false);
+  };
+
+  const swapProduct = (idx: number, p: Product) => {
+    updateIng(idx, { productId: p.id, name: p.name, aisle: p.aisle, store: p.source ?? null, price: String(p.price ?? 0) });
+    setSwapIdx(null);
   };
 
   const onShare = async () => {
@@ -276,6 +347,16 @@ export default function DishEditScreen() {
               )}
               {!readOnly ? (
                 <Pressable
+                  testID={`ing-pantry-${idx}`}
+                  hitSlop={8}
+                  onPress={() => {
+                    setPantry((prev) => [...prev, ing]);
+                    setIngs((prev) => prev.filter((_, i) => i !== idx));
+                  }}
+                >
+                  <Icon name="home-import-outline" size={22} color={colors.muted} />
+                </Pressable>
+                <Pressable
                   testID={`ing-remove-${idx}`}
                   hitSlop={8}
                   onPress={() => setIngs((prev) => prev.filter((_, i) => i !== idx))}
@@ -284,6 +365,57 @@ export default function DishEditScreen() {
                 </Pressable>
               ) : null}
             </View>
+
+            {ing.recipeText ? <Text style={styles.recipeText}>In het recept: {ing.recipeText}</Text> : null}
+
+            {ing.productId && byId[ing.productId] ? (
+              <View style={styles.linkedRow}>
+                {byId[ing.productId].image ? (
+                  <Image source={{ uri: byId[ing.productId].image! }} style={styles.linkedImg} resizeMode="contain" />
+                ) : (
+                  <View style={styles.linkedImg} />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.linkedName} numberOfLines={1}>
+                    {byId[ing.productId].name}
+                  </Text>
+                  <Text style={styles.linkedMeta} numberOfLines={1}>
+                    {STORE_SHORT[byId[ing.productId].source ?? ""] ?? byId[ing.productId].source ?? ""} · {byId[ing.productId].unit} ·{" "}
+                    {byId[ing.productId].price > 0 ? `€ ${(byId[ing.productId].promo?.price ?? byId[ing.productId].price).toFixed(2).replace(".", ",")}` : "—"}
+                  </Text>
+                </View>
+                {!readOnly ? (
+                  <Pressable onPress={() => setSwapIdx(idx)} style={styles.swapBtn} testID={`ing-swap-${idx}`}>
+                    <Icon name="swap-horizontal" size={16} color={colors.brandPrimary} />
+                    <Text style={styles.swapText}>Wissel</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : !readOnly ? (
+              <Pressable onPress={() => setSwapIdx(idx)} style={styles.linkBtn} testID={`ing-link-${idx}`}>
+                <Icon name="link-variant-plus" size={16} color={colors.brandPrimary} />
+                <Text style={styles.swapText}>Koppel aan een product</Text>
+              </Pressable>
+            ) : null}
+
+            {(() => {
+              const sg = suggest.data?.suggestions?.[idx];
+              if (readOnly || !sg || !ing.productId || dismissed[`${ing.productId}>${sg.id}`]) return null;
+              return (
+                <View style={styles.hint}>
+                  <Icon name="lightbulb-on-outline" size={16} color={colors.success} />
+                  <Text style={styles.hintText} numberOfLines={2}>
+                    Bij {STORE_SHORT[sg.source ?? ""] ?? sg.source}: {sg.name} · {sg.note}
+                  </Text>
+                  <Pressable onPress={() => swapProduct(idx, sg)} hitSlop={6}>
+                    <Text style={styles.swapText}>Wissel</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setDismissed((d) => ({ ...d, [`${ing.productId}>${sg.id}`]: true }))} hitSlop={6}>
+                    <Icon name="close" size={16} color={colors.muted} />
+                  </Pressable>
+                </View>
+              );
+            })()}
 
             <View style={styles.qtyRow}>
               <View style={styles.qtyBox}>
@@ -384,6 +516,40 @@ export default function DishEditScreen() {
           </View>
         ))}
 
+        {pantry.length ? (
+          <View style={{ gap: 8 }}>
+            <Text style={styles.label}>Waarschijnlijk al in huis</Text>
+            <Text style={styles.recipeText}>Staat niet op je boodschappenlijst. Voeg toe wat je toch moet kopen.</Text>
+            {pantry.map((pi, k) => (
+              <View key={k} style={styles.pantryRow}>
+                <Icon name="home-outline" size={18} color={colors.muted} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.linkedName} numberOfLines={1}>
+                    {pi.recipeText || pi.name}
+                  </Text>
+                  {pi.recipeText && pi.productId ? (
+                    <Text style={styles.linkedMeta} numberOfLines={1}>
+                      Voorstel: {pi.name}
+                    </Text>
+                  ) : null}
+                </View>
+                {!readOnly ? (
+                  <Pressable
+                    onPress={() => {
+                      setIngs((prev) => [...prev, pi]);
+                      setPantry((prev) => prev.filter((_, j) => j !== k));
+                    }}
+                    style={styles.swapBtn}
+                  >
+                    <Icon name="plus" size={16} color={colors.brandPrimary} />
+                    <Text style={styles.swapText}>Toevoegen</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        ) : null}
+
         {!readOnly ? (
           <Pressable testID="pick-product-button" onPress={() => setPickerOpen(true)} style={styles.addIng}>
             <Icon name="cart-plus" size={20} color={colors.brandPrimary} />
@@ -423,7 +589,123 @@ export default function DishEditScreen() {
       </View>
 
       <DishProductPicker open={pickerOpen} onClose={() => setPickerOpen(false)} onPick={addProductIngredient} />
+      <SwapSheet
+        ing={swapIdx != null ? ings[swapIdx] : null}
+        onClose={() => setSwapIdx(null)}
+        onPick={(p) => swapIdx != null && swapProduct(swapIdx, p)}
+      />
     </View>
+  );
+}
+
+function SwapSheet({ ing, onClose, onPick }: { ing: Ing | null; onClose: () => void; onPick: (p: Product) => void }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [q, setQ] = useState("");
+  const [src, setSrc] = useState<string>("");
+  const debouncedQ = useDebounced(q);
+  const open = !!ing;
+  const alts = useQuery({
+    queryKey: ["alternatives", ing?.productId ?? "", ing?.name ?? ""],
+    queryFn: () =>
+      api<{ terms: string; groups: { store: string; same_store: boolean; products: AltProduct[] }[] }>(
+        `/alternatives?name=${encodeURIComponent(ing!.name)}&product_id=${encodeURIComponent(ing!.productId ?? "")}`,
+      ),
+    enabled: open,
+    staleTime: 10 * 60 * 1000,
+  });
+  const search = useQuery({
+    queryKey: ["products", "search", "swap", debouncedQ.trim(), src],
+    queryFn: () => fetchProducts({ q: debouncedQ, source: src || undefined, limit: 40 }),
+    enabled: open && debouncedQ.trim().length > 1,
+    placeholderData: (prev) => prev,
+  });
+  const close = () => {
+    setQ("");
+    onClose();
+  };
+  const searching = debouncedQ.trim().length > 1;
+
+  const Row = ({ p }: { p: AltProduct }) => (
+    <Pressable onPress={() => { setQ(""); onPick(p); }} style={styles.altRow}>
+      {p.image ? <Image source={{ uri: p.image }} style={styles.altImg} resizeMode="contain" /> : <View style={styles.altImg} />}
+      <View style={{ flex: 1 }}>
+        <Text style={styles.pickerName} numberOfLines={2}>
+          {p.name}
+        </Text>
+        <Text style={styles.pickerMeta} numberOfLines={1}>
+          {STORE_SHORT[p.source ?? ""] ?? p.source ?? "Eigen"} · {p.unit}
+          {p.unit_price ? ` · ${p.unit_price}` : ""}
+        </Text>
+        {p.note || p.offer || p.promo ? (
+          <View style={{ flexDirection: "row", gap: 6, marginTop: 3, flexWrap: "wrap" }}>
+            {p.note ? <Text style={styles.altGood}>{p.note}</Text> : null}
+            {p.offer || p.promo ? <Text style={styles.altOffer}>{p.promo?.label ?? "Aanbieding"}</Text> : null}
+          </View>
+        ) : null}
+      </View>
+      <Text style={styles.pickerPrice}>{p.price > 0 ? `€ ${(p.promo?.price ?? p.price).toFixed(2).replace(".", ",")}` : "—"}</Text>
+    </Pressable>
+  );
+
+  return (
+    <Modal visible={open} animationType="slide" transparent onRequestClose={close}>
+      <View style={styles.pickerBackdrop}>
+        <View style={[styles.pickerSheet, { paddingBottom: insets.bottom + 16, maxHeight: "90%" }]}>
+          <View style={styles.pickerHeader}>
+            <Text style={styles.pickerTitle} numberOfLines={1}>
+              Ander product voor {ing?.name}
+            </Text>
+            <Pressable onPress={close} hitSlop={8}>
+              <Icon name="close" size={22} color={colors.onSurface} />
+            </Pressable>
+          </View>
+          <View style={styles.pickerSearch}>
+            <Icon name="magnify" size={20} color={colors.muted} />
+            <TextInput
+              placeholder="Zelf zoeken in alle producten"
+              placeholderTextColor={colors.muted}
+              value={q}
+              onChangeText={setQ}
+              style={styles.pickerSearchInput}
+            />
+          </View>
+          {searching ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }} style={{ flexGrow: 0 }}>
+              {["", "Albert Heijn", "Jumbo", "Dirk"].map((s) => (
+                <Pressable key={s || "all"} onPress={() => setSrc(s)} style={[styles.chip, { height: 32 }, src === s && styles.chipActive]}>
+                  <Text style={[styles.chipText, src === s && styles.chipTextActive]}>{s ? STORE_SHORT[s] : "Alle winkels"}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : null}
+          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 4 }}>
+            {searching ? (
+              (search.data?.products ?? []).map((p) => <Row key={p.id} p={p} />)
+            ) : alts.isLoading ? (
+              <Text style={styles.pickerEmpty}>Voorstellen zoeken…</Text>
+            ) : (
+              (alts.data?.groups ?? []).map((g) =>
+                g.products.length ? (
+                  <View key={g.store} style={{ gap: 4, marginBottom: 8 }}>
+                    <Text style={styles.altHead}>
+                      {g.same_store ? `Ook bij ${g.store}` : `Bij ${g.store}`}
+                    </Text>
+                    {g.products.map((p) => (
+                      <Row key={p.id} p={p} />
+                    ))}
+                  </View>
+                ) : null,
+              )
+            )}
+            {!searching && alts.data && !alts.data.groups.some((g) => g.products.length) ? (
+              <Text style={styles.pickerEmpty}>Geen voorstellen gevonden. Zoek hierboven zelf een product.</Text>
+            ) : null}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -487,6 +769,22 @@ function DishProductPicker({ open, onClose, onPick }: { open: boolean; onClose: 
 
 const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.surface },
+  pantryRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderRadius: 12, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  recipeText: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: -6 },
+  linkedRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: 12, padding: 8, borderWidth: 1, borderColor: colors.border },
+  linkedImg: { width: 40, height: 40, borderRadius: 8, backgroundColor: "#fff" },
+  linkedName: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },
+  linkedMeta: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
+  swapBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: colors.brandTertiary },
+  swapText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  linkBtn: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", paddingVertical: 4 },
+  hint: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, borderWidth: 1, borderColor: colors.success },
+  hintText: { flex: 1, fontSize: 12, fontFamily: fonts.medium, color: colors.onSurface },
+  altRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  altImg: { width: 44, height: 44, borderRadius: 8, backgroundColor: "#fff" },
+  altHead: { fontSize: 13, fontFamily: fonts.bold, color: colors.onSurfaceSecondary, marginTop: 6 },
+  altGood: { fontSize: 11, fontFamily: fonts.semibold, color: colors.success },
+  altOffer: { fontSize: 11, fontFamily: fonts.semibold, color: colors.warning },
   header: {
     flexDirection: "row",
     alignItems: "center",
