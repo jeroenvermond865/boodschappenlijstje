@@ -22,6 +22,7 @@ export type Dish = {
   pantry?: Dish["ingredients"];
   source?: { recipe_id: string; url?: string; image?: string; store?: string; servings?: number } | null;
   needs_vega?: boolean; // vlees of vis zonder vega-vervanger
+  online?: boolean; // online gerecht dat in een kamp staat, nog niet aangepast
 };
 
 const TABS = [
@@ -59,7 +60,7 @@ export default function DishesScreen() {
   });
 
   const filtered = useMemo(() => {
-    let list = data?.dishes ?? [];
+    let list = (data?.dishes ?? []).filter((d) => !d.online); // online gerechten uit een kamp horen hier niet
     if (cat !== "all") list = list.filter((d) => d.category === cat);
     if (search.trim()) list = list.filter((d) => d.name.toLowerCase().includes(search.trim().toLowerCase()));
     return list;
@@ -203,8 +204,8 @@ export default function DishesScreen() {
           ListEmptyComponent={
             <EmptyState
               icon="silverware-variant"
-              title={data?.dishes.length ? "Geen gerechten gevonden" : "Nog geen eigen gerechten"}
-              subtitle={data?.dishes.length ? "Pas je filters aan of voeg een nieuw gerecht toe." : "Maak een gerecht met de knop hieronder, of neem er een over uit Online gerechten."}
+              title={data?.dishes.some((d) => !d.online) ? "Geen gerechten gevonden" : "Nog geen eigen gerechten"}
+              subtitle={data?.dishes.some((d) => !d.online) ? "Pas je filters aan of voeg een nieuw gerecht toe." : "Maak een gerecht met de knop hieronder, of neem er een over uit Online gerechten."}
             />
           }
         />

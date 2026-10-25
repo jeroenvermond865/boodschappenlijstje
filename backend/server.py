@@ -745,6 +745,7 @@ def dish_public(doc: dict) -> dict:
         "source": doc.get("source"),
         "pantry": doc.get("pantry") or [],
         "needs_vega": bool(_needs_vega(doc)),
+        "online": bool(doc.get("online")),
         "owner_id": doc.get("owner_id"),
     }
 
@@ -892,6 +893,7 @@ async def update_dish(dish_id: str, data: DishInput, user: dict = Depends(get_cu
             "category": data.category,
             "ingredients": [i.model_dump() for i in data.ingredients],
             **({"pantry": [i.model_dump() for i in data.pantry]} if data.pantry is not None else {}),
+            "online": False,  # aangepast: nu een eigen gerecht
         }},
     )
     updated = await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0})
@@ -3994,6 +3996,42 @@ async def _selftest3() -> None:
     await asyncio.sleep(60)
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            r = await c.get("https://www.dirk.nl/folder/volgende-week", headers=_PAGE_HEADERS)
+            logger.info("Stest9 refs %s", sorted(set(re.findall(r"fileserver[^\"' )]{0,90}", r.text)))[:30])
+            pub, fn = None, None
+            for m in re.finditer(r'"publicationId":"([0-9a-f-]{36})"', r.text):
+                pub = m.group(1)
+            data = _nuxt_data(r.text)
+            hits = []
+
+            def walk(x, d=0):
+                if d > 30:
+                    return
+                if isinstance(x, dict):
+                    if x.get("publicationId") and x.get("pages"):
+                        hits.append(x)
+                    for v in x.values():
+                        walk(v, d + 1)
+                elif isinstance(x, list):
+                    for v in x:
+                        walk(v, d + 1)
+            walk(data)
+            if hits:
+                pub, fn = hits[0]["publicationId"], hits[0]["pages"][0]["fileName"]
+                for u in (f"https://web-fileserver.dirk.nl/publications/{pub}/{fn}", f"https://web-fileserver.dirk.nl/publications/{pub}/pages/{fn}",
+                          f"https://web-fileserver.dirk.nl/{fn}", f"https://web-fileserver.dirk.nl/publication/{pub}/{fn}",
+                          f"https://web-fileserver.dirk.nl/publications/{fn}", f"https://web-fileserver.dirk.nl/folders/{pub}/{fn}",
+                          f"https://web-fileserver.dirk.nl/publications/{pub}/images/{fn}"):
+                    try:
+                        rr = await c.get(u, headers=_PAGE_HEADERS)
+                        logger.info("Stest9 %s %s %s %d", u, rr.status_code, rr.headers.get("content-type"), len(rr.content))
+                    except Exception as e:
+                        logger.info("Stest9 %s %r", u, e)
+            for m in re.findall(r'src="(/_nuxt/[^"]+\.js)"', r.text)[:40]:
+                js = (await c.get("https://www.dirk.nl" + m, headers=_PAGE_HEADERS)).text
+                for k in re.finditer(r"publication", js):
+                    logger.info("Stest9 js %s: %s", m, js[max(0, k.start() - 150): k.start() + 150])
+                    break
             r = await c.get("https://www.dirk.nl/meer/over-dirk/super-dirck-3", headers=_PAGE_HEADERS)
             data = _nuxt_data(r.text)
             logger.info("Stest7 dirck3 %s %s", r.status_code, json.dumps(data, default=str)[:3000])
@@ -4015,6 +4053,20 @@ async def _selftest3() -> None:
                     logger.info("Stest5 %s %s: %s", st, d["name"], _pack_plan(d, 5500 if name != "rookworst" else 11, "gram" if name != "rookworst" else "stuks", st))
     except Exception as e:
         logger.warning("Stest3: %r", e)
+
+
+async def _import_extra_terms() -> None:
+    # Eenmalig de nieuwe zoektermen bij AH ophalen (de volledige import doet ze daarna vanzelf mee)
+    await asyncio.sleep(90)
+    key = "extra_terms_" + str(len(EXTRA_TERMS))
+    if await db.meta.find_one({"key": key}):
+        return
+    try:
+        added = await _import_all_ah(await _store_mults(), EXTRA_TERMS)
+        await db.meta.insert_one({"key": key, "at": now_utc(), "added": added})
+        logger.info("Extra zoektermen AH: %d producten toegevoegd", added)
+    except Exception as e:
+        logger.warning("Extra zoektermen AH mislukt: %r", e)
 
 
 class RecipeImport(BaseModel):
@@ -4049,7 +4101,9 @@ async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = Fal
     doc = {"dish_id": dish_id, "name": rec["title"][:80], "category": category, "is_standard": False, "owner_id": user["user_id"],
            "ingredients": ings, "pantry": pantry, "source": {"recipe_id": rec["id"], "url": rec.get("url"), "image": rec.get("image"), "store": rec["store"],
                                            "servings": persons},
-           "deleted_at": None, "created_at": now_utc()}
+           "deleted_at": None, "created_at": now_utc(),
+           # Vanuit een kamp gekozen: blijft een online gerecht, pas bij aanpassen wordt het een eigen gerecht
+           "online": bool(reuse)}
     await db.dishes.insert_one(doc)
     return doc
 
@@ -4679,6 +4733,10 @@ async def import_store_products(data: StoreImportInput, user: dict = Depends(get
 
 # --- Admin: hele Dirk-assortiment importeren (achtergrondtaak) ---
 # Dirk heeft geen openbare "alle producten"-lijst, dus we zoeken op veel algemene termen
+# Later toegevoegd: kruiden en bakproducten vielen bij AH buiten de algemene zoektermen (geen kaneel of kerrie)
+EXTRA_TERMS = ["kaneel", "kerrie", "paprikapoeder", "komijn", "oregano", "basilicum", "tijm", "rozemarijn", "nootmuskaat", "gember",
+               "kurkuma", "chilipoeder", "knoflookpoeder", "uienpoeder", "laurier", "peterselie", "dille", "specerijen", "vanille",
+               "bakpoeder", "gist", "maizena", "paneermeel", "kokosmelk", "sojasaus", "ketjap", "rijstazijn", "sesam", "garam masala"]
 DIRK_ALL_TERMS = [
     "aardappel", "groente", "fruit", "appel", "banaan", "peer", "sinaasappel", "druiven", "aardbei", "citroen",
     "tomaat", "komkommer", "paprika", "ui", "knoflook", "wortel", "sla", "spinazie", "broccoli", "bloemkool",
@@ -4701,7 +4759,7 @@ DIRK_ALL_TERMS = [
     "toiletpapier", "keukenpapier", "afwasmiddel", "wasmiddel", "schoonmaak", "vuilniszak", "folie", "batterij",
     "shampoo", "douchegel", "tandpasta", "deodorant", "zeep", "luier", "babyvoeding", "maandverband",
     "hond", "kat", "kattenvoer", "hondenvoer", "kaars", "servet", "bord", "beker", "aansteker",
-]
+] + EXTRA_TERMS
 
 _dirk_import_running = False
 
@@ -4738,13 +4796,14 @@ def _new_store_product(idf: str, nrm: dict, store: str, mults: dict) -> dict:
     }
 
 
-async def _import_all_ah(mults: dict) -> int:
+async def _import_all_ah(mults: dict, terms: Optional[list] = None) -> int:
+    terms = terms or DIRK_ALL_TERMS
     existing = {str(p["ah_id"]) async for p in db.products.find({"ah_id": {"$exists": True}, "deleted_at": None}, {"_id": 0, "ah_id": 1})}
     added = 0
     async with httpx.AsyncClient(timeout=30, headers=AH_HEADERS) as c:
         tok = await _ah_token(c)
         H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-        for n, term in enumerate(DIRK_ALL_TERMS, 1):
+        for n, term in enumerate(terms, 1):
             docs = []
             for page in range(3):
                 try:
@@ -4768,7 +4827,7 @@ async def _import_all_ah(mults: dict) -> int:
                 added += len(docs)
                 _invalidate_products()
             if n % 5 == 0:
-                await _set_import_status(status=f"Albert Heijn ({n}/{len(DIRK_ALL_TERMS)})", added_ah=added)
+                await _set_import_status(status=f"Albert Heijn ({n}/{len(terms)})", added_ah=added)
     return added
 
 
@@ -6139,6 +6198,7 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_selftest3())
+    asyncio.create_task(_import_extra_terms())
 
 
 async def _daily_refresh_loop():

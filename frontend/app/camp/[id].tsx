@@ -434,9 +434,16 @@ export default function CampDetailScreen() {
                     const dish = dishesById[dishId];
                     return (
                       <View key={dishId} style={styles.dishRow}>
-                        <Text style={styles.dishName} numberOfLines={1}>
-                          {dish?.name ?? "Onbekend gerecht"}
-                        </Text>
+                        <Pressable
+                          disabled={!dish}
+                          onPress={() => router.push({ pathname: "/dish/edit", params: { id: dishId } })}
+                          style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6 }}
+                        >
+                          {dish?.online ? <Icon name="web" size={15} color={colors.muted} /> : null}
+                          <Text style={[styles.dishName, { flex: 1 }]} numberOfLines={1}>
+                            {dish?.name ?? "Onbekend gerecht"}
+                          </Text>
+                        </Pressable>
                         {dish?.needs_vega && vegaA + vegaC > 0 ? (
                           <Pressable testID={`vega-${dishId}`} onPress={() => setVegaDish(dish)} style={styles.vegaBadge}>
                             <Icon name="leaf" size={13} color={colors.onWarning} />
@@ -962,12 +969,13 @@ function DishPickerModal({
     if (visible) {
       setQ("");
       setAllCats(false);
-      setTab(category && !dishes.some((d) => d.category === category) ? "online" : "own");
+      setTab(category && !dishes.some((d) => !d.online && d.category === category) ? "online" : "own");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, category]);
 
-  const own = category && !allCats ? dishes.filter((d) => d.category === category) : dishes;
+  const mine = dishes.filter((d) => !d.online);
+  const own = category && !allCats ? mine.filter((d) => d.category === category) : mine;
   const list = own.filter((d) => !q.trim() || d.name.toLowerCase().includes(q.trim().toLowerCase()));
   const pickedRecipes = dishes
     .filter((d) => selectedIds.includes(d.id) && d.source?.recipe_id)
