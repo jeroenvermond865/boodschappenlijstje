@@ -8,6 +8,7 @@ import os
 import logging
 import asyncio
 import functools
+import json
 import math
 import itertools
 import time
@@ -3055,7 +3056,9 @@ async def _dirk_extra_folders() -> list:
                         url = next((v for v in x.values() if isinstance(v, str) and v.startswith("http") and ".pdf" in v.lower()), None)
                         url = url or next((v for v in x.values() if isinstance(v, str) and v.startswith("http")), None)
                         if not url:
-                            logger.info("Dirk PDF zonder link: %s", {k: (v if isinstance(v, (str, int)) else type(v).__name__) for k, v in x.items()})
+                            pages = x.get("pages") or []
+                            logger.info("Stest6 %s pages=%d p0=%s p1=%s", name, len(pages), json.dumps(pages[:1], default=str)[:2500],
+                                        json.dumps(pages[1:2], default=str)[:1500])
                         files.append({"name": name[:-4], "url": url})
                         return
                     for v in x.values():
@@ -3869,6 +3872,13 @@ async def remove_recipe_favorite(id: str, user: dict = Depends(get_current_user)
 async def _selftest3() -> None:
     # Tijdelijk: controle matching vormwoorden
     await asyncio.sleep(60)
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            r = await c.get("https://www.dirk.nl/meer/over-dirk/super-dirck-3", headers=_PAGE_HEADERS)
+            data = _nuxt_data(r.text)
+            logger.info("Stest7 dirck3 %s %s", r.status_code, json.dumps(data, default=str)[:3000])
+    except Exception as e:
+        logger.warning("Stest7: %r", e)
     try:
         docs = await _global_products()
         for st in COMPARE_STORES:
