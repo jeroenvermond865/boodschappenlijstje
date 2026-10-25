@@ -3314,10 +3314,15 @@ _FILLER = {"middelgrote", "grote", "kleine", "verse", "vers", "milde", "mild", "
 def _stems(w: str) -> list:
     # appels -> appel, uien -> ui, worstjes -> worst, tomaten -> tomaat (ruw, maar genoeg om te zoeken)
     out = [w]
-    for suf, rep in (("jes", ""), ("tjes", ""), ("en", ""), ("s", ""), ("ten", "t"), ("aten", "aat"), ("ien", "i"), ("eren", "eer")):
+    for suf, rep in (("jes", ""), ("tjes", ""), ("en", ""), ("s", ""), ("ten", "t"), ("aten", "aat"), ("ien", "i"), ("eren", "eer"), ("ven", "f"), ("zen", "s"), ("aatjes", "at")):
         if w.endswith(suf) and len(w) - len(suf) >= 2:
             out.append(w[: -len(suf)] + rep)
+    if len(w) >= 4 and w.endswith("f"):
+        out.append(w[:-1] + "v")  # olijf -> olijv(en)
     return list(dict.fromkeys(out))
+
+
+_PREPS = {"zonder", "met", "in", "uit", "van", "voor", "op", "naar", "of", "en", "à", "a", "ca", "circa", "om"}
 
 
 def _best_matches(pool: list, name: str, limit: int = 1) -> list:
@@ -3325,8 +3330,15 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
     words = _alt_terms(name, None).split()
     if not words:
         return []
-    core = [w for w in words if w not in _FILLER] or words
-    tries = [" ".join(words), " ".join(core)]
+    # "zwarte olijf zonder pit" gaat over olijven, niet over "pit": alles na een voorzetsel telt alleen in de eerste poging
+    head = words
+    for k, w in enumerate(words):
+        if k and w in _PREPS:
+            head = words[:k]
+            break
+    head = [w for w in head if w not in _PREPS] or words
+    core = [w for w in head if w not in _FILLER] or head
+    tries = [" ".join(words), " ".join(head), " ".join(core)]
     for st in _stems(core[-1]):
         tries.append(" ".join(core[:-1] + [st]))
         tries.append(st)
@@ -3352,16 +3364,30 @@ def _rank_food(hits: list, words: list) -> list:
         nw = name.split()
         if brand and name.startswith(brand + " "):
             nw = nw[len(brand.split()):]
-        pos = next((k for k, w in enumerate(nw) if any(w.startswith(q) for q in words)), 6)
-        pen = rank * 0.4 + pos * 2 + len(nw) * 0.3
-        if not any(w == q or w in _stems(q) or q in _stems(w) for w in nw for q in words):
-            pen += 4  # "bloem" is geen "bloemkool"
-        if d.get("aisle") == "Dranken, sap, koffie & thee" and not any(q in ("sap", "melk", "wijn", "bier", "koffie", "thee", "water") for q in words):
-            pen += 6
+        # Positie van het gezochte woord; in het Nederlands zit het hoofdwoord achteraan ("tarwebloem" is bloem, "bloemkool" niet)
+        def place(q):
+            best = None
+            for k, w in enumerate(nw):
+                if w == q or w in _stems(q) or q in _stems(w):
+                    v = k * 2
+                elif w.endswith(q):
+                    v = k * 2 + 1
+                elif w.startswith(q):
+                    v = k * 2 + 5
+                else:
+                    continue
+                best = v if best is None else min(best, v)
+            return best
+        # Het laatste zoekwoord is het hoofdwoord ("witte wijn" is wijn, geen wijnazijn)
+        head = place(words[-1])
+        pos = head if head is not None else min((p for p in map(place, words) if p is not None), default=11) + 3
+        pen = rank * 0.02 + pos + len(nw) * 0.4
         if d.get("aisle") in _NONFOOD:
             pen += 30
         if d.get("aisle") == "Snacks & snoep" and not any(_CANDY_RE.search(q) for q in words):
             pen += 8
+        if d.get("aisle") == "Dranken, sap, koffie & thee" and not any(q in ("sap", "melk", "wijn", "bier", "koffie", "thee", "water") for q in words):
+            pen += 6
         return pen
     return [d for _, d in sorted(enumerate(hits), key=penalty)]
 
