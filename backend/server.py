@@ -6,6 +6,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import asyncio
+import itertools
+import time
 import uuid
 import re
 import secrets
@@ -2790,6 +2792,10 @@ async def _dirk_folder() -> list:
         else:
             label = f"Actie {label.lower()}"
         img = o.get("image") or ""
+        if not img:
+            # Niet elke actie heeft een eigen foto; neem dan die van het eerste product
+            img = next((p["productInformation"].get("image") for p in o.get("products") or []
+                        if isinstance(p, dict) and isinstance(p.get("productInformation"), dict) and p["productInformation"].get("image")), "") or ""
         if img and not img.startswith("http"):
             from urllib.parse import quote
             img = DIRK_IMAGE_BASE + quote(img.lstrip("/"))
@@ -2907,75 +2913,450 @@ def _promo_public(doc: dict, price: float) -> tuple:
     return now_p, next_p
 
 
-async def _probe_recipes() -> None:
-    # Tijdelijk: recepten en folders onderzoeken (ronde 5)
-    import json as _json
-    def dump(x, n=2500):
-        return _json.dumps(x, ensure_ascii=False, default=str)[:n]
-    await asyncio.sleep(30)
-    out = []
-    try:
-        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
-            tok = await _ah_token(c)
-            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP", "Content-Type": "application/json",
-                 "client-name": "ah-allerhande", "client-version": "6.0"}
-            G = "https://api.ah.nl/graphql"
-            for q in ['{recipeSearchV2(searchText:"pasta",size:1){filters{name label}}}',
-                      '{recipeSearchV2(searchText:"pasta",size:1){filters{name label filters{name label count}}}}',
-                      '{recipeSearchV2(searchText:"pasta",size:1){filters{name label items{name label count}}}}',
-                      '{recipeSearchV2(searchText:"pasta",size:1){filters{name label tags{name label count}}}}',
-                      '{recipeSearchV2(searchText:"pasta",size:1){filters{name label children{name label count}}}}',
-                      '{recipeSearchV2(searchText:"pasta",size:1,filters:[{group:"menugang",values:["hoofdgerecht"]}]){page{total}}}',
-                      '{recipeSearchV2(searchText:"",size:1,filters:[{group:"menugang",values:["soep"]}]){page{total}}}',
-                      '{recipeSearchV2(size:1,sortBy:NEWEST){page{total}}}',
-                      '{recipe(id:1302917){cookTime}}', '{recipe(id:1302917){cookingTime}}', '{recipe(id:1302917){preparationTime}}',
-                      '{recipe(id:1302917){servings{number}}}', '{recipe(id:1302917){tags{key value}}}', '{recipe(id:1302917){courses}}',
-                      '{recipe(id:1302917){nutritions{energy{value unit}}}}', '{recipe(id:1302917){webPath}}', '{recipe(id:1302917){slug}}']:
-                r = await c.post(G, json={"query": q}, headers=H)
-                out.append(("AH " + q[:110], r.text[:1500]))
-        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
-            for f in ["id", "title", "name", "start", "end", "startDate", "date", "description", "promotions{id}", "runtime"]:
-                r = await c.post(JUMBO_GQL, json={"query": "{promotionTabs{%s}}" % f})
-                out.append(("Jumbo tab " + f, r.text[:600]))
-            r = await c.post(JUMBO_GQL, json={"query": "{promotions{id}}"})
-            out.append(("Jumbo promotions", r.text[:500]))
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            r = await c.get("https://www.jumbo.com/recepten/zoeken/?searchTerms=pasta&filters=menugang:Soep&pageSize=24&offSet=0", headers=_PAGE_HEADERS)
-            d = _nuxt_data(r.text)
-            st = (_find_dict(d, "recipeStore") or {}).get("recipeStore") or {}
-            out.append(("Jumbo 1 filter count", st.get("count")))
-            out.append(("Jumbo facet links", dump([[v.get("link") for v in g.get("values", [])[:2]] for g in st.get("facets") or []], 2500)))
-            out.append(("Jumbo selected", dump(st.get("selectedFacets"), 600)))
-            out.append(("Jumbo facet groups", dump([(g.get("key"), g.get("displayName"), g.get("multiSelect"), len(g.get("values") or [])) for g in st.get("facets") or []], 1500)))
-            r = await c.get("https://www.jumbo.com/aanbiedingen/nu", headers=_PAGE_HEADERS)
-            d = _nuxt_data(r.text)
-            hits = []
-            def walk(x, path="", depth=0):
-                if depth > 20 or len(hits) > 12:
-                    return
-                if isinstance(x, dict):
-                    for k, v in x.items():
-                        if "tab" in k.lower() or "week" in k.lower():
-                            hits.append((path + "." + k, dump(v, 400)))
-                        walk(v, path + "." + k, depth + 1)
-                elif isinstance(x, list) and x:
-                    walk(x[0], path + "[0]", depth + 1)
-            walk(d)
-            out.append(("Jumbo aanb tab/week", dump(hits, 3500)))
-            for g in ("avondeten", "lunch", "ontbijt", "borrel", "toetjes", "brunch"):
+# --- Online recepten van AH (Allerhande), Jumbo en Dirk ---
+RECIPE_PAGE = 24
+RECIPE_STORE_NAMES = {"ah": "Albert Heijn", "jumbo": "Jumbo", "dirk": "Dirk"}
+_recipe_cache: dict = {}
+AH_GQL = "https://api.ah.nl/graphql"
+# Filters die bij "Alle winkels" voor elke winkel werken
+COMMON_COURSES = [("ontbijt", "Ontbijt"), ("lunch", "Lunch"), ("hoofdgerecht", "Hoofdgerecht / avondeten"), ("bijgerecht", "Bijgerecht"),
+                  ("soep", "Soep"), ("dessert", "Dessert / toetje"), ("borrel", "Borrel & snack")]
+COMMON_TIMES = [("15", "Tot 15 min"), ("30", "Tot 30 min"), ("45", "Tot 45 min"), ("60", "Tot 1 uur")]
+_COURSE_MAP = {
+    "ah": {"ontbijt": ("menugang", "ontbijt"), "lunch": ("menugang", "lunch"), "hoofdgerecht": ("menugang", "hoofdgerecht"),
+           "bijgerecht": ("menugang", "bijgerecht"), "soep": ("soort-gerecht", "soep"), "dessert": ("menugang", "nagerecht"),
+           "borrel": ("menugang", "borrelhapje")},
+    "jumbo": {"ontbijt": ("menugang", "Ontbijt"), "lunch": ("menugang", "Lunch/brunch gerecht"), "hoofdgerecht": ("menugang", "Hoofdgerecht"),
+              "bijgerecht": ("menugang", "Bijgerecht"), "soep": ("menugang", "Soep"), "dessert": ("menugang", "Dessert"),
+              "borrel": ("menugang", "Borrel")},
+    "dirk": {"ontbijt": ("gang", "Ontbijt"), "lunch": ("gang", "Lunch"), "hoofdgerecht": ("gang", "Avondeten"), "bijgerecht": ("tag", "Bijgerecht"),
+             "soep": ("tag", "Soep"), "dessert": ("gang", "Toetjes"), "borrel": ("gang", "Borrel")},
+}
+
+
+def _rc_get(key, ttl):
+    hit = _recipe_cache.get(key)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    return None
+
+
+def _rc_set(key, value):
+    if len(_recipe_cache) > 300:
+        for k in sorted(_recipe_cache, key=lambda k: _recipe_cache[k][0])[:100]:
+            _recipe_cache.pop(k, None)
+    _recipe_cache[key] = (time.time(), value)
+    return value
+
+
+def _iso_minutes(v) -> Optional[int]:
+    m = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?", str(v or ""))
+    if not m or not (m.group(1) or m.group(2)):
+        return None
+    return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+
+
+def _nice(s: str) -> str:
+    s = (s or "").replace("-", " ").strip()
+    return s[:1].upper() + s[1:]
+
+
+async def _ah_gql(query: str, variables: Optional[dict] = None) -> dict:
+    async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
+        tok = await _ah_token(c)
+        r = await c.post(AH_GQL, json={"query": query, "variables": variables or {}},
+                         headers={"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP", "client-name": "ah-allerhande", "client-version": "6.0"})
+        body = r.json() if r.content else {}
+        if not body.get("data") and body.get("errors"):
+            raise RuntimeError(f"AH: {str(body['errors'])[:200]}")
+        return body.get("data") or {}
+
+
+AH_RECIPE_SEARCH = """query($q:String,$start:Int,$size:Int,$filters:[RecipeSearchQueryFilter!]){recipeSearchV2(searchText:$q,start:$start,size:$size,filters:$filters){
+ page{total} result{id title slug time{cook} serving{number} images{url width} courses rating{average count}}
+ filters{name label filters{name label count}}}}"""
+
+
+def _ah_image(images, want=440):
+    imgs = [i for i in images or [] if isinstance(i, dict) and i.get("url")]
+    if not imgs:
+        return None
+    return min(imgs, key=lambda i: abs((i.get("width") or 0) - want))["url"]
+
+
+async def _ah_recipes(q: str, filters: dict, page: int, size: int) -> dict:
+    flt = [{"group": k, "values": v} for k, v in filters.items() if v]
+    d = await _ah_gql(AH_RECIPE_SEARCH, {"q": q or None, "start": page * size, "size": size, "filters": flt or None})
+    res = d.get("recipeSearchV2") or {}
+    total = int((res.get("page") or {}).get("total") or 0)
+    recipes = [{"id": f"ah:{r['id']}", "store": "ah", "title": r.get("title"), "image": _ah_image(r.get("images")),
+                "time": (r.get("time") or {}).get("cook"), "servings": (r.get("serving") or {}).get("number"),
+                "course": (r.get("courses") or [None])[0], "rating": (r.get("rating") or {}).get("average") or None}
+               for r in res.get("result") or [] if r.get("id")]
+    facets = [{"key": g["name"], "label": _nice(g.get("label") or g["name"]), "multi": True,
+               "values": [{"value": f["name"], "label": _nice(f.get("label") or f["name"]), "count": f.get("count")} for f in g.get("filters") or []]}
+              for g in res.get("filters") or [] if g.get("name") and g.get("filters")]
+    return {"recipes": recipes, "total": total, "facets": facets, "has_more": (page + 1) * size < total}
+
+
+async def _jumbo_recipes(q: str, filters: dict, page: int, size: int) -> dict:
+    from urllib.parse import quote
+    parts = [f"{k}:{v}" for k, vals in filters.items() for v in vals]
+    url = f"https://www.jumbo.com/recepten/zoeken/?searchTerms={quote(q or '')}&pageSize={size}&offSet={page * size}"
+    if parts:
+        url += "&filters=" + quote(";".join(parts), safe=":;")
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        r = await c.get(url, headers=_PAGE_HEADERS)
+    st = (_find_dict(_nuxt_data(r.text), "recipeStore") or {}).get("recipeStore") or {}
+    if not st:
+        raise RuntimeError(f"Jumbo gaf geen recepten ({r.status_code})")
+    total = int(st.get("count") or 0)
+    recipes = []
+    for x in st.get("recipes") or []:
+        if not isinstance(x, dict) or not x.get("link"):
+            continue
+        recipes.append({"id": "jumbo:" + x["link"].rstrip("/").split("/")[-1], "store": "jumbo", "title": (x.get("title") or "").strip(),
+                        "image": x.get("fullImageUrl"), "time": x.get("time") or x.get("cookingTime"), "servings": x.get("numberOfPersons"),
+                        "course": x.get("course"), "rating": ((x.get("rating") or {}).get("value") or None)})
+    facets = []
+    for g in st.get("facets") or []:
+        if not isinstance(g, dict) or not g.get("key"):
+            continue
+        facets.append({"key": g["key"], "label": g.get("displayName") or _nice(g["key"]), "multi": False,
+                       "values": [{"value": v.get("name"), "label": v.get("name"), "count": v.get("count")} for v in g.get("values") or [] if v.get("name")]})
+    # Gekozen filters blijven zichtbaar, ook als Jumbo ze niet meer als keuze teruggeeft
+    for k, vals in filters.items():
+        f = next((f for f in facets if f["key"] == k), None)
+        if not f:
+            f = {"key": k, "label": _nice(k.replace("_", " ")), "multi": False, "values": []}
+            facets.append(f)
+        for v in vals:
+            if not any(x["value"] == v for x in f["values"]):
+                f["values"].insert(0, {"value": v, "label": v, "count": None})
+    return {"recipes": recipes, "total": total, "facets": facets, "has_more": (page + 1) * size < total}
+
+
+DIRK_RECIPE_COURSES = ["avondeten", "lunch", "ontbijt", "brunch", "borrel", "toetjes", "koffietijd"]
+
+
+async def _dirk_all_recipes() -> list:
+    hit = _rc_get("dirk_all", 12 * 3600)
+    if hit is not None:
+        return hit
+    found: dict = {}
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        for g in DIRK_RECIPE_COURSES:
+            try:
                 r = await c.get("https://www.dirk.nl/meer/recepten/gang/" + g, headers=_PAGE_HEADERS)
-                d = _nuxt_data(r.text) or {}
-                rc = (d.get("data") or {}).get("recipeCourse")
-                lst = rc if isinstance(rc, list) else []
-                first = dict(lst[0]) if lst else None
-                if first:
-                    for k in ("courses", "kitchens", "tags"):
-                        first[k] = [t.get("name") for t in first.get(k) or [] if isinstance(t, dict)]
-                out.append(("Dirk gang " + g, f"{r.status_code} n={len(lst)} type={type(rc).__name__} first={dump(first, 1200)}"))
+                rc = ((_nuxt_data(r.text) or {}).get("data") or {}).get("recipeCourse")
+            except Exception as e:
+                logger.warning("Dirk recepten %s: %s", g, e)
+                continue
+            for x in rc if isinstance(rc, list) else []:
+                if isinstance(x, dict) and x.get("recipeId") and x.get("title"):
+                    found.setdefault(x["recipeId"], x)
+    out = []
+    for x in found.values():
+        names = lambda k: [t.get("name") for t in x.get(k) or [] if isinstance(t, dict) and t.get("name")]
+        img = x.get("filename")
+        out.append({"id": "dirk:" + _slug(x["title"]), "store": "dirk", "title": x["title"].strip(),
+                    "image": (DIRK_IMAGE_BASE + img.lstrip("/")) if img else None, "time": _iso_minutes(x.get("preparationTime")),
+                    "servings": None, "course": (names("courses") or [None])[0], "rating": None,
+                    "_courses": names("courses"), "_kitchens": names("kitchens"), "_tags": names("tags"),
+                    "_veg": bool(x.get("vegetarian")), "_desc": x.get("metaDescription") or ""})
+    out.sort(key=lambda r: r["title"].lower())
+    logger.info("Dirk: %d recepten", len(out))
+    if out:
+        _rc_set("dirk_all", out)
+    return out
+
+
+def _dirk_matches(r: dict, filters: dict, skip: Optional[str] = None) -> bool:
+    for k, vals in filters.items():
+        if k == skip or not vals:
+            continue
+        have = {"gang": r["_courses"], "keuken": r["_kitchens"], "tag": r["_tags"],
+                "dieet": ["Vegetarisch"] if r["_veg"] else []}.get(k)
+        if k == "tijd":
+            if not r["time"] or r["time"] > max(int(v) for v in vals):
+                return False
+        elif have is not None and not any(v in have for v in vals):
+            return False
+    return True
+
+
+async def _dirk_recipes(q: str, filters: dict, page: int, size: int) -> dict:
+    allr = await _dirk_all_recipes()
+    terms = _norm_text(q).split() if q else []
+    base = [r for r in allr if all(t in _norm_text(r["title"] + " " + r["_desc"] + " " + " ".join(r["_tags"])) for t in terms)]
+    hits = [r for r in base if _dirk_matches(r, filters)]
+    facets = []
+    for key, label, field in (("gang", "Gang", "_courses"), ("keuken", "Keuken", "_kitchens"), ("tag", "Soort & smaak", "_tags")):
+        counts: dict = {}
+        for r in base:
+            if _dirk_matches(r, filters, skip=key):
+                for v in r[field]:
+                    counts[v] = counts.get(v, 0) + 1
+        for v in filters.get(key) or []:
+            counts.setdefault(v, 0)
+        if counts:
+            facets.append({"key": key, "label": label, "multi": True,
+                           "values": [{"value": v, "label": v, "count": n} for v, n in sorted(counts.items(), key=lambda kv: -kv[1])]})
+    nveg = sum(1 for r in base if r["_veg"] and _dirk_matches(r, filters, skip="dieet"))
+    facets.append({"key": "dieet", "label": "Dieet", "multi": False, "values": [{"value": "Vegetarisch", "label": "Vegetarisch", "count": nveg}]})
+    facets.append({"key": "tijd", "label": "Bereidingstijd", "multi": False, "values": [{"value": v, "label": l, "count": None} for v, l in COMMON_TIMES]})
+    chunk = hits[page * size:(page + 1) * size]
+    return {"recipes": [{k: v for k, v in r.items() if not k.startswith("_")} for r in chunk], "total": len(hits),
+            "facets": facets, "has_more": (page + 1) * size < len(hits)}
+
+
+_RECIPE_SOURCES = {"ah": _ah_recipes, "jumbo": _jumbo_recipes, "dirk": _dirk_recipes}
+
+
+async def _store_recipes(store: str, q: str, filters: dict, page: int, size: int) -> dict:
+    import json as _json
+    key = ("search", store, q, _json.dumps(filters, sort_keys=True), page, size)
+    hit = _rc_get(key, 3600)
+    if hit is not None:
+        return hit
+    return _rc_set(key, await _RECIPE_SOURCES[store](q, filters, page, size))
+
+
+@api_router.get("/recipes/search")
+async def search_recipes(q: str = "", store: str = "all", page: int = 0, filters: str = "{}", user: dict = Depends(get_current_user)):
+    import json as _json
+    try:
+        flt = {str(k): [str(x) for x in v] for k, v in (_json.loads(filters or "{}") or {}).items() if isinstance(v, list) and v}
+    except Exception:
+        flt = {}
+    q = (q or "").strip()[:80]
+    page = max(0, min(page, 200))
+    if store in _RECIPE_SOURCES:
+        try:
+            return await _store_recipes(store, q, flt, page, RECIPE_PAGE)
+        except Exception as e:
+            logger.warning("Recepten %s: %r", store, e)
+            raise HTTPException(status_code=502, detail=f"{STORE_LABELS.get(store, store)} is nu niet bereikbaar, probeer het zo nog eens")
+    # Alle winkels: per winkel een deel, om en om, met de filters die overal werken
+    courses = flt.get("gang") or []
+    max_time = min((int(v) for v in flt.get("tijd") or [] if str(v).isdigit()), default=None)
+    per = RECIPE_PAGE // 3
+
+    async def one(s):
+        sf: dict = {}
+        for c in courses:
+            k, v = _COURSE_MAP[s].get(c, (None, None))
+            if k:
+                sf.setdefault(k, []).append(v)
+        if s == "dirk" and max_time:
+            sf["tijd"] = [str(max_time)]
+        if s == "jumbo" and max_time and max_time <= 20:
+            sf["klaar_in_20_minuten"] = ["Klaar in 20 minuten"]
+        if s == "jumbo":
+            sf = {k: v[:1] for k, v in sf.items()}  # Jumbo kent één keuze per filter
+        return await _store_recipes(s, q, sf, page, per)
+
+    results = await asyncio.gather(*(one(s) for s in _RECIPE_SOURCES), return_exceptions=True)
+    lists, total, more, errors = [], 0, False, []
+    for s, res in zip(_RECIPE_SOURCES, results):
+        if isinstance(res, Exception):
+            logger.warning("Recepten %s: %r", s, res)
+            errors.append(STORE_LABELS.get(s, s))
+            continue
+        rs = [r for r in res["recipes"] if not max_time or not r.get("time") or r["time"] <= max_time]
+        lists.append(rs)
+        total += res["total"]
+        more = more or res["has_more"]
+    merged = [r for group in itertools.zip_longest(*lists) for r in group if r] if lists else []
+    facets = [{"key": "gang", "label": "Gang", "multi": True, "values": [{"value": v, "label": l, "count": None} for v, l in COMMON_COURSES]},
+              {"key": "tijd", "label": "Bereidingstijd", "multi": False, "values": [{"value": v, "label": l, "count": None} for v, l in COMMON_TIMES]}]
+    return {"recipes": merged, "total": total, "facets": facets, "has_more": more, "errors": errors}
+
+
+STORE_LABELS = {"ah": "Albert Heijn", "jumbo": "Jumbo", "dirk": "Dirk"}
+_QTY_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?(?:\s*/\s*\d+)?|½|¼|¾)\s*([a-zA-Zé]+\.?)?\s+(.*)$")
+_UNIT_WORDS = {"g": "gram", "gr": "gram", "gram": "gram", "kg": "kg", "kilo": "kg", "ml": "ml", "l": "liter", "liter": "liter", "dl": "dl", "cl": "cl",
+               "el": "el", "eetlepel": "el", "eetlepels": "el", "tl": "tl", "theelepel": "tl", "theelepels": "tl", "teen": "teen", "tenen": "teen",
+               "snuf": "snuf", "snufje": "snuf", "plak": "plak", "plakken": "plak", "blik": "blik", "blikje": "blik", "pot": "pot", "potje": "pot",
+               "zak": "zak", "zakje": "zak", "bos": "bos", "bosje": "bos", "pak": "pak", "pakje": "pak", "takje": "takje", "takjes": "takje",
+               "stuk": "stuks", "stuks": "stuks", "st": "stuks", "fles": "fles", "bakje": "bak", "bak": "bak", "scheut": "scheut", "handje": "handje"}
+
+
+def _parse_amount(text: str) -> tuple:
+    # "2 el olijfolie" -> (2.0, "el", "olijfolie"); "1 avocado" -> (1.0, "stuks", "avocado")
+    t = (text or "").strip()
+    m = _QTY_RE.match(t)
+    if not m:
+        return None, "stuks", t
+    raw = m.group(1).replace(",", ".").replace(" ", "")
+    qty = {"½": 0.5, "¼": 0.25, "¾": 0.75}.get(raw)
+    if qty is None:
+        if "/" in raw:
+            a, b = raw.split("/")
+            qty = float(a) / float(b) if float(b) else None
+        else:
+            qty = float(raw)
+    unit_word = (m.group(2) or "").lower().rstrip(".")
+    unit = _UNIT_WORDS.get(unit_word)
+    rest = m.group(3).strip()
+    if m.group(2) and not unit:
+        rest = f"{m.group(2)} {rest}"  # geen eenheid maar deel van de naam, bijv. "2 middelgrote uien"
+        unit = "stuks"
+    return qty, unit or "stuks", rest
+
+
+async def _recipe_detail(rid: str) -> dict:
+    hit = _rc_get(("detail", rid), 6 * 3600)
+    if hit is not None:
+        return hit
+    store, _, key = rid.partition(":")
+    if store == "ah" and key.isdigit():
+        d = await _ah_gql("""query($id:Int!){recipe(id:$id){id title description cookTime servings{number} images{url width} courses
+            tags{key value} nutritions{energy{value unit}} ingredients{text quantity quantityUnit{singular} name{singular}} preparation{steps}}}""",
+                          {"id": int(key)})
+        r = d.get("recipe") or {}
+        if not r:
+            raise HTTPException(status_code=404, detail="Recept niet gevonden")
+        ings = []
+        for i in r.get("ingredients") or []:
+            unit = _UNIT_WORDS.get(((i.get("quantityUnit") or {}).get("singular") or "").lower(), (i.get("quantityUnit") or {}).get("singular") or "stuks")
+            ings.append({"text": i.get("text") or "", "name": (i.get("name") or {}).get("singular") or i.get("text") or "",
+                         "qty": i.get("quantity"), "unit": unit or "stuks", "product": None})
+        energy = (r.get("nutritions") or {}).get("energy") or {}
+        out = {"id": rid, "store": "ah", "title": r.get("title"), "description": r.get("description"), "image": _ah_image(r.get("images"), 800),
+               "time": r.get("cookTime"), "servings": (r.get("servings") or {}).get("number"),
+               "tags": sorted({_nice(t["value"]) for t in r.get("tags") or [] if t.get("value")}),
+               "kcal": energy.get("value"), "ingredients": ings, "steps": (r.get("preparation") or {}).get("steps") or [],
+               "url": f"https://www.ah.nl/allerhande/recept/R-R{key}"}
+    elif store == "jumbo":
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            resp = await c.get(f"https://www.jumbo.com/recepten/{key}", headers=_PAGE_HEADERS)
+        r = _find_dict(_nuxt_data(resp.text), "instructions") or {}
+        if not r.get("title"):
+            raise HTTPException(status_code=404, detail="Recept niet gevonden")
+        ings = []
+        for i in r.get("ingredients") or []:
+            qty, unit, _ = _parse_amount(f"{i.get('amount') or ''} x")
+            p = i.get("product") or {}
+            ings.append({"text": f"{(i.get('amount') or '').strip()} {(i.get('name') or '').strip()}".strip(), "name": (i.get("name") or "").strip(),
+                         "qty": qty, "unit": unit, "product": {"store": "Jumbo", "sid": str(p.get("sku") or p.get("id"))} if (p.get("sku") or p.get("id")) else None})
+        tags = [r.get("course")] + [t.get("name") if isinstance(t, dict) else t for t in r.get("tags") or []]
+        out = {"id": rid, "store": "jumbo", "title": (r.get("title") or "").strip(), "description": r.get("description"),
+               "image": r.get("fullImageUrl") or r.get("imageUrl") or r.get("image"), "time": r.get("time") or r.get("cookingTime"),
+               "servings": r.get("numberOfPersons") or r.get("persons"), "tags": sorted({_nice(str(t)) for t in tags if t}),
+               "kcal": r.get("calories") or None, "ingredients": ings, "steps": [s for s in r.get("instructions") or [] if isinstance(s, str)],
+               "url": f"https://www.jumbo.com/recepten/{key}"}
+        if not out["image"] or not out["time"]:
+            tile = next((x for x in (await _jumbo_recipes(out["title"], {}, 0, 5))["recipes"] if x["id"] == rid), None) if out["title"] else None
+            if tile:
+                out["image"] = out["image"] or tile["image"]
+                out["time"] = out["time"] or tile["time"]
+                out["servings"] = out["servings"] or tile["servings"]
+    elif store == "dirk":
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            resp = await c.get(f"https://www.dirk.nl/meer/recepten/recept/{key}", headers=_PAGE_HEADERS)
+        data = (_nuxt_data(resp.text) or {}).get("data") or {}
+        r = (_find_dict(data, "steps") or {})
+        prods = next((v for k, v in data.items() if str(k).startswith("products-") and isinstance(v, dict)), {})
+        if not r.get("title"):
+            raise HTTPException(status_code=404, detail="Recept niet gevonden")
+        ings = []
+        seen = set()
+        for i in sorted(r.get("ingredients") or [], key=lambda i: (i.get("rankNumber") or 0, i.get("position") or 0)):
+            desc = (i.get("description") or "").strip()
+            if not desc or desc in seen:
+                continue  # Dirk geeft soms meerdere producten voor hetzelfde ingrediënt
+            seen.add(desc)
+            qty, unit, name = _parse_amount(desc)
+            p = prods.get(str(i.get("productNumber"))) or {}
+            ings.append({"text": desc, "name": name, "qty": qty, "unit": unit,
+                         "product": {"store": "Dirk", "sid": str(p["productId"])} if p.get("productId") else None})
+        steps = []
+        for s in r.get("steps") or []:
+            steps.append(s if isinstance(s, str) else (s.get("description") or s.get("text") or "") if isinstance(s, dict) else "")
+        names = lambda k: [t.get("name") for t in r.get(k) or [] if isinstance(t, dict) and t.get("name")]
+        img = r.get("filename")
+        out = {"id": rid, "store": "dirk", "title": r["title"].strip(), "description": r.get("metaDescription"),
+               "image": (DIRK_IMAGE_BASE + img.lstrip("/")) if img else None, "time": _iso_minutes(r.get("preparationTime")),
+               "servings": r.get("persons"), "tags": names("courses") + names("kitchens") + names("tags") + (["Vegetarisch"] if r.get("vegetarian") else []),
+               "kcal": None, "ingredients": ings, "steps": [s for s in steps if s], "tip": r.get("tip"),
+               "url": f"https://www.dirk.nl/meer/recepten/recept/{key}"}
+    else:
+        raise HTTPException(status_code=404, detail="Recept niet gevonden")
+    return _rc_set(("detail", rid), out)
+
+
+def _recipe_with_products(rec: dict, user: dict) -> dict:
+    by_sid = _product_cache.get("by_sid") or {}
+    favs = set(user.get("favorite_products") or [])
+    ings = []
+    for i in rec["ingredients"]:
+        p = i.get("product")
+        doc = by_sid.get((p["store"], p["sid"])) if p else None
+        ings.append({**i, "product": product_public(_clean(doc), p["store"], user["user_id"], favs) if doc else None})
+    return {**rec, "ingredients": ings}
+
+
+@api_router.get("/recipes/detail")
+async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
+    try:
+        rec = await _recipe_detail(id)
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.warning("Recept probe mislukt: %r", e)
-    for k, v in out:
-        logger.info("Probe5 %s -> %s", k, v)
+        logger.warning("Recept %s: %r", id, e)
+        raise HTTPException(status_code=502, detail="Dit recept is nu niet op te halen, probeer het zo nog eens")
+    await _global_products()
+    return _recipe_with_products(rec, user)
+
+
+async def _selftest_recipes() -> None:
+    # Tijdelijk: controleren of zoeken en recepten ophalen werkt
+    await asyncio.sleep(40)
+    for store, q, f in (("ah", "pasta", {}), ("ah", "", {"menugang": ["soep"]}), ("jumbo", "pasta", {"menugang": ["Soep"]}), ("jumbo", "", {}),
+                        ("dirk", "", {}), ("dirk", "soep", {"gang": ["Lunch"]})):
+        try:
+            res = await _store_recipes(store, q, f, 0, 24)
+            logger.info("Rtest %s %r %s: total=%s n=%d facets=%s first=%s", store, q, f, res["total"], len(res["recipes"]),
+                        [(x["key"], len(x["values"])) for x in res["facets"]], res["recipes"][:1])
+            if res["recipes"]:
+                d = await _recipe_detail(res["recipes"][0]["id"])
+                logger.info("Rtest detail %s: %s ings=%d steps=%d img=%s time=%s pers=%s prods=%d first=%s",
+                            d["id"], d["title"], len(d["ingredients"]), len(d["steps"]), bool(d["image"]), d["time"], d["servings"],
+                            sum(1 for i in d["ingredients"] if i.get("product")), d["ingredients"][:2])
+        except Exception as e:
+            logger.warning("Rtest %s %r: %r", store, q, e)
+
+
+class RecipeImport(BaseModel):
+    id: str
+    category: str = "avondeten"
+
+
+@api_router.post("/recipes/import")
+async def import_recipe(data: RecipeImport, user: dict = Depends(get_current_user)):
+    if data.category not in MEAL_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Ongeldige categorie")
+    rec = _recipe_with_products(await _recipe_detail(data.id), user)
+    persons = rec.get("servings") or 4
+    ings = []
+    for i in rec["ingredients"]:
+        prod = i.get("product")
+        per = round((i["qty"] or 1) / persons, 3)
+        ings.append(Ingredient(name=(prod or {}).get("name") or i["name"] or i["text"], unit=i["unit"] or "stuks",
+                               qty_adult=per, qty_child=round(per / 2, 3),
+                               aisle=(prod or {}).get("aisle") or "Overig", price=(prod or {}).get("price") or 0,
+                               product_id=(prod or {}).get("id"), store=STORE_LABELS.get(rec["store"]) if prod else None).model_dump())
+    dish_id = f"dish_{uuid.uuid4().hex[:12]}"
+    doc = {"dish_id": dish_id, "name": rec["title"][:80], "category": data.category, "is_standard": False, "owner_id": user["user_id"],
+           "ingredients": ings, "source": {"recipe_id": rec["id"], "url": rec.get("url"), "image": rec.get("image")},
+           "deleted_at": None, "created_at": now_utc()}
+    await db.dishes.insert_one(doc)
+    return dish_public(doc)
 
 
 async def _dirk_post(client, query, variables):
@@ -4739,7 +5120,6 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
-    asyncio.create_task(_probe_recipes())
 
 
 async def _daily_refresh_loop():
