@@ -1631,7 +1631,7 @@ def _prep_product(d: dict, known_brands: list) -> None:
 
 async def _load_products() -> None:
     try:
-        docs = await db.products.find({"deleted_at": None, "is_global": True}, {"_id": 0}).to_list(40000)
+        docs = await db.products.find({"deleted_at": None, "is_global": True}, {"_id": 0}).to_list(None)
         counts: Dict[str, int] = {}
         for d in docs:
             b = (d.get("brand") or "").strip()
@@ -2534,78 +2534,85 @@ def _find_dict(obj, key: str, seen=None):
 
 
 async def _probe_promos() -> None:
-    # Tijdelijk: hoe tonen Dirk, AH en Jumbo acties en folders?
+    # Tijdelijk: hoe zien acties en folders van Dirk, AH en Jumbo eruit?
     import json as _json
     def dump(x, n=3000):
         return _json.dumps(x, ensure_ascii=False, default=str)[:n]
     await asyncio.sleep(25)
     UA = {"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
     try:
+        for f in ("dirk_id", "ah_id", "jumbo_id"):
+            n = await db.products.count_documents({f: {"$exists": True}, "deleted_at": None, "is_global": True})
+            dup = await db.products.aggregate([{"$match": {f: {"$exists": True}, "deleted_at": None, "is_global": True}},
+                                               {"$group": {"_id": "$" + f, "n": {"$sum": 1}}}, {"$match": {"n": {"$gt": 1}}},
+                                               {"$group": {"_id": None, "keys": {"$sum": 1}, "extra": {"$sum": {"$subtract": ["$n", 1]}}}}]).to_list(1)
+            logger.info("Promo2 telling %s: %d producten, dubbel: %s", f, n, dup)
+        n = await db.products.count_documents({"deleted_at": None, "is_global": True})
+        logger.info("Promo2 telling totaal %d", n)
         async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
             tok = await _ah_token(c)
             H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-            for term in ("koffie", "chips"):
-                r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"query": term, "size": 60, "filters": "bonus"}, headers=H)
-                prods = [p for p in (r.json() or {}).get("products") or [] if p.get("isBonus") or p.get("bonusMechanism")]
-                logger.info("Promo probe AH %s: %d bonus", term, len(prods))
-                for p in prods[:4]:
-                    logger.info("Promo probe AH item %s", dump({k: p.get(k) for k in ["title", "currentPrice", "priceBeforeBonus", "bonusMechanism", "bonusStartDate", "bonusEndDate", "bonusPeriodDescription", "bonusSegmentId", "bonusSegmentDescription", "discountLabels", "multipleItemPromotion", "isStapelBonus", "promotionType", "discountType", "segmentType", "stickers"]}, 1500))
-                if prods:
-                    r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{prods[0]['webshopId']}", headers=H)
-                    card = (r.json() or {}).get("productCard") or {}
-                    logger.info("Promo probe AH card %s", dump({k: v for k, v in card.items() if k not in ("images", "descriptionHighlights", "properties")}, 2000))
-            for path in ["/mobile-services/bonuspage/v1/metadata", "/mobile-services/bonuspage/v2/section?application=AHWEBSHOP&promotionType=NATIONAL&date=2026-10-25",
-                         "/mobile-services/bonuspage/v1/section?application=AHWEBSHOP&date=2026-10-25", "/mobile-services/bonuspage/v3/metadata"]:
-                r = await c.get("https://api.ah.nl" + path, headers=H)
-                logger.info("Promo probe AH folder %s -> %s %s", path, r.status_code, r.text[:1500])
-        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS, follow_redirects=True) as c:
-            ids = await _dirk_search_ids(c, "koffie", 80)
-            prods = await _dirk_fetch_products(c, ids)
-            offer = [p for p in prods if p.get("offerPrice")]
-            logger.info("Promo probe Dirk koffie: %d met actie", len(offer))
-            if offer:
-                pid = offer[0]["productId"]
-                r = await c.get(f"https://www.dirk.nl/boodschappen/x/x/x/{pid}", headers=UA)
-                d = _nuxt_data(r.text)
-                po = _find_dict(d, "productOffer")
-                logger.info("Promo probe Dirk offer %s", dump({k: v for k, v in (po or {}).items() if k != "productInformation"}, 2500))
+            r = await c.get("https://api.ah.nl/mobile-services/bonuspage/v3/metadata", headers=H)
+            meta = r.json() or {}
+            for per in meta.get("periods") or []:
+                logger.info("Promo2 AH periode %s - %s folder %s tabs %s", per.get("bonusStartDate"), per.get("bonusEndDate"), per.get("bonusFolderUrl"),
+                            [(t.get("description"), len(t.get("urlMetadataList") or [])) for t in per.get("tabs") or []])
+            per = (meta.get("periods") or [{}])[0]
+            tab = next((t for t in per.get("tabs") or [] if t.get("description") == "Alle Bonus"), None)
+            if tab:
+                logger.info("Promo2 AH secties %s", dump([(u.get("description"), u.get("bonusType"), u.get("count"), u.get("url")) for u in tab["urlMetadataList"]], 2500))
+                for u in tab["urlMetadataList"][1:3]:
+                    r = await c.get("https://api.ah.nl/mobile-services/" + u["url"], headers=H)
+                    body = r.json() or {}
+                    logger.info("Promo2 AH sectie %s %s keys %s", u.get("description"), r.status_code, list(body.keys()) if isinstance(body, dict) else type(body))
+                    logger.info("Promo2 AH sectie inhoud %s", dump(body, 3500))
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
             r = await c.get("https://www.dirk.nl/aanbiedingen", headers=UA)
             d = _nuxt_data(r.text)
-            logger.info("Promo probe Dirk folder %s %s nuxt=%s", r.status_code, str(r.url), d is not None)
-            for k in ["offers", "productOffers", "folder", "folders", "weekOffers", "offerPeriod", "startDate", "periods"]:
-                f = _find_dict(d, k)
-                if f is not None:
-                    logger.info("Promo probe Dirk folder veld %s -> %s", k, dump(f.get(k), 1200))
-            for q in ["query{offers(storeId:66){offerId}}", "query{listOffers(storeId:66){offerId}}", "query{currentOffers(storeId:66){offerId}}",
-                      "query{weekOffers(storeId:66){offerId}}", "query{productOffers(storeId:66){offerId}}", "query{folders{id}}"]:
-                r = await c.post(DIRK_GQL, json={"query": q})
-                logger.info("Promo probe Dirk gql %s -> %s", q[6:30], r.text[:300])
+            found = []
+            def walk(x, depth=0):
+                if depth > 30:
+                    return
+                if isinstance(x, dict):
+                    if "offerPrice" in x or "textPriceSign" in x or "offerId" in x:
+                        found.append(x)
+                    for v in x.values():
+                        walk(v, depth + 1)
+                elif isinstance(x, list):
+                    for v in x:
+                        walk(v, depth + 1)
+            walk(d)
+            logger.info("Promo2 Dirk aanbiedingen: %d objecten; top keys %s", len(found), list((d or {}).keys())[:20] if isinstance(d, dict) else None)
+            for x in found[:3]:
+                logger.info("Promo2 Dirk item %s", dump(x, 2000))
+            signs: Dict[str, int] = {}
+            for x in found:
+                t = str(x.get("textPriceSign") or (x.get("productOffer") or {}).get("textPriceSign") if isinstance(x.get("productOffer"), dict) else x.get("textPriceSign"))
+                signs[t] = signs.get(t, 0) + 1
+            logger.info("Promo2 Dirk textPriceSign %s", dump(signs, 1500))
+            m = re.findall(r'https://[^"\s]*(?:folder|publitas)[^"\s]*', r.text)
+            logger.info("Promo2 Dirk folderlinks %s", list(dict.fromkeys(m))[:8])
         async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS, follow_redirects=True) as c:
-            v = {"input": {"searchType": "keyword", "searchTerms": "koffie", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=koffie", "previousUrl": "", "bloomreachCookieId": ""}}
-            r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": JUMBO_SEARCH_QUERY, "variables": v})
-            prods = (((r.json() or {}).get("data") or {}).get("searchProducts") or {}).get("products") or []
-            promo = [p for p in prods if (p.get("prices") or {}).get("promoPrice")]
-            logger.info("Promo probe Jumbo koffie: %d van %d met promoPrice", len(promo), len(prods))
-            if promo:
-                r = await c.get(f"https://www.jumbo.com/producten/x-{promo[0]['id']}", headers=UA)
-                d = _nuxt_data(r.text)
-                pr = _find_dict(d, "nutritionsTable") or {}
-                logger.info("Promo probe Jumbo promotions %s", dump(pr.get("promotions"), 2500))
-                logger.info("Promo probe Jumbo price %s badges %s", dump(pr.get("price"), 400), dump(pr.get("primaryProductBadges"), 600))
-            for extra in ["promotions { id title tags { text } start { dayShort date } end { dayShort date } }", "promotions { id }", "promotions { title }"]:
-                q = "query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { products { id %s } } }" % extra
-                r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": q, "variables": v})
-                logger.info("Promo probe Jumbo veld %s -> %s", extra[:40], r.text[:900])
             for url in ["https://www.jumbo.com/aanbiedingen/nu", "https://www.jumbo.com/aanbiedingen/volgende-week"]:
                 r = await c.get(url, headers=UA)
                 d = _nuxt_data(r.text)
-                logger.info("Promo probe Jumbo folder %s %s nuxt=%s", url, r.status_code, d is not None)
-                for k in ["promotions", "promotionTabs", "tabs", "categories", "startDate", "periods"]:
-                    f = _find_dict(d, k)
-                    if f is not None:
-                        logger.info("Promo probe Jumbo folder veld %s -> %s", k, dump(f.get(k), 1200))
+                pr = (_find_dict(d, "promotions") or {}).get("promotions") or []
+                groups: Dict[str, int] = {}
+                for x in pr:
+                    groups[str(x.get("group"))] = groups.get(str(x.get("group")), 0) + 1
+                logger.info("Promo2 Jumbo %s: %d acties, eerste ids %s, groepen %s, start %s", url, len(pr), [x.get("id") for x in pr[:5]], groups,
+                            sorted({(x.get("start") or {}).get("iso", "")[:10] for x in pr})[:6])
+                if pr:
+                    logger.info("Promo2 Jumbo actie %s", dump({k: v for k, v in pr[0].items() if k not in ("durationTexts",)}, 2500))
+                    kies = [x for x in pr if x.get("isKiesAndMix")]
+                    if kies:
+                        logger.info("Promo2 Jumbo kies&mix %s", dump({k: v for k, v in kies[0].items() if k not in ("durationTexts",)}, 1500))
+            v = {"input": {"searchType": "keyword", "searchTerms": "finish vaatwastabletten", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=finish", "previousUrl": "", "bloomreachCookieId": ""}}
+            q = "query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { products { id title prices: price { price promoPrice } promotions { id title tags { text } start { iso } end { iso } isKiesAndMix group } } } }"
+            r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": q, "variables": v})
+            logger.info("Promo2 Jumbo product-acties %s", r.text[:2000])
     except Exception as e:
-        logger.warning("Promo probe mislukt: %r", e)
+        logger.warning("Promo2 mislukt: %r", e)
 
 
 async def _dirk_post(client, query, variables):
