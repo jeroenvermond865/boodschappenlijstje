@@ -1,0 +1,271 @@
+import { useState } from "react";
+import { ActivityIndicator, FlatList, Image, Linking, Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useQuery } from "@tanstack/react-query";
+
+import { EmptyState, Icon } from "@/src/components/ui";
+import { api } from "@/src/api";
+import { goBack } from "@/src/nav";
+import { euro } from "@/src/search";
+import { fonts, makeStyles, useTheme } from "@/src/theme";
+import type { Product } from "@/app/(tabs)/products";
+
+type FolderItem = {
+  id: string;
+  title: string;
+  label: string;
+  image: string | null;
+  price: number | null;
+  regular: number | null;
+  deal: { count: number; total: number; each: number } | null;
+  period: string | null;
+  combinable: boolean;
+  note: string | null;
+  quantity: string | null;
+  product_ids: string[];
+  count: number;
+};
+
+type FolderPeriod = {
+  key: "current" | "next";
+  title: string;
+  period: string | null;
+  folder_url: string | null;
+  items: FolderItem[];
+};
+
+type FoldersResponse = { store: string; stores: string[]; periods: FolderPeriod[]; loading: boolean };
+
+export default function FoldersScreen() {
+  const params = useLocalSearchParams<{ store?: string }>();
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const [store, setStore] = useState(params.store || "Albert Heijn");
+  const [periodKey, setPeriodKey] = useState<"current" | "next">("current");
+  const [open, setOpen] = useState<FolderItem | null>(null);
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ["folders", store],
+    queryFn: () => api<FoldersResponse>(`/folders?store=${encodeURIComponent(store)}`),
+    staleTime: 10 * 60 * 1000,
+  });
+  const periods = data?.periods ?? [];
+  const period = periods.find((p) => p.key === periodKey) ?? periods[0];
+
+  const openItem = (it: FolderItem) => {
+    if (it.product_ids.length === 1) router.push(`/product/${it.product_ids[0]}`);
+    else setOpen(it);
+  };
+
+  return (
+    <View style={styles.root}>
+      <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
+        <Pressable testID="back-button" onPress={() => goBack("/products")} hitSlop={10} style={styles.headerBtn}>
+          <Icon name="chevron-left" size={28} color={colors.onSurface} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Folders</Text>
+        <View style={styles.headerBtn} />
+      </View>
+
+      <View style={{ paddingHorizontal: 16, paddingTop: 12, gap: 10 }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+          {(data?.stores ?? ["Albert Heijn", "Dirk", "Jumbo"]).map((s) => (
+            <Pressable
+              key={s}
+              testID={`folder-store-${s}`}
+              onPress={() => {
+                setStore(s);
+                setPeriodKey("current");
+              }}
+              style={[styles.chip, store === s && styles.chipActive]}
+            >
+              <Text style={[styles.chipText, store === s && styles.chipTextActive]}>{s}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+        {periods.length > 0 ? (
+          <View style={styles.segment}>
+            {periods.map((p) => (
+              <Pressable key={p.key} onPress={() => setPeriodKey(p.key)} style={[styles.segBtn, period?.key === p.key && styles.segBtnActive]}>
+                <Text style={[styles.segText, period?.key === p.key && styles.segTextActive]}>{p.title}</Text>
+                {p.period ? <Text style={styles.segSub}>{p.period}</Text> : null}
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+        {periods.length === 1 && periods[0].key === "current" ? (
+          <Text style={styles.muted}>De folder van volgende week staat er nog niet; die verschijnt zodra {store} hem publiceert.</Text>
+        ) : null}
+        {period?.folder_url ? (
+          <Pressable onPress={() => Linking.openURL(period.folder_url!)} style={styles.folderLink}>
+            <Icon name="book-open-page-variant-outline" size={18} color={colors.brandPrimary} />
+            <Text style={styles.folderLinkText}>Bekijk de echte folder van {store}</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      {isLoading ? (
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color={colors.brandPrimary} />
+        </View>
+      ) : !period ? (
+        <View style={{ flex: 1 }}>
+          <EmptyState
+            icon="newspaper-variant-outline"
+            title={data?.loading ? "Folders worden opgehaald" : "Geen aanbiedingen gevonden"}
+            subtitle={data?.loading ? "Probeer het over een halve minuut opnieuw." : "Probeer het later nog eens."}
+          />
+          <Pressable onPress={() => refetch()} style={{ alignSelf: "center" }}>
+            <Text style={styles.folderLinkText}>Opnieuw laden</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <FlatList
+          data={period.items}
+          keyExtractor={(it) => it.id}
+          numColumns={2}
+          columnWrapperStyle={{ gap: 10 }}
+          contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: insets.bottom + 40 }}
+          ListHeaderComponent={<Text style={styles.muted}>{period.items.length} aanbiedingen</Text>}
+          renderItem={({ item }) => (
+            <Pressable testID={`folder-item-${item.id}`} onPress={() => openItem(item)} style={styles.card}>
+              <View style={styles.imageBox}>
+                {item.image ? (
+                  <Image source={{ uri: item.image }} style={styles.image} resizeMode="contain" />
+                ) : (
+                  <Icon name="tag-outline" size={36} color={colors.brandPrimary} />
+                )}
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText} numberOfLines={2}>
+                    {item.label}
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.title} numberOfLines={3}>
+                {item.title}
+              </Text>
+              {item.quantity ? <Text style={styles.muted}>{item.quantity}</Text> : null}
+              <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                {item.regular && item.price && item.regular > item.price ? <Text style={styles.oldPrice}>{euro(item.regular)}</Text> : null}
+                {item.price ? <Text style={styles.price}>{euro(item.price)}</Text> : null}
+              </View>
+              {item.deal && item.deal.count > 1 ? (
+                <Text style={styles.deal}>
+                  {item.deal.count} stuks: {euro(item.deal.each)} p/st
+                </Text>
+              ) : null}
+              {item.count > 1 ? <Text style={styles.combi}>{item.count} producten, te combineren</Text> : null}
+            </Pressable>
+          )}
+        />
+      )}
+
+      <Modal visible={!!open} transparent animationType="slide" onRequestClose={() => setOpen(null)}>
+        <Pressable style={styles.backdrop} onPress={() => setOpen(null)}>
+          <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
+            {open ? <ItemSheet item={open} onClose={() => setOpen(null)} onOpenProduct={(id) => { setOpen(null); router.push(`/product/${id}`); }} /> : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </View>
+  );
+}
+
+function ItemSheet({ item, onClose, onOpenProduct }: { item: FolderItem; onClose: () => void; onOpenProduct: (id: string) => void }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const { data, isLoading } = useQuery({
+    queryKey: ["products-by-ids", item.product_ids.join(",")],
+    queryFn: () => api<{ products: Product[] }>(`/products/by-ids?ids=${item.product_ids.join(",")}`),
+    enabled: item.product_ids.length > 0,
+  });
+  return (
+    <View style={{ gap: 10, maxHeight: 560 }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+        <View style={{ flex: 1, gap: 4 }}>
+          <View style={[styles.badge, { position: "relative", alignSelf: "flex-start" }]}>
+            <Text style={styles.badgeText}>{item.label}</Text>
+          </View>
+          <Text style={styles.sheetTitle}>{item.title}</Text>
+          {item.period ? <Text style={styles.muted}>Geldig {item.period}</Text> : null}
+        </View>
+        <Pressable onPress={onClose} hitSlop={10}>
+          <Icon name="close" size={24} color={colors.onSurface} />
+        </Pressable>
+      </View>
+      {item.combinable ? <Text style={styles.muted}>Je mag verschillende producten uit deze actie combineren voor de korting.</Text> : null}
+      {item.note ? <Text style={styles.muted}>{item.note}</Text> : null}
+      {item.product_ids.length === 0 ? (
+        <Text style={styles.muted}>
+          De winkel geeft voor deze actie geen losse producten door. Zoek bij Producten op "{item.title.replace(/^Alle\s+/i, "").replace(/\*/g, "")}".
+        </Text>
+      ) : isLoading ? (
+        <ActivityIndicator color={colors.brandPrimary} />
+      ) : (
+        <ScrollView contentContainerStyle={{ gap: 8 }}>
+          {(data?.products ?? []).map((p) => (
+            <Pressable key={p.id} onPress={() => onOpenProduct(p.id)} style={styles.row}>
+              {p.image ? <Image source={{ uri: p.image }} style={styles.rowImage} resizeMode="contain" /> : null}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle} numberOfLines={2}>
+                  {p.name}
+                </Text>
+                <Text style={styles.muted}>{p.unit}</Text>
+              </View>
+              <Text style={styles.rowPrice}>{p.price > 0 ? euro(p.price) : "—"}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+
+const useStyles = makeStyles((colors) => ({
+  root: { flex: 1, backgroundColor: colors.surface },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 10,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+  headerBtn: { width: 44, height: 40, alignItems: "center", justifyContent: "center" },
+  headerTitle: { flex: 1, textAlign: "center", fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
+  center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  muted: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
+  chip: { height: 34, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceTertiary, justifyContent: "center" },
+  chipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  chipText: { fontSize: 13, fontFamily: fonts.medium, color: colors.onSurfaceTertiary },
+  chipTextActive: { color: colors.onBrandPrimary, fontFamily: fonts.semibold },
+  segment: { flexDirection: "row", backgroundColor: colors.surfaceTertiary, borderRadius: 10, padding: 3 },
+  segBtn: { flex: 1, paddingVertical: 7, borderRadius: 8, alignItems: "center" },
+  segBtnActive: { backgroundColor: colors.surface },
+  segText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.muted },
+  segTextActive: { color: colors.onSurface },
+  segSub: { fontSize: 11, fontFamily: fonts.regular, color: colors.muted },
+  folderLink: { flexDirection: "row", alignItems: "center", gap: 6 },
+  folderLinkText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  card: { flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 10, gap: 4 },
+  imageBox: { height: 120, borderRadius: 10, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  image: { width: "90%", height: "90%" },
+  badge: { position: "absolute", top: 6, left: 6, maxWidth: "90%", backgroundColor: colors.warning, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 3 },
+  badgeText: { fontSize: 12, fontFamily: fonts.bold, color: "#fff" },
+  title: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },
+  oldPrice: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, textDecorationLine: "line-through" },
+  price: { fontSize: 16, fontFamily: fonts.bold, color: colors.warning },
+  deal: { fontSize: 12, fontFamily: fonts.semibold, color: colors.onSurface },
+  combi: { fontSize: 12, fontFamily: fonts.medium, color: colors.brandPrimary },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
+  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 16 },
+  sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
+  row: { flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 8 },
+  rowImage: { width: 40, height: 40, borderRadius: 8, backgroundColor: "#fff" },
+  rowTitle: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },
+  rowPrice: { fontSize: 14, fontFamily: fonts.bold, color: colors.onSurface },
+}));

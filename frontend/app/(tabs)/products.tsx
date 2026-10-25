@@ -6,7 +6,7 @@ import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-q
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
-import { countFilters, fetchProducts, NO_FILTERS, useDebounced } from "@/src/search";
+import { countFilters, euro, fetchProducts, NO_FILTERS, useDebounced } from "@/src/search";
 import type { Facet, ProductFilters } from "@/src/search";
 import { AISLES, AISLE_ICONS } from "@/src/constants";
 import { useAuth } from "@/src/auth";
@@ -33,6 +33,21 @@ export type Product = {
   subcategory?: string | null;
   on_offer?: boolean;
   unit_price?: string | null;
+  promo?: Promo | null;
+  promo_next?: Promo | null;
+};
+
+export type Promo = {
+  label: string;
+  title?: string;
+  start?: string | null;
+  end?: string | null;
+  period?: string | null;
+  price?: number | null;
+  regular?: number | null;
+  deal?: { count: number; total: number; each: number } | null;
+  combinable?: boolean;
+  note?: string | null;
 };
 
 const SORTS: { key: ProductFilters["sort"]; label: string }[] = [
@@ -120,11 +135,21 @@ export default function ProductsScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>{s.tab_products}</Text>
         <Text style={styles.subtitle}>{s.sub_products}</Text>
-        <Pressable testID="store-selector" onPress={() => setStoreOpen((v) => !v)} style={styles.storeRow}>
-          <Icon name="storefront-outline" size={16} color={colors.brandPrimary} />
-          <Text style={styles.storeText}>{STORE_FILTERS.find((f) => f.key === storeFilter)?.label}</Text>
-          <Icon name={storeOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.brandPrimary} />
-        </Pressable>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <Pressable testID="store-selector" onPress={() => setStoreOpen((v) => !v)} style={styles.storeRow}>
+            <Icon name="storefront-outline" size={16} color={colors.brandPrimary} />
+            <Text style={styles.storeText}>{STORE_FILTERS.find((f) => f.key === storeFilter)?.label}</Text>
+            <Icon name={storeOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.brandPrimary} />
+          </Pressable>
+          <Pressable
+            testID="open-folders"
+            onPress={() => router.push(`/folders?store=${encodeURIComponent(storeFilter === "all" ? "Albert Heijn" : storeFilter)}`)}
+            style={styles.folderBtn}
+          >
+            <Icon name="newspaper-variant-outline" size={16} color={colors.brandPrimary} />
+            <Text style={styles.storeText}>Folders</Text>
+          </Pressable>
+        </View>
         {storeOpen ? (
           <View style={styles.storeMenu}>
             {STORE_FILTERS.map((f) => (
@@ -238,10 +263,23 @@ export default function ProductsScreen() {
               {item.unavailable_here ? (
                 <Text style={styles.naPrice}>Niet verkr.</Text>
               ) : (
-                <View style={{ alignItems: "flex-end" }}>
-                  <Text style={styles.price}>{item.price > 0 ? `€ ${item.price.toFixed(2)}` : "—"}</Text>
+                <View style={{ alignItems: "flex-end", maxWidth: 110 }}>
+                  {item.promo?.regular && item.promo.regular > (item.promo.price ?? item.price) ? (
+                    <Text style={styles.oldPrice}>{euro(item.promo.regular)}</Text>
+                  ) : null}
+                  <Text style={[styles.price, item.promo && styles.promoPrice]}>
+                    {(item.promo?.price ?? item.price) > 0 ? euro(item.promo?.price ?? item.price) : "—"}
+                  </Text>
                   {item.unit_price ? <Text style={styles.unitTag}>{item.unit_price}</Text> : null}
-                  {item.on_offer ? <Text style={styles.offerTag}>Aanbieding</Text> : null}
+                  {item.promo ? (
+                    <View style={styles.promoBadge}>
+                      <Text style={styles.promoBadgeText} numberOfLines={1}>{item.promo.label}</Text>
+                    </View>
+                  ) : item.on_offer ? (
+                    <Text style={styles.offerTag}>Aanbieding</Text>
+                  ) : item.promo_next ? (
+                    <Text style={styles.nextTag} numberOfLines={1}>Straks: {item.promo_next.label}</Text>
+                  ) : null}
                 </View>
               )}
             </Pressable>
@@ -474,6 +512,12 @@ const useStyles = makeStyles((colors) => ({
   favToggleTextActive: { color: colors.onBrandPrimary },
   toggleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   clearText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  oldPrice: { fontSize: 11, fontFamily: fonts.regular, color: colors.muted, textDecorationLine: "line-through" },
+  promoPrice: { color: colors.warning },
+  promoBadge: { marginTop: 3, backgroundColor: colors.warning, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  promoBadgeText: { fontSize: 11, fontFamily: fonts.bold, color: "#fff" },
+  nextTag: { fontSize: 11, fontFamily: fonts.semibold, color: colors.brandPrimary, marginTop: 2 },
+  folderBtn: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: -4, marginLeft: 16 },
   unitTag: { fontSize: 11, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
   offerTag: { fontSize: 11, fontFamily: fonts.semibold, color: colors.warning, marginTop: 2 },
   filterLabel: { fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface },

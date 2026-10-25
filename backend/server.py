@@ -1579,6 +1579,7 @@ def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set]
     unavailable = doc.get("unavailable", []) or []
     price = resolve_price(prices, store, unavailable)
     up = _unit_value(price, doc.get("unit") or "")
+    promo, promo_next = _promo_public(doc, price)
     return {
         "id": doc["product_id"],
         "name": doc["name"],
@@ -1597,7 +1598,9 @@ def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set]
         "is_favorite": doc["product_id"] in (favorites or set()),
         "source": product_source(doc),
         "subcategory": doc.get("subcategory"),
-        "on_offer": bool(doc.get("on_offer")),
+        "on_offer": bool(doc.get("on_offer")) or promo is not None,
+        "promo": promo,
+        "promo_next": promo_next,
     }
 
 
@@ -1645,6 +1648,8 @@ async def _load_products() -> None:
             if i % 2000 == 0:
                 await asyncio.sleep(0)  # andere aanvragen niet blokkeren
         _product_cache["docs"] = docs
+        _product_cache["by_sid"] = {(d["_src"], str(d.get("dirk_id") or d.get("ah_id") or d.get("jumbo_id"))): d
+                                    for d in docs if d.get("_src")}
         _product_cache["at"] = datetime.now(timezone.utc)
         _search_cache.clear()
         missing: Dict[str, list] = {}
@@ -1768,6 +1773,16 @@ def _facet(docs: list, field: str, top: int = 60) -> list:
     return [{"value": k, "count": n} for k, n in items]
 
 
+def _has_offer(d: dict) -> bool:
+    if d.get("on_offer"):
+        return True
+    sid = d.get("dirk_id") or d.get("ah_id") or d.get("jumbo_id")
+    if not sid:
+        return False
+    today = _iso_day(datetime.now(timezone.utc).isoformat())
+    return any((it["start"] or "") <= today <= (it["end"] or "9999") for it in _folders["by_id"].get((d.get("_src"), str(sid)), []))
+
+
 def _run_search(docs: list, q: str, source: str, aisle: str, favs: Optional[set], sub: str, brand: str,
                 offer: bool, bio: bool, sort: str, store: str) -> tuple:
     if source:
@@ -1791,7 +1806,7 @@ def _run_search(docs: list, q: str, source: str, aisle: str, favs: Optional[set]
             return False
         if brands and skip != "brand" and (d.get("brand") or "") not in brands:
             return False
-        if offer and skip != "offer" and not d.get("on_offer"):
+        if offer and skip != "offer" and not _has_offer(d):
             return False
         if bio and skip != "bio" and not d.get("_bio"):
             return False
@@ -1799,7 +1814,7 @@ def _run_search(docs: list, q: str, source: str, aisle: str, favs: Optional[set]
     facets = [
         {"key": "sub", "label": "Soort", "options": _facet([d for d in docs if keep(d, "sub")], "subcategory")},
         {"key": "brand", "label": "Merk", "options": _facet([d for d in docs if keep(d, "brand")], "brand", 80)},
-        {"key": "offer", "label": "Aanbieding", "count": sum(1 for d in docs if keep(d, "offer") and d.get("on_offer"))},
+        {"key": "offer", "label": "Aanbieding", "count": sum(1 for d in docs if keep(d, "offer") and _has_offer(d))},
         {"key": "bio", "label": "Biologisch", "count": sum(1 for d in docs if keep(d, "bio") and d.get("_bio"))},
     ]
     if subs or brands or offer or bio:
@@ -1839,6 +1854,7 @@ async def search_products(
     store = user.get("store", DEFAULT_STORE)
     favs = set(user.get("favorite_products") or [])
     own = await _own_products(user)
+    await _folders_fresh(wait=False)
     # Dezelfde zoekopdracht (ook bij verder scrollen) komt uit het geheugen
     key = (source, aisle, _norm_text(q), sub, brand, offer, bio, sort,
            tuple(sorted(favs)) if favorites else None, user["user_id"] if own else None)
@@ -1861,6 +1877,50 @@ async def search_products(
         "aisle_counts": aisle_counts,
         "facets": facets,
     }
+
+
+@api_router.get("/folders")
+async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_current_user)):
+    f = await _folders_fresh()
+    await _global_products()
+    by_sid = _product_cache.get("by_sid") or {}
+    favs = set(user.get("favorite_products") or [])
+    today = _iso_day(datetime.now(timezone.utc).isoformat())
+    periods = []
+    for i, per in enumerate((f["data"] or {}).get(store) or []):
+        items = []
+        for it in per["items"]:
+            if it["end"] and it["end"] < today:
+                continue
+            docs = [by_sid[(store, x)] for x in it["ids"] if (store, x) in by_sid]
+            first = product_public(_clean(docs[0]), store, user["user_id"], favs) if docs else None
+            price, regular = it.get("price"), it.get("regular")
+            if first and len(docs) == 1:
+                price = price or (first["promo"] or {}).get("price")
+                regular = regular or first["price"]
+            deal = _promo_deal(it["label"], regular or (first or {}).get("price") or 0) if len(docs) <= 1 else None
+            items.append({**{k: v for k, v in it.items() if k != "ids"}, "price": price, "regular": regular, "deal": deal,
+                          "image": it.get("image") or (first or {}).get("image"),
+                          "product_ids": [d["product_id"] for d in docs], "count": len(docs) or len(it["ids"]),
+                          "period": f"{_nice_day(it['start'])} t/m {_nice_day(it['end'])}" if it["start"] and it["end"] else None})
+        if not items:
+            continue
+        is_next = (per.get("start") or "") > today
+        periods.append({"key": "next" if is_next else "current", "title": "Volgende week" if is_next else "Deze week",
+                        "start": per.get("start"), "end": per.get("end"),
+                        "period": f"{_nice_day(per.get('start'))} t/m {_nice_day(per.get('end'))}" if per.get("start") and per.get("end") else None,
+                        "folder_url": per.get("folder_url"), "items": items})
+    return {"store": store, "stores": list(COUPLED_STORES), "periods": periods, "loading": f["at"] is None,
+            "updated_at": f["at"].isoformat() if f["at"] else None}
+
+
+@api_router.get("/products/by-ids")
+async def products_by_ids(ids: str, user: dict = Depends(get_current_user)):
+    wanted = [x for x in ids.split(",") if x][:200]
+    docs = {d["product_id"]: d for d in await _global_products()}
+    favs = set(user.get("favorite_products") or [])
+    store = user.get("store", DEFAULT_STORE)
+    return {"products": [product_public(_clean(docs[i]), store, user["user_id"], favs) for i in wanted if i in docs]}
 
 
 @api_router.get("/products/{product_id}")
@@ -2533,86 +2593,258 @@ def _find_dict(obj, key: str, seen=None):
     return None
 
 
-async def _probe_promos() -> None:
-    # Tijdelijk: hoe zien acties en folders van Dirk, AH en Jumbo eruit?
-    import json as _json
-    def dump(x, n=3000):
-        return _json.dumps(x, ensure_ascii=False, default=str)[:n]
-    await asyncio.sleep(25)
-    UA = {"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
+# --- Acties en folders (AH bonus, Dirk aanbiedingen, Jumbo acties) ---
+FOLDER_REFRESH_SECONDS = 3 * 3600
+_folders: dict = {"at": None, "data": {}, "by_id": {}, "task": None}
+_DUTCH_DAYS = ["ma", "di", "wo", "do", "vr", "za", "zo"]
+_DUTCH_MONTHS = ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"]
+
+
+def _iso_day(v) -> Optional[str]:
+    v = str(v or "")
+    m = re.match(r"(\d{4}-\d{2}-\d{2})", v)
+    return m.group(1) if m else None
+
+
+def _nice_day(d: Optional[str]) -> str:
     try:
-        for f in ("dirk_id", "ah_id", "jumbo_id"):
-            n = await db.products.count_documents({f: {"$exists": True}, "deleted_at": None, "is_global": True})
-            dup = await db.products.aggregate([{"$match": {f: {"$exists": True}, "deleted_at": None, "is_global": True}},
-                                               {"$group": {"_id": "$" + f, "n": {"$sum": 1}}}, {"$match": {"n": {"$gt": 1}}},
-                                               {"$group": {"_id": None, "keys": {"$sum": 1}, "extra": {"$sum": {"$subtract": ["$n", 1]}}}}]).to_list(1)
-            logger.info("Promo2 telling %s: %d producten, dubbel: %s", f, n, dup)
-        n = await db.products.count_documents({"deleted_at": None, "is_global": True})
-        logger.info("Promo2 telling totaal %d", n)
-        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
-            tok = await _ah_token(c)
-            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-            r = await c.get("https://api.ah.nl/mobile-services/bonuspage/v3/metadata", headers=H)
-            meta = r.json() or {}
-            for per in meta.get("periods") or []:
-                logger.info("Promo2 AH periode %s - %s folder %s tabs %s", per.get("bonusStartDate"), per.get("bonusEndDate"), per.get("bonusFolderUrl"),
-                            [(t.get("description"), len(t.get("urlMetadataList") or [])) for t in per.get("tabs") or []])
-            per = (meta.get("periods") or [{}])[0]
+        dt = datetime.strptime(d, "%Y-%m-%d")
+        return f"{_DUTCH_DAYS[dt.weekday()]} {dt.day} {_DUTCH_MONTHS[dt.month - 1]}"
+    except Exception:
+        return d or ""
+
+
+def _nice_label(t: str) -> str:
+    t = re.sub(r"\s+", " ", (t or "").replace("_", " ")).strip()
+    if not t:
+        return ""
+    t = t.lower()
+    t = re.sub(r"(\d)\.(\d\d)\b", r"\1,\2", t)
+    return t[0].upper() + t[1:]
+
+
+def _promo_deal(label: str, price: float) -> Optional[dict]:
+    # Rekent de actie uit: hoeveel stuks je moet kopen en wat je dan per stuk betaalt
+    t = (label or "").lower().replace(",", ".")
+    n, total = None, None
+    m = re.search(r"(\d+)\s*\+\s*(\d+)\s*(gratis)?", t)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        n, total = a + b, a * price
+    elif re.search(r"(\d+)e\s+gratis", t):
+        k = int(re.search(r"(\d+)e\s+gratis", t).group(1))
+        n, total = k, (k - 1) * price
+    elif re.search(r"(\d+)e\s+halve\s+prijs", t):
+        k = int(re.search(r"(\d+)e\s+halve\s+prijs", t).group(1))
+        n, total = k, (k - 0.5) * price
+    elif re.search(r"(\d+)\s+halen\s+(\d+)\s+betalen", t):
+        m = re.search(r"(\d+)\s+halen\s+(\d+)\s+betalen", t)
+        n, total = int(m.group(1)), int(m.group(2)) * price
+    elif re.search(r"(\d+)\s*voor\s*€?\s*(\d+(?:\.\d+)?)", t):
+        m = re.search(r"(\d+)\s*voor\s*€?\s*(\d+(?:\.\d+)?)", t)
+        n, total = int(m.group(1)), float(m.group(2))
+    elif re.search(r"(\d+)\s*%\s*korting", t):
+        pct = int(re.search(r"(\d+)\s*%\s*korting", t).group(1))
+        if price:
+            return {"count": 1, "total": round(price * (100 - pct) / 100, 2), "each": round(price * (100 - pct) / 100, 2)}
+        return None
+    if not n or total is None or (not price and "voor" not in t):
+        return None
+    return {"count": n, "total": round(total, 2), "each": round(total / n, 2)}
+
+
+def _promo_item(store: str, pid: str, title: str, label: str, start, end, image=None, price=None, regular=None,
+                ids=None, combinable=False, note=None, quantity=None) -> dict:
+    return {"store": store, "id": str(pid), "title": (title or "").strip(), "label": _nice_label(label), "start": _iso_day(start),
+            "end": _iso_day(end), "image": image, "price": price, "regular": regular, "ids": [str(i) for i in (ids or [])],
+            "combinable": bool(combinable), "note": note, "quantity": quantity}
+
+
+async def _ah_folder() -> list:
+    out = []
+    async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
+        tok = await _ah_token(c)
+        H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
+        meta = (await c.get("https://api.ah.nl/mobile-services/bonuspage/v3/metadata", headers=H)).json() or {}
+        sem = asyncio.Semaphore(4)
+        for per in (meta.get("periods") or [])[:2]:
             tab = next((t for t in per.get("tabs") or [] if t.get("description") == "Alle Bonus"), None)
-            if tab:
-                logger.info("Promo2 AH secties %s", dump([(u.get("description"), u.get("bonusType"), u.get("count"), u.get("url")) for u in tab["urlMetadataList"]], 2500))
-                for u in tab["urlMetadataList"][1:3]:
-                    r = await c.get("https://api.ah.nl/mobile-services/" + u["url"], headers=H)
-                    body = r.json() or {}
-                    logger.info("Promo2 AH sectie %s %s keys %s", u.get("description"), r.status_code, list(body.keys()) if isinstance(body, dict) else type(body))
-                    logger.info("Promo2 AH sectie inhoud %s", dump(body, 3500))
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            r = await c.get("https://www.dirk.nl/aanbiedingen", headers=UA)
-            d = _nuxt_data(r.text)
-            found = []
-            def walk(x, depth=0):
-                if depth > 30:
-                    return
-                if isinstance(x, dict):
-                    if "offerPrice" in x or "textPriceSign" in x or "offerId" in x:
-                        found.append(x)
-                    for v in x.values():
-                        walk(v, depth + 1)
-                elif isinstance(x, list):
-                    for v in x:
-                        walk(v, depth + 1)
-            walk(d)
-            logger.info("Promo2 Dirk aanbiedingen: %d objecten; top keys %s", len(found), list((d or {}).keys())[:20] if isinstance(d, dict) else None)
-            for x in found[:3]:
-                logger.info("Promo2 Dirk item %s", dump(x, 2000))
-            signs: Dict[str, int] = {}
-            for x in found:
-                t = str(x.get("textPriceSign") or (x.get("productOffer") or {}).get("textPriceSign") if isinstance(x.get("productOffer"), dict) else x.get("textPriceSign"))
-                signs[t] = signs.get(t, 0) + 1
-            logger.info("Promo2 Dirk textPriceSign %s", dump(signs, 1500))
-            m = re.findall(r'https://[^"\s]*(?:folder|publitas)[^"\s]*', r.text)
-            logger.info("Promo2 Dirk folderlinks %s", list(dict.fromkeys(m))[:8])
-        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS, follow_redirects=True) as c:
-            for url in ["https://www.jumbo.com/aanbiedingen/nu", "https://www.jumbo.com/aanbiedingen/volgende-week"]:
-                r = await c.get(url, headers=UA)
-                d = _nuxt_data(r.text)
-                pr = (_find_dict(d, "promotions") or {}).get("promotions") or []
-                groups: Dict[str, int] = {}
-                for x in pr:
-                    groups[str(x.get("group"))] = groups.get(str(x.get("group")), 0) + 1
-                logger.info("Promo2 Jumbo %s: %d acties, eerste ids %s, groepen %s, start %s", url, len(pr), [x.get("id") for x in pr[:5]], groups,
-                            sorted({(x.get("start") or {}).get("iso", "")[:10] for x in pr})[:6])
-                if pr:
-                    logger.info("Promo2 Jumbo actie %s", dump({k: v for k, v in pr[0].items() if k not in ("durationTexts",)}, 2500))
-                    kies = [x for x in pr if x.get("isKiesAndMix")]
-                    if kies:
-                        logger.info("Promo2 Jumbo kies&mix %s", dump({k: v for k, v in kies[0].items() if k not in ("durationTexts",)}, 1500))
-            v = {"input": {"searchType": "keyword", "searchTerms": "finish vaatwastabletten", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=finish", "previousUrl": "", "bloomreachCookieId": ""}}
-            q = "query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { products { id title prices: price { price promoPrice } promotions { id title tags { text } start { iso } end { iso } isKiesAndMix group } } } }"
-            r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": q, "variables": v})
-            logger.info("Promo2 Jumbo product-acties %s", r.text[:2000])
-    except Exception as e:
-        logger.warning("Promo2 mislukt: %r", e)
+            urls = [u["url"] for u in (tab or {}).get("urlMetadataList") or [] if u.get("url") and u.get("bonusType") != "SPOTLIGHT"]
+
+            async def get(u):
+                async with sem:
+                    try:
+                        return (await c.get("https://api.ah.nl/mobile-services/" + u, headers=H)).json() or {}
+                    except Exception:
+                        return {}
+            items: dict = {}
+            for body in await asyncio.gather(*(get(u) for u in urls)):
+                for e in body.get("bonusGroupOrProducts") or []:
+                    g, pr = e.get("bonusGroup"), e.get("product")
+                    src = g or pr or {}
+                    labels = src.get("discountLabels") or []
+                    label = (labels[0].get("defaultDescription") if labels else None) or src.get("discountDescription") or src.get("bonusMechanism") or "Bonus"
+                    imgs = sorted([i for i in src.get("images") or [] if i.get("url")], key=lambda i: abs((i.get("width") or 200) - 300))
+                    start = src.get("bonusStartDate") or (src.get("validityPeriod") or {}).get("start") or per.get("bonusStartDate")
+                    end = src.get("bonusEndDate") or (src.get("validityPeriod") or {}).get("end") or per.get("bonusEndDate")
+                    note = " ".join(src.get("extraDescriptions") or []) or None
+                    if src.get("isStapelBonus"):
+                        note = ("Stapelkorting: hoe meer je koopt, hoe meer korting. " + (note or "")).strip()
+                    if g:
+                        key = f"g{g.get('segmentId') or g.get('id')}"
+                        items[key] = _promo_item("Albert Heijn", key, g.get("segmentDescription"), label, start, end,
+                                                 imgs[0]["url"] if imgs else None, combinable=True, note=note)
+                    elif pr:
+                        key = f"s{pr.get('segmentId')}" if pr.get("segmentId") else f"p{pr.get('webshopId')}"
+                        cur, before = pr.get("currentPrice"), pr.get("priceBeforeBonus")
+                        if key in items:
+                            items[key]["ids"].append(str(pr.get("webshopId")))
+                            continue
+                        items[key] = _promo_item("Albert Heijn", key, pr.get("title"), label, start, end, imgs[0]["url"] if imgs else None,
+                                                 price=cur, regular=before, ids=[pr.get("webshopId")], note=note, quantity=pr.get("salesUnitSize"))
+            out.append({"start": per.get("bonusStartDate"), "end": per.get("bonusEndDate"),
+                        "folder_url": (per.get("bonusFolderUrl") or "").replace("?publitas_embed=embedded", "") or None,
+                        "items": list(items.values())})
+    return out
+
+
+async def _dirk_folder() -> list:
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        r = await c.get("https://www.dirk.nl/aanbiedingen", headers=_PAGE_HEADERS)
+    data = _nuxt_data(r.text)
+    offers: dict = {}
+
+    def walk(x, depth=0):
+        if depth > 30:
+            return
+        if isinstance(x, dict):
+            if x.get("offerId") and isinstance(x.get("products"), list):
+                offers[x["offerId"]] = x
+                return
+            for v in x.values():
+                walk(v, depth + 1)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v, depth + 1)
+    walk(data)
+    periods: dict = {}
+    for o in offers.values():
+        ids = [p.get("productId") for p in o.get("products") or [] if isinstance(p, dict) and p.get("productId")]
+        sign = str(o.get("textPriceSign") or "")
+        label = _nice_label(re.sub(r"(?i)actie", "", sign)) or "Actie"
+        if label == "Actie" or not label:
+            label = "Actie"
+        else:
+            label = f"Actie {label.lower()}"
+        img = o.get("image") or ""
+        if img and not img.startswith("http"):
+            from urllib.parse import quote
+            img = DIRK_IMAGE_BASE + quote(img.lstrip("/"))
+        it = _promo_item("Dirk", o["offerId"], o.get("headerText"), label, o.get("startDate"), o.get("endDate"), img or None,
+                         price=o.get("offerPrice"), regular=o.get("normalPrice"), ids=ids, combinable=len(ids) > 1, quantity=o.get("packaging"))
+        periods.setdefault((it["start"], it["end"]), []).append(it)
+    # De meeste acties lopen een week (wo t/m di); dagacties vallen daarbinnen
+    out = []
+    if periods:
+        main = max(periods.items(), key=lambda kv: len(kv[1]))[0]
+        cur = [i for k, v in periods.items() if (k[0] or "") <= (main[0] or "") or (k[0] or "") <= _iso_day(datetime.now(timezone.utc).isoformat()) for i in v]
+        nxt = [i for k, v in periods.items() if (k[0] or "") > (main[0] or "") and (k[0] or "") > _iso_day(datetime.now(timezone.utc).isoformat()) for i in v]
+        out.append({"start": main[0], "end": main[1], "folder_url": "https://www.dirk.nl/folder", "items": cur})
+        if nxt:
+            out.append({"start": min(i["start"] for i in nxt), "end": max(i["end"] or "" for i in nxt), "folder_url": "https://www.dirk.nl/folder", "items": nxt})
+    return out
+
+
+async def _jumbo_folder() -> list:
+    # Jumbo: acties komen mee met de producten (bij import en de dagelijkse update)
+    docs = await db.products.find({"jumbo_id": {"$exists": True}, "promo": {"$ne": None}, "deleted_at": None, "is_global": True},
+                                  {"_id": 0, "jumbo_id": 1, "promo": 1, "image": 1, "name": 1, "prices": 1}).to_list(None)
+    items: dict = {}
+    for d in docs:
+        pr = d.get("promo") or {}
+        if not pr.get("id"):
+            continue
+        it = items.get(pr["id"])
+        if not it:
+            it = items[pr["id"]] = _promo_item("Jumbo", pr["id"], pr.get("title") or d["name"], pr.get("label"), pr.get("start"), pr.get("end"),
+                                               pr.get("image") or d.get("image"), combinable=pr.get("combinable"))
+        it["ids"].append(str(d["jumbo_id"]))
+    today = _iso_day(datetime.now(timezone.utc).isoformat())
+    cur = [i for i in items.values() if (i["start"] or "") <= today]
+    nxt = [i for i in items.values() if (i["start"] or "") > today]
+    for i in cur + nxt:
+        if len(i["ids"]) == 1:
+            i["combinable"] = i["combinable"] and False
+        else:
+            i["combinable"] = True
+    out = []
+    if cur:
+        ends = sorted(i["end"] or "" for i in cur)
+        out.append({"start": min(i["start"] or today for i in cur), "end": ends[len(ends) // 2], "folder_url": "https://www.jumbo.com/aanbiedingen/nu", "items": cur})
+    if nxt:
+        out.append({"start": min(i["start"] for i in nxt), "end": max(i["end"] or "" for i in nxt), "folder_url": "https://www.jumbo.com/aanbiedingen/volgende-week", "items": nxt})
+    return out
+
+
+async def _load_folders() -> None:
+    data, by_id = {}, {}
+    for store, fn in (("Albert Heijn", _ah_folder), ("Dirk", _dirk_folder), ("Jumbo", _jumbo_folder)):
+        try:
+            data[store] = await fn()
+        except Exception as e:
+            logger.warning("Folder %s mislukt: %r", store, e)
+            data[store] = (_folders["data"] or {}).get(store) or []
+        for per in data[store]:
+            for it in per["items"]:
+                for i in it["ids"]:
+                    by_id.setdefault((store, i), []).append(it)
+    _folders.update({"at": datetime.now(timezone.utc), "data": data, "by_id": by_id})
+    _search_cache.clear()
+    logger.info("Folders geladen: %s", {k: [len(p["items"]) for p in v] for k, v in data.items()})
+
+
+async def _folders_fresh(wait: bool = True) -> dict:
+    f = _folders
+    old = f["at"] is None or (datetime.now(timezone.utc) - f["at"]).total_seconds() > FOLDER_REFRESH_SECONDS
+    if old and not (f["task"] and not f["task"].done()):
+        f["task"] = asyncio.create_task(_load_folders())
+    if wait and f["at"] is None and f["task"]:
+        try:
+            await asyncio.wait_for(asyncio.shield(f["task"]), 25)
+        except Exception:
+            pass
+    return f
+
+
+def _promos_for(doc: dict) -> list:
+    src = doc.get("_src") or product_source(doc)
+    sid = doc.get("dirk_id") or doc.get("ah_id") or doc.get("jumbo_id")
+    found = list(_folders["by_id"].get((src, str(sid)), [])) if src and sid else []
+    if not found and doc.get("promo") and doc["promo"].get("id"):
+        pr = doc["promo"]
+        found = [_promo_item(src, pr["id"], pr.get("title"), pr.get("label"), pr.get("start"), pr.get("end"), combinable=pr.get("combinable"))]
+    return found
+
+
+def _promo_public(doc: dict, price: float) -> tuple:
+    # (actie nu, actie die nog komt) voor één product
+    today = _iso_day(datetime.now(timezone.utc).isoformat())
+    now_p, next_p = None, None
+    for it in _promos_for(doc):
+        if it["end"] and it["end"] < today:
+            continue
+        regular = it.get("regular") if len(it["ids"]) <= 1 else None
+        base = regular or price
+        deal = _promo_deal(it["label"], base or 0)
+        p = {"label": it["label"], "title": it["title"], "start": it["start"], "end": it["end"],
+             "period": f"{_nice_day(it['start'])} t/m {_nice_day(it['end'])}" if it["start"] and it["end"] else None,
+             "price": it.get("price") if len(it["ids"]) <= 1 else None, "regular": regular,
+             "deal": deal, "combinable": it["combinable"], "note": it.get("note")}
+        if (it["start"] or "") <= today:
+            now_p = now_p or p
+        else:
+            next_p = next_p or p
+    return now_p, next_p
 
 
 async def _dirk_post(client, query, variables):
@@ -2775,7 +3007,8 @@ JUMBO_HEADERS = {
     "Origin": "https://www.jumbo.com",
 }
 JUMBO_SEARCH_QUERY = """query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) {
-  count products { id ean title brand category image packSizeDisplay prices: price { price promoPrice } } } }"""
+  count products { id ean title brand category image packSizeDisplay prices: price { price promoPrice }
+  promotions { id title tags { text } start { iso } end { iso } isKiesAndMix image } } } }"""
 
 
 def _jumbo_normalize(p: dict) -> Optional[dict]:
@@ -2794,10 +3027,22 @@ def _jumbo_normalize(p: dict) -> Optional[dict]:
         "brand": p.get("brand") or None,
         "quantity": p.get("packSizeDisplay") or None,
         "price": round(float(cents) / 100, 2) if cents else 0,
-        "on_offer": bool(promo and normal and promo < normal),
+        "on_offer": bool(promo and normal and promo < normal) or bool(_jumbo_promo(p)),
         "aisle": _dirk_aisle(p.get("category") or "", "", name),
         "subcategory": (p.get("category") or None),
+        "promo": _jumbo_promo(p),
     }
+
+
+def _jumbo_promo(p: dict) -> Optional[dict]:
+    for pr in p.get("promotions") or []:
+        if not isinstance(pr, dict) or not pr.get("id"):
+            continue
+        tags = [t.get("text") for t in pr.get("tags") or [] if isinstance(t, dict) and t.get("text")]
+        return {"id": str(pr["id"]), "title": pr.get("title"), "label": tags[0] if tags else "Actie",
+                "start": _iso_day((pr.get("start") or {}).get("iso")), "end": _iso_day((pr.get("end") or {}).get("iso")),
+                "combinable": bool(pr.get("isKiesAndMix")), "image": pr.get("image")}
+    return None
 
 
 async def _jumbo_search_page(client, term: str, offset: int = 0) -> tuple:
@@ -2971,6 +3216,7 @@ def _new_store_product(idf: str, nrm: dict, store: str, mults: dict) -> dict:
         "barcode": nrm.get("barcode"),
         "subcategory": nrm.get("subcategory"),
         "on_offer": bool(nrm.get("on_offer")),
+        "promo": nrm.get("promo"),
         "prices": _prices_from(nrm["price"], store, mults),
         "image": nrm.get("image"),
         "unavailable": [],
@@ -3318,6 +3564,8 @@ def _apply_refresh(p: dict, store: str, n: dict, mults: dict) -> dict:
     for k in ("image", "barcode", "subcategory"):
         if n.get(k):
             out[k] = n[k]
+    if "promo" in n:
+        out["promo"] = n["promo"]
     return out
 
 
@@ -4239,7 +4487,7 @@ async def startup():
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
-    asyncio.create_task(_probe_promos())
+    asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
 
 
 async def _daily_refresh_loop():

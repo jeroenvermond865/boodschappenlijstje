@@ -14,6 +14,8 @@ export function useDebounced<T>(value: T, ms = 250): T {
   return v;
 }
 
+export const euro = (v: number) => `€ ${v.toFixed(2).replace(".", ",")}`;
+
 export type ProductPage = {
   products: Product[];
   total: number;

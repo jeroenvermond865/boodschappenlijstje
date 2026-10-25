@@ -8,7 +8,8 @@ import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
 import { AISLE_ICONS } from "@/src/constants";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
-import type { Product } from "@/app/(tabs)/products";
+import { euro } from "@/src/search";
+import type { Product, Promo } from "@/app/(tabs)/products";
 
 type Details = {
   source: string;
@@ -103,14 +104,22 @@ export default function ProductScreen() {
           </View>
 
           <View style={styles.priceRow}>
-            <Text style={styles.price}>{p.price > 0 ? `€ ${p.price.toFixed(2).replace(".", ",")}` : "—"}</Text>
-            {d?.unit_price ? <Text style={styles.unitPrice}>{d.unit_price}</Text> : null}
-            {p.on_offer ? (
+            {p.promo?.regular && p.promo.regular > (p.promo.price ?? p.price) ? (
+              <Text style={styles.oldPrice}>{euro(p.promo.regular)}</Text>
+            ) : null}
+            <Text style={[styles.price, p.promo && { color: colors.warning }]}>
+              {(p.promo?.price ?? p.price) > 0 ? euro(p.promo?.price ?? p.price) : "—"}
+            </Text>
+            {d?.unit_price || p.unit_price ? <Text style={styles.unitPrice}>{d?.unit_price ?? p.unit_price}</Text> : null}
+            {p.on_offer && !p.promo ? (
               <View style={styles.offerBadge}>
                 <Text style={styles.offerText}>Aanbieding</Text>
               </View>
             ) : null}
           </View>
+
+          {p.promo ? <PromoCard promo={p.promo} now /> : null}
+          {p.promo_next ? <PromoCard promo={p.promo_next} now={false} /> : null}
 
           {details.isLoading ? (
             <View style={styles.loadingBox}>
@@ -227,6 +236,31 @@ export default function ProductScreen() {
   );
 }
 
+function PromoCard({ promo, now }: { promo: Promo; now: boolean }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  return (
+    <View style={[styles.promoCard, !now && { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary }]}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View style={[styles.offerBadge, !now && { backgroundColor: colors.brandPrimary }]}>
+          <Text style={styles.offerText}>{promo.label}</Text>
+        </View>
+        <Text style={styles.promoWhen}>{now ? (promo.period ? `Geldig ${promo.period}` : "Nu in de aanbieding") : `Binnenkort: ${promo.period ?? ""}`}</Text>
+      </View>
+      {promo.title ? <Text style={styles.body}>{promo.title}</Text> : null}
+      {promo.deal && promo.deal.count > 1 ? (
+        <Text style={styles.promoDeal}>
+          Bij {promo.deal.count} stuks betaal je {euro(promo.deal.total)}, dus {euro(promo.deal.each)} per stuk.
+        </Text>
+      ) : promo.deal && promo.deal.count === 1 && !promo.price ? (
+        <Text style={styles.promoDeal}>Met korting: {euro(promo.deal.each)}</Text>
+      ) : null}
+      {promo.combinable ? <Text style={styles.muted}>Je mag verschillende producten uit deze actie combineren.</Text> : null}
+      {promo.note ? <Text style={styles.muted}>{promo.note}</Text> : null}
+    </View>
+  );
+}
+
 function Section({ title, text }: { title: string; text: string | null }) {
   const styles = useStyles();
   if (!text) return null;
@@ -260,6 +294,10 @@ const useStyles = makeStyles((colors) => ({
   priceRow: { flexDirection: "row", alignItems: "baseline", flexWrap: "wrap", gap: 10 },
   price: { fontSize: 26, fontFamily: fonts.bold, color: colors.onSurface },
   unitPrice: { fontSize: 14, fontFamily: fonts.medium, color: colors.muted },
+  oldPrice: { fontSize: 16, fontFamily: fonts.regular, color: colors.muted, textDecorationLine: "line-through" },
+  promoCard: { borderWidth: 1, borderColor: colors.warning, borderRadius: 16, padding: 14, gap: 6 },
+  promoWhen: { flex: 1, fontSize: 13, fontFamily: fonts.medium, color: colors.onSurface },
+  promoDeal: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },
   offerBadge: { backgroundColor: colors.warning, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
   offerText: { fontSize: 12, fontFamily: fonts.semibold, color: "#fff" },
   loadingBox: { alignItems: "center", gap: 10, padding: 20 },
