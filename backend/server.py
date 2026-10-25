@@ -1864,12 +1864,15 @@ def _split_list(v: str) -> list:
 
 def _facet(docs: list, field: str, top: int = 60) -> list:
     counts: Dict[str, int] = {}
+    images: Dict[str, str] = {}  # een voorbeeldfoto per soort, voor de tegels op de Producten-pagina
     for d in docs:
         v = (d.get(field) or "").strip()
         if v:
             counts[v] = counts.get(v, 0) + 1
+            if v not in images and d.get("image"):
+                images[v] = d["image"]
     items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:top]
-    return [{"value": k, "count": n} for k, n in items]
+    return [{"value": k, "count": n, "image": images.get(k)} for k, n in items]
 
 
 def _has_offer(d: dict) -> bool:
@@ -1911,7 +1914,7 @@ def _run_search(docs: list, q: str, source: str, aisle: str, favs: Optional[set]
             return False
         return True
     facets = [
-        {"key": "sub", "label": "Soort", "options": _facet([d for d in docs if keep(d, "sub")], "subcategory")},
+        {"key": "sub", "label": "Soort", "options": _facet([d for d in docs if keep(d, "sub")], "subcategory", 200)},
         {"key": "brand", "label": "Merk", "options": _facet([d for d in docs if keep(d, "brand")], "brand", 80)},
         {"key": "offer", "label": "Aanbieding", "count": sum(1 for d in docs if keep(d, "offer") and _has_offer(d))},
         {"key": "bio", "label": "Biologisch", "count": sum(1 for d in docs if keep(d, "bio") and d.get("_bio"))},

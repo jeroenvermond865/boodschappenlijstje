@@ -27,7 +27,7 @@ export type ProductPage = {
 export type Facet = {
   key: "sub" | "brand" | "offer" | "bio";
   label: string;
-  options?: { value: string; count: number }[];
+  options?: { value: string; count: number; image?: string | null }[];
   count?: number;
 };
 

@@ -90,6 +90,8 @@ export function ProductBrowser({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const router = useRouter();
   const nFilters = countFilters(filters);
+  // Bladeren zoals bij recepten: eerst een afdeling, dan een soort, dan pas de producten. Zoeken of filteren toont meteen de lijst.
+  const [allInAisle, setAllInAisle] = useState(false);
 
   const debouncedSearch = useDebounced(search);
   const queryKey = ["products", "search", storeFilter, aisle, onlyFavorites, debouncedSearch.trim(), filters];
@@ -112,6 +114,14 @@ export function ProductBrowser({
 
   const filtered = useMemo(() => (data?.pages ?? []).flatMap((pg) => pg.products), [data]);
   const aisleCounts = data?.pages[0]?.aisle_counts ?? {};
+  const browsing = !debouncedSearch.trim() && !onlyFavorites && !filters.brand.length && !filters.offer && !filters.bio;
+  const mode: "cats" | "subs" | "list" = !browsing ? "list" : aisle === "all" ? "cats" : !filters.sub.length && !allInAisle ? "subs" : "list";
+  const subOptions = (data?.pages[0]?.facets ?? []).find((f) => f.key === "sub")?.options ?? [];
+  const goAisle = (a: string) => {
+    setAisle(a);
+    setAllInAisle(false);
+    setFilters((x) => ({ ...x, sub: [] }));
+  };
   const facets = data?.pages[0]?.facets ?? [];
   const total = data?.pages[0]?.total;
 
@@ -214,25 +224,101 @@ export function ProductBrowser({
             </Pressable>
           ) : null}
         </View>
+        {browsing ? (
+          <View style={styles.crumbs}>
+            <Pressable testID="crumb-all" onPress={() => goAisle("all")} hitSlop={6}>
+              <Text style={[styles.crumb, mode === "cats" && styles.crumbActive]}>Alle afdelingen</Text>
+            </Pressable>
+            {aisle !== "all" ? (
+              <>
+                <Icon name="chevron-right" size={16} color={colors.muted} />
+                <Pressable
+                  testID="crumb-aisle"
+                  onPress={() => {
+                    setAllInAisle(false);
+                    setFilters((x) => ({ ...x, sub: [] }));
+                  }}
+                  hitSlop={6}
+                >
+                  <Text style={[styles.crumb, mode === "subs" && styles.crumbActive]} numberOfLines={1}>{aisle}</Text>
+                </Pressable>
+              </>
+            ) : null}
+            {mode === "list" ? (
+              <>
+                <Icon name="chevron-right" size={16} color={colors.muted} />
+                <Text style={[styles.crumb, styles.crumbActive, { flexShrink: 1 }]} numberOfLines={1}>
+                  {filters.sub.length ? filters.sub.join(", ") : "Alles"}
+                </Text>
+              </>
+            ) : null}
+          </View>
+        ) : (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.deptRow}>
-          <Pressable testID="dept-all" onPress={() => { setAisle("all"); setFilters((x) => ({ ...x, sub: [] })); }} style={[styles.deptChip, aisle === "all" && styles.deptChipActive]}>
+          <Pressable testID="dept-all" onPress={() => goAisle("all")} style={[styles.deptChip, aisle === "all" && styles.deptChipActive]}>
             <Text style={[styles.deptText, aisle === "all" && styles.deptTextActive]}>Alle afdelingen</Text>
           </Pressable>
           {AISLES.filter((a) => (aisleCounts[a] ?? 0) > 0).map((a) => (
-            <Pressable key={a} testID={`dept-${a}`} onPress={() => { setAisle(a); setFilters((x) => ({ ...x, sub: [] })); }} style={[styles.deptChip, aisle === a && styles.deptChipActive]}>
+            <Pressable key={a} testID={`dept-${a}`} onPress={() => goAisle(a)} style={[styles.deptChip, aisle === a && styles.deptChipActive]}>
               <Icon name={(AISLE_ICONS[a] ?? "cart-outline") as any} size={14} color={aisle === a ? colors.onBrandPrimary : colors.brandPrimary} />
               <Text style={[styles.deptText, aisle === a && styles.deptTextActive]}>{a}</Text>
             </Pressable>
           ))}
         </ScrollView>
+        )}
       </View>
 
       {isLoading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
+      ) : mode === "cats" ? (
+        <FlatList
+          key="cats"
+          data={AISLES.filter((a) => (aisleCounts[a] ?? 0) > 0)}
+          keyExtractor={(a) => a}
+          numColumns={2}
+          columnWrapperStyle={{ gap: 10 }}
+          contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomPadding, gap: 10 }}
+          renderItem={({ item: a }) => (
+            <Pressable testID={`cat-${a}`} onPress={() => goAisle(a)} style={({ pressed }) => [styles.tile, pressed && { opacity: 0.85 }]}>
+              <View style={styles.tileIcon}>
+                <Icon name={(AISLE_ICONS[a] ?? "cart-outline") as any} size={26} color={colors.brandPrimary} />
+              </View>
+              <Text style={styles.tileTitle} numberOfLines={2}>{a}</Text>
+              <Text style={styles.tileCount}>{aisleCounts[a]} producten</Text>
+            </Pressable>
+          )}
+        />
+      ) : mode === "subs" ? (
+        <FlatList
+          key="subs"
+          data={[{ value: "", count: aisleCounts[aisle] ?? 0, image: null }, ...subOptions]}
+          keyExtractor={(o) => o.value || "__all"}
+          numColumns={2}
+          columnWrapperStyle={{ gap: 10 }}
+          contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomPadding, gap: 10 }}
+          renderItem={({ item: o }) => (
+            <Pressable
+              testID={`sub-${o.value || "all"}`}
+              onPress={() => (o.value ? setFilters((x) => ({ ...x, sub: [o.value] })) : setAllInAisle(true))}
+              style={({ pressed }) => [styles.tile, pressed && { opacity: 0.85 }]}
+            >
+              {o.image ? (
+                <Image source={{ uri: o.image }} style={styles.tileImage} resizeMode="contain" />
+              ) : (
+                <View style={styles.tileIcon}>
+                  <Icon name={o.value ? ((AISLE_ICONS[aisle] ?? "cart-outline") as any) : "view-grid-outline"} size={26} color={colors.brandPrimary} />
+                </View>
+              )}
+              <Text style={styles.tileTitle} numberOfLines={2}>{o.value || `Alles in ${aisle}`}</Text>
+              <Text style={styles.tileCount}>{o.count} producten</Text>
+            </Pressable>
+          )}
+        />
       ) : (
         <FlatList
+          key="list"
           data={filtered}
           keyboardShouldPersistTaps="handled"
           keyExtractor={(p) => p.id}
@@ -452,6 +538,14 @@ function FiltersSheet({
 }
 
 const useStyles = makeStyles((colors) => ({
+  crumbs: { flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap", minHeight: 34 },
+  crumb: { fontSize: 14, fontFamily: fonts.medium, color: colors.brandPrimary },
+  crumbActive: { color: colors.onSurface, fontFamily: fonts.bold },
+  tile: { flex: 1, maxWidth: "48.5%", borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 12, gap: 6, backgroundColor: colors.surface },
+  tileIcon: { width: 52, height: 52, borderRadius: 14, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
+  tileImage: { width: 52, height: 52, borderRadius: 10, backgroundColor: "#fff" },
+  tileTitle: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
+  tileCount: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted },
   root: { flex: 1, backgroundColor: colors.surface },
   header: { paddingHorizontal: 16, paddingTop: 8, gap: 12 },
   title: { fontSize: 32, fontFamily: fonts.bold, color: colors.onSurface },
