@@ -2908,7 +2908,7 @@ def _promo_public(doc: dict, price: float) -> tuple:
 
 
 async def _probe_recipes() -> None:
-    # Tijdelijk: recepten en folders onderzoeken (ronde 4)
+    # Tijdelijk: recepten en folders onderzoeken (ronde 5)
     import json as _json
     def dump(x, n=2500):
         return _json.dumps(x, ensure_ascii=False, default=str)[:n]
@@ -2920,75 +2920,62 @@ async def _probe_recipes() -> None:
             H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP", "Content-Type": "application/json",
                  "client-name": "ah-allerhande", "client-version": "6.0"}
             G = "https://api.ah.nl/graphql"
-            for q in ['{recipeSearchV2(searchText:"pasta",size:1){filters{name label options{name label count}}}}',
-                  '{recipeSearchV2(searchText:"pasta",size:1){filters{name label values{name label count}}}}',
-                  '{recipeSearchV2(searchText:"pasta",size:1){filters{name type}}}',
-                  '{recipeSearchV2(searchText:"pasta",size:1,filters:[{group:"menugang",values:["soep"]}]){page{total}}}',
-                  '{recipeSearchV2(searchText:"pasta",size:1,filters:[{name:"menugang",values:["soep"]}]){page{total}}}',
-                  '{recipeSearchV2(searchText:"pasta",size:1,filters:["menugang:soep"]){page{total}}}',
-                  '{recipeSearchV2(searchText:"pasta",size:1,sortBy:X){page{total}}}',
-                  '{recipe(id:1302917){id title description servings{number} serving{number} time{cook oven wait} ingredients{name{singular plural} quantity quantityUnit{singular plural} text} preparation{steps} nutritions{energy{value unit}} images{url width}}}',
-                  '{recipe(id:1302917){ingredients{text}}}',
-                  '{recipe(id:1302917){preparation{steps}}}',
-                  '{recipe(id:1302917){serving{number}}}',
-                  '{recipe(id:1302917){ingredients{quantity quantityUnit{singular} name{singular}}}}',
-                  '{recipe(id:1302917){steps}}',
-                  '{recipe(id:1302917){instructions}}']:
+            for q in ['{recipeSearchV2(searchText:"pasta",size:1){filters{name label}}}',
+                      '{recipeSearchV2(searchText:"pasta",size:1){filters{name label filters{name label count}}}}',
+                      '{recipeSearchV2(searchText:"pasta",size:1){filters{name label items{name label count}}}}',
+                      '{recipeSearchV2(searchText:"pasta",size:1){filters{name label tags{name label count}}}}',
+                      '{recipeSearchV2(searchText:"pasta",size:1){filters{name label children{name label count}}}}',
+                      '{recipeSearchV2(searchText:"pasta",size:1,filters:[{group:"menugang",values:["hoofdgerecht"]}]){page{total}}}',
+                      '{recipeSearchV2(searchText:"",size:1,filters:[{group:"menugang",values:["soep"]}]){page{total}}}',
+                      '{recipeSearchV2(size:1,sortBy:NEWEST){page{total}}}',
+                      '{recipe(id:1302917){cookTime}}', '{recipe(id:1302917){cookingTime}}', '{recipe(id:1302917){preparationTime}}',
+                      '{recipe(id:1302917){servings{number}}}', '{recipe(id:1302917){tags{key value}}}', '{recipe(id:1302917){courses}}',
+                      '{recipe(id:1302917){nutritions{energy{value unit}}}}', '{recipe(id:1302917){webPath}}', '{recipe(id:1302917){slug}}']:
                 r = await c.post(G, json={"query": q}, headers=H)
-                out.append(("AH " + q[:70], r.text[:900]))
-        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
-            for q in ["{recipe{title}}", '{recipe(id:"x"){title}}', '{recipe(slug:"nacho-s-uit-de-oven"){title}}',
-                      '{recipe(recipeId:"x"){title}}', "{recipeTiles{title}}", "{recipeCourses{name}}", "{recipesByCourse{title}}"]:
-                r = await c.post(DIRK_GQL, json={"query": q})
-                out.append(("Dirk " + q, r.text[:500]))
+                out.append(("AH " + q[:110], r.text[:1500]))
+        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
+            for f in ["id", "title", "name", "start", "end", "startDate", "date", "description", "promotions{id}", "runtime"]:
+                r = await c.post(JUMBO_GQL, json={"query": "{promotionTabs{%s}}" % f})
+                out.append(("Jumbo tab " + f, r.text[:600]))
+            r = await c.post(JUMBO_GQL, json={"query": "{promotions{id}}"})
+            out.append(("Jumbo promotions", r.text[:500]))
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            r = await c.get("https://www.dirk.nl/meer/recepten/gang/avondeten", headers=_PAGE_HEADERS)
-            d = _nuxt_data(r.text) or {}
-            out.append(("Dirk course", dump((d.get("data") or {}).get("recipeCourse"), 2500)))
-            r = await c.get("https://www.dirk.nl/meer/recepten/recept/nacho-s-uit-de-oven", headers=_PAGE_HEADERS)
-            d = _nuxt_data(r.text) or {}
-            for k, v in (d.get("data") or {}).items():
-                out.append(("Dirk recept " + k, dump(v, 2000)))
-            # Folder Dirk: acties zonder foto en volgende week
-            r = await c.get("https://www.dirk.nl/aanbiedingen", headers=_PAGE_HEADERS)
-            links = sorted(set(re.findall(r'href="(/aanbiedingen[^"]*|/folder[^"]*)"', r.text)))
-            out.append(("Dirk aanb links", dump(links, 1500)))
+            r = await c.get("https://www.jumbo.com/recepten/zoeken/?searchTerms=pasta&filters=menugang:Soep&pageSize=24&offSet=0", headers=_PAGE_HEADERS)
             d = _nuxt_data(r.text)
-            noimg = []
-            def walk(x, depth=0):
-                if depth > 30 or len(noimg) > 2:
+            st = (_find_dict(d, "recipeStore") or {}).get("recipeStore") or {}
+            out.append(("Jumbo 1 filter count", st.get("count")))
+            out.append(("Jumbo facet links", dump([[v.get("link") for v in g.get("values", [])[:2]] for g in st.get("facets") or []], 2500)))
+            out.append(("Jumbo selected", dump(st.get("selectedFacets"), 600)))
+            out.append(("Jumbo facet groups", dump([(g.get("key"), g.get("displayName"), g.get("multiSelect"), len(g.get("values") or [])) for g in st.get("facets") or []], 1500)))
+            r = await c.get("https://www.jumbo.com/aanbiedingen/nu", headers=_PAGE_HEADERS)
+            d = _nuxt_data(r.text)
+            hits = []
+            def walk(x, path="", depth=0):
+                if depth > 20 or len(hits) > 12:
                     return
                 if isinstance(x, dict):
-                    if x.get("offerId") and isinstance(x.get("products"), list):
-                        if not x.get("image"):
-                            noimg.append(x)
-                        return
-                    for v in x.values():
-                        walk(v, depth + 1)
-                elif isinstance(x, list):
-                    for v in x:
-                        walk(v, depth + 1)
+                    for k, v in x.items():
+                        if "tab" in k.lower() or "week" in k.lower():
+                            hits.append((path + "." + k, dump(v, 400)))
+                        walk(v, path + "." + k, depth + 1)
+                elif isinstance(x, list) and x:
+                    walk(x[0], path + "[0]", depth + 1)
             walk(d)
-            out.append(("Dirk zonder foto", dump(noimg[:2], 2500)))
-            for url in ("https://www.dirk.nl/aanbiedingen/volgende-week", "https://www.dirk.nl/aanbiedingen?week=volgende",
-                        "https://www.jumbo.com/aanbiedingen/nu", "https://www.jumbo.com/aanbiedingen/volgende-week",
-                        "https://www.jumbo.com/aanbiedingen/binnenkort", "https://www.jumbo.com/aanbiedingen"):
-                r = await c.get(url, headers=_PAGE_HEADERS)
-                d = _nuxt_data(r.text)
-                ls = sorted(set(re.findall(r'href="(/aanbiedingen[^"]*)"', r.text)))[:30]
-                out.append((url, f"{r.status_code} {r.url} nuxt={d is not None} links={ls}"))
-                if d is not None and "jumbo" in url:
-                    f = _find_dict(d, "tabs") or _find_dict(d, "weeks") or _find_dict(d, "promotionTabs")
-                    out.append((url + " tabs", dump(f, 1500)))
-        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
-            for q in ['{promotionTabs{tabs{id title start end}}}', '{promotionTabs(storeId:""){tabs{id}}}',
-                      '{promotions{count}}', '{searchPromotions(input:{}){count}}']:
-                r = await c.post(JUMBO_GQL, json={"query": q})
-                out.append(("Jumbo " + q, r.text[:500]))
+            out.append(("Jumbo aanb tab/week", dump(hits, 3500)))
+            for g in ("avondeten", "lunch", "ontbijt", "borrel", "toetjes", "brunch"):
+                r = await c.get("https://www.dirk.nl/meer/recepten/gang/" + g, headers=_PAGE_HEADERS)
+                d = _nuxt_data(r.text) or {}
+                rc = (d.get("data") or {}).get("recipeCourse")
+                lst = rc if isinstance(rc, list) else []
+                first = dict(lst[0]) if lst else None
+                if first:
+                    for k in ("courses", "kitchens", "tags"):
+                        first[k] = [t.get("name") for t in first.get(k) or [] if isinstance(t, dict)]
+                out.append(("Dirk gang " + g, f"{r.status_code} n={len(lst)} type={type(rc).__name__} first={dump(first, 1200)}"))
     except Exception as e:
         logger.warning("Recept probe mislukt: %r", e)
     for k, v in out:
-        logger.info("Probe4 %s -> %s", k, v)
+        logger.info("Probe5 %s -> %s", k, v)
 
 
 async def _dirk_post(client, query, variables):

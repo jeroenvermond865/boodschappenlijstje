@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
+import { OnlineRecipes } from "@/src/OnlineRecipes";
 import { api } from "@/src/api";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory } from "@/src/constants";
 import { usesNativeTabs } from "@/src/navigation";
@@ -19,10 +20,9 @@ export type Dish = {
   ingredients: { name: string; unit: string; qty_adult: number; qty_child: number; aisle: string; price?: number; product_id?: string | null }[];
 };
 
-const SOURCES = [
-  { key: "all", label: "Alle" },
-  { key: "standard", label: "Standaard" },
-  { key: "own", label: "Eigen" },
+const TABS = [
+  { key: "own", label: "Eigen gerechten" },
+  { key: "online", label: "Online gerechten" },
 ] as const;
 
 export default function DishesScreen() {
@@ -35,7 +35,7 @@ export default function DishesScreen() {
 
   const [search, setSearch] = useState("");
   const [cat, setCat] = useState<MealCategory | "all">("all");
-  const [source, setSource] = useState<(typeof SOURCES)[number]["key"]>("all");
+  const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("own");
 
   const { data, isLoading } = useQuery({
     queryKey: ["dishes"],
@@ -45,11 +45,9 @@ export default function DishesScreen() {
   const filtered = useMemo(() => {
     let list = data?.dishes ?? [];
     if (cat !== "all") list = list.filter((d) => d.category === cat);
-    if (source === "standard") list = list.filter((d) => d.is_standard);
-    if (source === "own") list = list.filter((d) => !d.is_standard);
     if (search.trim()) list = list.filter((d) => d.name.toLowerCase().includes(search.trim().toLowerCase()));
     return list;
-  }, [data, cat, source, search]);
+  }, [data, cat, search]);
 
   const chips: ({ key: MealCategory | "all"; label: string })[] = [
     { key: "all", label: "Alle" },
@@ -61,6 +59,21 @@ export default function DishesScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>{s.tab_dishes}</Text>
         <Text style={styles.subtitle}>{s.sub_dishes}</Text>
+        <View style={styles.segment}>
+          {TABS.map((t) => (
+            <Pressable
+              key={t.key}
+              testID={`tab-${t.key}`}
+              onPress={() => setTab(t.key)}
+              style={[styles.segBtn, tab === t.key && styles.segBtnActive]}
+            >
+              <Text style={[styles.segText, tab === t.key && styles.segTextActive]}>{t.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {tab === "own" ? (
+          <>
         <View style={styles.searchBox}>
           <Icon name="magnify" size={20} color={colors.muted} />
           <TextInput
@@ -71,19 +84,6 @@ export default function DishesScreen() {
             onChangeText={setSearch}
             style={styles.searchInput}
           />
-        </View>
-
-        <View style={styles.segment}>
-          {SOURCES.map((s) => (
-            <Pressable
-              key={s.key}
-              testID={`source-${s.key}`}
-              onPress={() => setSource(s.key)}
-              style={[styles.segBtn, source === s.key && styles.segBtnActive]}
-            >
-              <Text style={[styles.segText, source === s.key && styles.segTextActive]}>{s.label}</Text>
-            </Pressable>
-          ))}
         </View>
 
         <ScrollView
@@ -106,9 +106,13 @@ export default function DishesScreen() {
             );
           })}
         </ScrollView>
+          </>
+        ) : null}
       </View>
 
-      {isLoading ? (
+      {tab === "online" ? (
+        <OnlineRecipes bottomPadding={bottomChrome + 24} />
+      ) : isLoading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
@@ -143,11 +147,16 @@ export default function DishesScreen() {
             </Pressable>
           )}
           ListEmptyComponent={
-            <EmptyState icon="silverware-variant" title="Geen gerechten gevonden" subtitle="Pas je filters aan of voeg een nieuw gerecht toe." />
+            <EmptyState
+              icon="silverware-variant"
+              title={data?.dishes.length ? "Geen gerechten gevonden" : "Nog geen eigen gerechten"}
+              subtitle={data?.dishes.length ? "Pas je filters aan of voeg een nieuw gerecht toe." : "Maak een gerecht met de knop hieronder, of neem er een over uit Online gerechten."}
+            />
           }
         />
       )}
 
+      {tab === "own" ? (
       <Pressable
         testID="new-dish-fab"
         onPress={() => router.push("/dish/edit")}
@@ -156,6 +165,7 @@ export default function DishesScreen() {
         <Icon name="plus" size={22} color={colors.onBrandPrimary} />
         <Text style={styles.fabText}>Gerecht</Text>
       </Pressable>
+      ) : null}
     </View>
   );
 }
