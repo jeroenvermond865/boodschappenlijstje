@@ -3304,6 +3304,110 @@ async def _dirk_extra_folders() -> list:
     return out
 
 
+# Dirk zet de acties van volgende week alleen als folderpagina's online; een AI-model leest die en maakt er losse acties van
+DIRK_AI_MODEL = "claude-opus-5-5"
+DIRK_AI_BATCH = 4
+_DIRK_AI_SCHEMA = {
+    "type": "object",
+    "properties": {"offers": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Productnaam zoals in de folder, met merk als dat er staat"},
+            "label": {"type": "string", "description": "De actie, bijv. '1+1 gratis', '2e halve prijs', '25% korting', 'Actie' bij alleen een lagere prijs"},
+            "price": {"anyOf": [{"type": "number"}, {"type": "null"}], "description": "Actieprijs in euro"},
+            "regular": {"anyOf": [{"type": "number"}, {"type": "null"}], "description": "Normale prijs in euro als die er staat"},
+            "quantity": {"anyOf": [{"type": "string"}, {"type": "null"}], "description": "Verpakking, bijv. '500 gram' of 'pak 1 liter'"},
+        },
+        "required": ["title", "label", "price", "regular", "quantity"],
+        "additionalProperties": False,
+    }}},
+    "required": ["offers"],
+    "additionalProperties": False,
+}
+_dirk_ai_state: dict = {"task": None}
+
+
+async def _dirk_ai_read(pages: list) -> list:
+    from anthropic import AsyncAnthropic
+    client = AsyncAnthropic()
+    sem = asyncio.Semaphore(3)
+
+    async def batch(urls):
+        content = [{"type": "image", "source": {"type": "url", "url": u.replace("width=1280", "width=1600")}} for u in urls]
+        content.append({"type": "text", "text": (
+            "Dit zijn pagina's uit de folder van supermarkt Dirk voor volgende week. Noem elke actie die erop staat: "
+            "het product, de actie en de prijzen. Sla reclame zonder product of prijs over. Gebruik euro's als getal (1.99).")})
+        async with sem:
+            msg = await client.beta.messages.create(
+                model=DIRK_AI_MODEL, max_tokens=16000, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+                output_config={"effort": "low", "format": {"type": "json_schema", "schema": _DIRK_AI_SCHEMA}},
+                messages=[{"role": "user", "content": content}])
+        if msg.stop_reason in ("refusal", "max_tokens"):
+            logger.warning("Dirk-folder lezen: %s", msg.stop_reason)
+            return []
+        text = next((b.text for b in msg.content if b.type == "text"), "")
+        return (json.loads(text) if text else {}).get("offers") or []
+
+    res = await asyncio.gather(*(batch(pages[i:i + DIRK_AI_BATCH]) for i in range(0, len(pages), DIRK_AI_BATCH)), return_exceptions=True)
+    offers, seen = [], set()
+    for r in res:
+        if isinstance(r, Exception):
+            logger.warning("Dirk-folder lezen mislukt: %r", r)
+            continue
+        for o in r:
+            k = (_norm_text(o.get("title") or ""), o.get("label"))
+            if o.get("title") and k not in seen:
+                seen.add(k)
+                offers.append(o)
+    return offers
+
+
+async def _dirk_ai_run(nxt: dict, key: str) -> None:
+    try:
+        offers = await _dirk_ai_read(nxt["pages"])
+        docs = await _global_products()
+        pool = [d for d in docs if d.get("_src") == "Dirk" and d.get("is_global") and d.get("dirk_id")]
+
+        def build():
+            items = []
+            for n, o in enumerate(offers):
+                hit = (_best_matches(pool, o["title"], 1) or [None])[0]
+                it = _promo_item("Dirk", f"ai-{key[:8]}-{n}", o["title"], o.get("label") or "Actie", nxt.get("start"), nxt.get("end"),
+                                 (hit or {}).get("image"), price=o.get("price"), regular=o.get("regular"),
+                                 ids=[hit["dirk_id"]] if hit else [], quantity=o.get("quantity"))
+                it["category"] = (hit or {}).get("aisle")
+                items.append(it)
+            return items
+        items = await asyncio.to_thread(build)
+        ok = bool(items)
+        await db.dirk_ai.update_one({"key": key}, {"$set": {"key": key, "items": items, "ok": ok, "at": datetime.now(timezone.utc)}}, upsert=True)
+        logger.info("Dirk-folder volgende week gelezen: %d acties, %d gekoppeld", len(items), sum(1 for i in items if i["ids"]))
+        if ok:
+            await _load_folders()
+    except Exception as e:
+        logger.warning("Dirk-folder lezen mislukt: %r", e)
+        await db.dirk_ai.update_one({"key": key}, {"$set": {"key": key, "items": [], "ok": False, "at": datetime.now(timezone.utc)}}, upsert=True)
+
+
+async def _dirk_ai_period(extra: list) -> Optional[dict]:
+    # De gelezen acties van volgende week (één keer per folder); ontbreken ze nog, dan lezen we op de achtergrond
+    nxt = next((e for e in extra if e.get("key") == "next" and e.get("pages")), None)
+    if not nxt:
+        return None
+    key = f"{len(nxt['pages'])}-" + nxt["pages"][0].rsplit("/", 1)[-1].split("?")[0]
+    doc = await db.dirk_ai.find_one({"key": key}, {"_id": 0})
+    if doc and doc.get("ok"):
+        return {"start": nxt["start"], "end": nxt["end"], "folder_url": nxt["folder_url"], "items": doc["items"]}
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        logger.info("Dirk-folder lezen overgeslagen: geen ANTHROPIC_API_KEY")
+        return None
+    retry = doc and doc.get("at") and (datetime.now(timezone.utc) - doc["at"].replace(tzinfo=timezone.utc)).total_seconds() < 6 * 3600
+    t = _dirk_ai_state["task"]
+    if not retry and not (t and not t.done()):
+        _dirk_ai_state["task"] = asyncio.create_task(_dirk_ai_run(nxt, key))
+    return None
+
+
 async def _jumbo_folder() -> list:
     # Jumbo: acties komen mee met de producten (bij import en de dagelijkse update)
     docs = await db.products.find({"jumbo_id": {"$exists": True}, "promo": {"$ne": None}, "deleted_at": None, "is_global": True},
@@ -3353,6 +3457,15 @@ async def _load_folders() -> None:
     except Exception as e:
         logger.warning("Dirk extra folders mislukt: %r", e)
         extra = _folders.get("extra") or {}
+    try:
+        per = await _dirk_ai_period(extra.get("Dirk") or [])
+        if per and not any((p.get("start") or "") >= (per["start"] or "~") for p in data.get("Dirk") or []):
+            data.setdefault("Dirk", []).append(per)
+            for it in per["items"]:
+                for i in it["ids"]:
+                    by_id.setdefault(("Dirk", i), []).append(it)
+    except Exception as e:
+        logger.warning("Dirk volgende week mislukt: %r", e)
     _folders.update({"at": datetime.now(timezone.utc), "data": data, "by_id": by_id, "extra": extra})
     _search_cache.clear()
     logger.info("Folders geladen: %s", {k: [len(p["items"]) for p in v] for k, v in data.items()})
@@ -6248,46 +6361,37 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
-    asyncio.create_task(_stest11())
+    asyncio.create_task(_stest12())
 
 
-async def _stest11():
-    # Tijdelijk: hoe laat jumbo.com de acties van volgende week zien?
+async def _stest12():
+    # Tijdelijk: de promotie-query van jumbo.com uitlezen en proberen
     await asyncio.sleep(20)
     try:
-        async with httpx.AsyncClient(timeout=20, headers={**JUMBO_HEADERS, "Accept": "text/html"}, follow_redirects=True) as c:
-            r = await c.get("https://www.jumbo.com/aanbiedingen/volgende-week")
-            h = r.text
-            logger.info("Stest11 page %s %d", r.status_code, len(h))
-            ops = sorted(set(re.findall(r'operationName[\\"]*:[\\"]*([A-Za-z]+)', h)))
-            logger.info("Stest11 ops %s", ops[:40])
-            for m in re.finditer(r'(?i)promotion[A-Za-z]*', h):
-                pass
-            words = {}
-            for m in re.findall(r'"(__typename)":"([A-Za-z]+)"', h):
-                words[m[1]] = words.get(m[1], 0) + 1
-            logger.info("Stest11 types %s", sorted(words.items(), key=lambda x: -x[1])[:30])
-            k = h.find("romotion")
-            logger.info("Stest11 snip %s", h[max(0, k - 400): k + 600] if k >= 0 else "-")
-            js = sorted(set(re.findall(r'(?:src|href)="([^"]+\.js)"', h)))
-            logger.info("Stest11 js %d %s", len(js), js[:8])
-            found = 0
-            for u in js[:60]:
-                u = u if u.startswith("http") else "https://www.jumbo.com" + u
-                try:
-                    t = (await c.get(u)).text
-                except Exception:
-                    continue
-                for q in re.finditer(r'(query|fragment) ([A-Za-z]*[Pp]romotion[A-Za-z]*)', t):
-                    found += 1
-                    if found <= 12:
-                        logger.info("Stest11 q %s: %s", u.rsplit("/", 1)[-1], t[q.start(): q.start() + 700].replace("\\n", " "))
-            gi = await c.post(JUMBO_GQL, headers={"Content-Type": "application/json"},
-                              json={"query": "{ __schema { queryType { fields { name args { name } } } } }"})
-            logger.info("Stest11 introspect %s %s", gi.status_code, gi.text[:3000])
+        async with httpx.AsyncClient(timeout=20, headers={**JUMBO_HEADERS, "Accept": "*/*"}, follow_redirects=True) as c:
+            t = (await c.get("https://www.jumbo.com/_nuxt/Clq6K_UN.js")).text
+            blocks = {}
+            for m in re.finditer(r'(query|fragment) ([A-Za-z]+)[^{]*\{', t):
+                i, depth = m.end(), 1
+                while depth and i < len(t):
+                    depth += {"{": 1, "}": -1}.get(t[i], 0)
+                    i += 1
+                blocks[m.group(2)] = re.sub(r"\s+", " ", t[m.start():i].replace("\\n", " "))
+            for n in ("getPromotions", "PromotionTabFields", "PromotionTabFieldsInactive", "PromotionFields", "GetPromotionDetails"):
+                logger.info("Stest12 %s: %s", n, (blocks.get(n) or "-")[:2500])
+            q = blocks.get("getPromotions")
+            if q:
+                need = set(re.findall(r"\.\.\.([A-Za-z]+)", q))
+                for _ in range(3):
+                    for n in list(need):
+                        need |= set(re.findall(r"\.\.\.([A-Za-z]+)", blocks.get(n, "")))
+                full = q + " " + " ".join(blocks[n] for n in need if n in blocks)
+                for name in ("JUMBO_WEB-promotions", "JUMBO_WEB-search"):
+                    r = await c.post(JUMBO_GQL, headers={"Content-Type": "application/json", "apollographql-client-name": name, "x-source": name},
+                                     json={"operationName": "getPromotions", "query": full, "variables": {}})
+                    logger.info("Stest12 run %s %s %s", name, r.status_code, r.text[:3000])
     except Exception as e:
-        logger.warning("Stest11: %r", e)
-
+        logger.warning("Stest12: %r", e)
 
 async def _daily_refresh_loop():
     # Run shortly after boot, then every 24h
