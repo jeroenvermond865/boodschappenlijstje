@@ -3654,6 +3654,7 @@ class RecipeImport(BaseModel):
     id: str
     category: str = "avondeten"
     include: List[int] = []
+    reuse: bool = False  # al eerder overgenomen? dan dat gerecht teruggeven
 
 
 async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = False, include: Optional[List[int]] = None) -> dict:
@@ -3688,7 +3689,7 @@ async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = Fal
 
 @api_router.post("/recipes/import")
 async def import_recipe(data: RecipeImport, user: dict = Depends(get_current_user)):
-    return dish_public(await _recipe_to_dish(data.id, data.category, user, include=data.include))
+    return dish_public(await _recipe_to_dish(data.id, data.category, user, reuse=data.reuse, include=data.include))
 
 
 class RecipeToCamp(BaseModel):

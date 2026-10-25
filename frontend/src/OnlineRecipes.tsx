@@ -39,7 +39,19 @@ export const STORE_LABEL: Record<string, string> = { ah: "AH", jumbo: "Jumbo", d
 
 type Filters = Record<string, string[]>;
 
-export function OnlineRecipes({ bottomPadding }: { bottomPadding: number }) {
+export function OnlineRecipes({
+  bottomPadding,
+  initialFilters,
+  onPick,
+  pickedIds,
+  busyId,
+}: {
+  bottomPadding: number;
+  initialFilters?: Filters; // bijv. { gang: ["ontbijt"] } als je vanuit het ontbijt van een kamp zoekt
+  onPick?: (r: RecipeTile) => void; // kiezen in plaats van openen
+  pickedIds?: string[];
+  busyId?: string | null;
+}) {
   const styles = useStyles();
   const { colors } = useTheme();
   const router = useRouter();
@@ -47,7 +59,7 @@ export function OnlineRecipes({ bottomPadding }: { bottomPadding: number }) {
   const [input, setInput] = useState("");
   const [q, setQ] = useState("");
   const [store, setStore] = useState<string>("all");
-  const [filters, setFilters] = useState<Filters>({});
+  const [filters, setFilters] = useState<Filters>(initialFilters ?? {});
   const [open, setOpen] = useState(false);
 
   // Even wachten met zoeken tot je klaar bent met typen
@@ -57,7 +69,12 @@ export function OnlineRecipes({ bottomPadding }: { bottomPadding: number }) {
   }, [input]);
 
   // Andere winkel, andere filters
-  useEffect(() => setFilters({}), [store]);
+  const [firstStore, setFirstStore] = useState(true);
+  useEffect(() => {
+    if (firstStore) return setFirstStore(false);
+    setFilters(store === "all" && initialFilters ? initialFilters : {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store]);
 
   const query = useInfiniteQuery({
     queryKey: store === "fav" ? ["recipes", "favorites"] : ["recipes", q, store, filters],
@@ -163,9 +180,18 @@ export function OnlineRecipes({ bottomPadding }: { bottomPadding: number }) {
           renderItem={({ item }) => (
             <Pressable
               testID={`recipe-${item.id}`}
-              onPress={() => router.push({ pathname: "/recipe/[id]", params: { id: item.id } })}
-              style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
+              onPress={() => (onPick ? onPick(item) : router.push({ pathname: "/recipe/[id]", params: { id: item.id } }))}
+              style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }, pickedIds?.includes(item.id) && styles.cardPicked]}
             >
+              {onPick ? (
+                <View style={styles.pickBadge}>
+                  {busyId === item.id ? (
+                    <ActivityIndicator size="small" color={colors.onBrandPrimary} />
+                  ) : (
+                    <Icon name={pickedIds?.includes(item.id) ? "check" : "plus"} size={18} color={colors.onBrandPrimary} />
+                  )}
+                </View>
+              ) : null}
               {item.image ? <Image source={{ uri: item.image }} style={styles.cardImage} resizeMode="cover" /> : <View style={[styles.cardImage, styles.noImage]}><Icon name="silverware-variant" size={28} color={colors.muted} /></View>}
               <View style={styles.storeBadge}>
                 <Text style={styles.storeBadgeText}>{STORE_LABEL[item.store] ?? item.store}</Text>
@@ -293,6 +319,8 @@ function FilterSheet({
 }
 
 const useStyles = makeStyles((colors) => ({
+  cardPicked: { borderColor: colors.brandPrimary, borderWidth: 2 },
+  pickBadge: { position: "absolute", top: 8, right: 8, zIndex: 2, width: 30, height: 30, borderRadius: 15, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
   header: { paddingHorizontal: 16, paddingTop: 12, gap: 10 },
   searchBox: {
     flexDirection: "row",

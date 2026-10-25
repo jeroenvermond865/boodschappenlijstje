@@ -9,6 +9,7 @@ import { api } from "@/src/api";
 import { useTerms } from "@/src/settings";
 import { fetchProducts, useDebounced } from "@/src/search";
 import { ProductBrowser } from "@/src/ProductBrowser";
+import { OnlineRecipes, type RecipeTile } from "@/src/OnlineRecipes";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory, formatQty } from "@/src/constants";
 import type { Dish } from "@/app/(tabs)/dishes";
 import type { Product } from "@/app/(tabs)/products";
@@ -816,6 +817,14 @@ function MembersModal({
   );
 }
 
+// Kies uit je eigen gerechten (eerst die van deze maaltijd) of uit de online recepten van AH, Jumbo en Dirk
+const COURSE_FOR: Record<MealCategory, string[]> = {
+  ontbijt: ["ontbijt"],
+  lunch: ["lunch"],
+  avondeten: ["hoofdgerecht"],
+  snacks: ["borrel", "dessert"],
+};
+
 function DishPickerModal({
   visible,
   category,
@@ -834,75 +843,148 @@ function DishPickerModal({
   onCreate: () => void;
 }) {
   const styles = useStyles();
-  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const qc = useQueryClient();
+  const toast = useToast();
   const [q, setQ] = useState("");
-  const list = (category ? dishes.filter((d) => d.category === category) : []).filter(
-    (d) => !q.trim() || d.name.toLowerCase().includes(q.trim().toLowerCase()),
-  );
+  const [tab, setTab] = useState<"own" | "online">("own");
+  const [allCats, setAllCats] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  useEffect(() => {
+    if (visible) {
+      setQ("");
+      setAllCats(false);
+      setTab(category && !dishes.some((d) => d.category === category) ? "online" : "own");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, category]);
+
+  const own = category && !allCats ? dishes.filter((d) => d.category === category) : dishes;
+  const list = own.filter((d) => !q.trim() || d.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const pickedRecipes = dishes
+    .filter((d) => selectedIds.includes(d.id) && d.source?.recipe_id)
+    .map((d) => d.source!.recipe_id.replace(":", "-"));
+
+  const pickOnline = async (r: RecipeTile) => {
+    if (!category || busyId) return;
+    const existing = dishes.find((d) => d.source?.recipe_id?.replace(":", "-") === r.id);
+    if (existing) return onToggle(existing.id);
+    setBusyId(r.id);
+    try {
+      const dish = await api<Dish>("/recipes/import", { method: "POST", body: { id: r.id, category, reuse: true } });
+      await qc.invalidateQueries({ queryKey: ["dishes"] });
+      onToggle(dish.id);
+      toast.show(`${r.title} toegevoegd`, "success");
+    } catch (e: any) {
+      toast.show(e?.message ?? "Toevoegen mislukt", "error");
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <Pressable style={styles.modalBackdrop} onPress={onClose} />
-      <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
+      <View style={[styles.sheet, { height: "88%", paddingHorizontal: 0, paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.sheetHandle} />
-        <View style={styles.sheetHeader}>
+        <View style={[styles.sheetHeader, { paddingHorizontal: 16 }]}>
           <Text style={styles.sheetTitle}>{category ? CATEGORY_LABELS[category] : ""} kiezen</Text>
           <Pressable testID="picker-close" onPress={onClose} hitSlop={8}>
             <Icon name="close" size={22} color={colors.onSurface} />
           </Pressable>
         </View>
-        <View style={styles.pickerSearch}>
-          <Icon name="magnify" size={18} color={colors.muted} />
-          <TextInput
-            testID="picker-search"
-            placeholder="Zoek gerecht"
-            placeholderTextColor={colors.muted}
-            value={q}
-            onChangeText={setQ}
-            style={styles.pickerSearchInput}
-          />
+        <View style={[styles.pickTabs, { marginHorizontal: 16 }]}>
+          {(["own", "online"] as const).map((t) => (
+            <Pressable key={t} testID={`picker-tab-${t}`} onPress={() => setTab(t)} style={[styles.pickTab, tab === t && styles.pickTabActive]}>
+              <Text style={[styles.pickTabText, tab === t && styles.pickTabTextActive]}>{t === "own" ? "Eigen gerechten" : "Online gerechten"}</Text>
+            </Pressable>
+          ))}
         </View>
-        <FlatList
-          data={list}
-          keyExtractor={(d) => d.id}
-          style={{ maxHeight: 420 }}
-          contentContainerStyle={{ paddingBottom: 8, gap: 8 }}
-          renderItem={({ item }) => {
-            const checked = selectedIds.includes(item.id);
-            return (
-              <Pressable
-                testID={`picker-dish-${item.id}`}
-                onPress={() => onToggle(item.id)}
-                style={[styles.pickerRow, checked && styles.pickerRowChecked]}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.pickerName}>{item.name}</Text>
-                  <Text style={styles.pickerSub}>{item.ingredients.length} producten</Text>
-                </View>
-                <Icon
-                  name={checked ? "check-circle" : "circle-outline"}
-                  size={24}
-                  color={checked ? colors.brandPrimary : colors.borderStrong}
-                />
+        {tab === "online" ? (
+          <View style={{ flex: 1 }}>
+            <OnlineRecipes
+              key={category ?? "x"}
+              bottomPadding={16}
+              initialFilters={category ? { gang: COURSE_FOR[category] } : undefined}
+              onPick={pickOnline}
+              pickedIds={pickedRecipes}
+              busyId={busyId}
+            />
+          </View>
+        ) : (
+          <View style={{ flex: 1, paddingHorizontal: 16, gap: 10 }}>
+            <View style={styles.pickerSearch}>
+              <Icon name="magnify" size={18} color={colors.muted} />
+              <TextInput
+                testID="picker-search"
+                placeholder="Zoek gerecht"
+                placeholderTextColor={colors.muted}
+                value={q}
+                onChangeText={setQ}
+                style={styles.pickerSearchInput}
+              />
+            </View>
+            {category ? (
+              <Pressable testID="picker-all-cats" onPress={() => setAllCats((v) => !v)} style={styles.createRow}>
+                <Icon name={allCats ? "checkbox-marked-outline" : "checkbox-blank-outline"} size={20} color={colors.brandPrimary} />
+                <Text style={styles.createText}>Ook gerechten van andere maaltijden tonen</Text>
               </Pressable>
-            );
-          }}
-          ListEmptyComponent={
-            <EmptyState icon="silverware-variant" title="Geen gerechten" subtitle="Voeg een nieuw gerecht toe voor deze categorie." />
-          }
-        />
-        <Pressable testID="picker-create" onPress={onCreate} style={styles.createRow}>
-          <Icon name="plus-circle-outline" size={20} color={colors.brandPrimary} />
-          <Text style={styles.createText}>Nieuw gerecht toevoegen</Text>
-        </Pressable>
+            ) : null}
+            <FlatList
+              data={list}
+              keyExtractor={(d) => d.id}
+              style={{ flex: 1 }}
+              contentContainerStyle={{ paddingBottom: 8, gap: 8 }}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => {
+                const checked = selectedIds.includes(item.id);
+                return (
+                  <Pressable
+                    testID={`picker-dish-${item.id}`}
+                    onPress={() => onToggle(item.id)}
+                    style={[styles.pickerRow, checked && styles.pickerRowChecked]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.pickerName}>{item.name}</Text>
+                      <Text style={styles.pickerSub}>
+                        {item.ingredients.length} producten
+                        {allCats && item.category !== category ? ` · ${CATEGORY_LABELS[item.category as MealCategory] ?? item.category}` : ""}
+                      </Text>
+                    </View>
+                    <Icon
+                      name={checked ? "check-circle" : "circle-outline"}
+                      size={24}
+                      color={checked ? colors.brandPrimary : colors.borderStrong}
+                    />
+                  </Pressable>
+                );
+              }}
+              ListEmptyComponent={
+                <EmptyState
+                  icon="silverware-variant"
+                  title="Geen gerechten"
+                  subtitle="Kijk bij Online gerechten, of maak een nieuw gerecht voor deze maaltijd."
+                />
+              }
+            />
+            <Pressable testID="picker-create" onPress={onCreate} style={styles.createRow}>
+              <Icon name="plus-circle-outline" size={20} color={colors.brandPrimary} />
+              <Text style={styles.createText}>Nieuw gerecht toevoegen</Text>
+            </Pressable>
+          </View>
+        )}
       </View>
     </Modal>
   );
 }
 
 const useStyles = makeStyles((colors) => ({
+  pickTabs: { flexDirection: "row", backgroundColor: colors.surfaceTertiary, borderRadius: 10, padding: 3, marginBottom: 6 },
+  pickTab: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: "center" },
+  pickTabActive: { backgroundColor: colors.surface },
+  pickTabText: { fontSize: 13, fontFamily: fonts.medium, color: colors.muted },
+  pickTabTextActive: { color: colors.onSurface, fontFamily: fonts.semibold },
   root: { flex: 1, backgroundColor: colors.surface },
   center: { alignItems: "center", justifyContent: "center" },
   header: {
