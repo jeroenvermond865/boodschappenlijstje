@@ -2266,18 +2266,19 @@ def _bigger_pack(p: dict, need: float, unit: str, store: str, packs: int, cost: 
     alts = _size_alts.get((p["product_id"], store))
     if alts is None:
         pool = [d for d in _product_cache.get("docs") or [] if d.get("_src") == store and d.get("is_global")]
-        hits = _best_matches(pool, _alt_terms(p["name"], p) or p["name"], 12)
+        hits = _best_matches(pool, _alt_terms(p["name"], p) or p["name"], 20)
         sub = p.get("subcategory")
-        alts = [d for d in hits if d["product_id"] != p["product_id"] and (not sub or d.get("subcategory") == sub)]
+        alts = [d for d in hits if d["product_id"] != p["product_id"] and (not sub or d.get("subcategory") in (sub, None))]
         if len(_size_alts) > 3000:
             _size_alts.clear()
         _size_alts[(p["product_id"], store)] = alts
     best = None
+    own = _pack_size(p.get("unit") or "") if by_weight else (_pack_count(p.get("unit") or "") or 1)
     for d in alts:
         price = resolve_price(d.get("prices") or {}, store, d.get("unavailable") or [])
         size = _pack_size(d.get("unit") or "") if by_weight else (_pack_count(d.get("unit") or "") or 1)
-        if not price or not size:
-            continue
+        if not price or not size or (own and size <= own):
+            continue  # alleen een grotere verpakking voorstellen
         n = max(1, math.ceil(round(need / size, 3)))
         if n * price < cost * 0.95 - 0.05 and (not best or n * price < best["cost"]):
             best = {"product_id": d["product_id"], "name": d["name"], "image": d.get("image"), "pack_unit": d.get("unit") or "",
