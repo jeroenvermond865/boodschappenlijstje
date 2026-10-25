@@ -2976,7 +2976,7 @@ async def _ah_gql(query: str, variables: Optional[dict] = None) -> dict:
         return body.get("data") or {}
 
 
-AH_RECIPE_SEARCH = """query($q:String,$start:Int,$size:Int,$filters:[RecipeSearchQueryFilter!]){recipeSearchV2(searchText:$q,start:$start,size:$size,filters:$filters){
+AH_RECIPE_SEARCH = """query($q:String,$start:Int,$size:PageSize,$filters:[RecipeSearchQueryFilter!]){recipeSearchV2(searchText:$q,start:$start,size:$size,filters:$filters){
  page{total} result{id title slug time{cook} serving{number} images{url width} courses rating{average count}}
  filters{name label filters{name label count}}}}"""
 
@@ -3317,8 +3317,12 @@ async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
 async def _selftest_recipes() -> None:
     # Tijdelijk: controleren of zoeken en recepten ophalen werkt
     await asyncio.sleep(40)
-    for store, q, f in (("ah", "pasta", {}), ("ah", "", {"menugang": ["soep"]}), ("jumbo", "pasta", {"menugang": ["Soep"]}), ("jumbo", "", {}),
-                        ("dirk", "", {}), ("dirk", "soep", {"gang": ["Lunch"]})):
+    try:
+        pr, rc = await _home_inspiration()
+        logger.info("Rtest home promos=%d %s recipes=%d", len(pr), pr[:1], len(rc))
+    except Exception as e:
+        logger.warning("Rtest home: %r", e)
+    for store, q, f in (("ah", "pasta", {}), ("ah", "", {"menugang": ["lunch"]})):
         try:
             res = await _store_recipes(store, q, f, 0, 24)
             logger.info("Rtest %s %r %s: total=%s n=%d facets=%s first=%s", store, q, f, res["total"], len(res["recipes"]),
@@ -3357,6 +3361,129 @@ async def import_recipe(data: RecipeImport, user: dict = Depends(get_current_use
            "deleted_at": None, "created_at": now_utc()}
     await db.dishes.insert_one(doc)
     return dish_public(doc)
+
+
+# --- Home: overzicht met je kamp, acties, recepten en een prijsvergelijking ---
+_home_cache: dict = {}
+COMPARE_STORES = ["Albert Heijn", "Jumbo", "Dirk"]
+
+
+def _compare_stores(names: list, docs: list) -> list:
+    # Per winkel: wat kost één verpakking van de best passende product per ingrediënt
+    by_store: dict = {s: [] for s in COMPARE_STORES}
+    for d in docs:
+        if d.get("_src") in by_store and d.get("is_global"):
+            by_store[d["_src"]].append(d)
+    out = []
+    for s, cands in by_store.items():
+        total, found = 0.0, 0
+        for n in names:
+            hits = _search_products(cands, n)[:1]
+            if hits:
+                price = resolve_price(hits[0].get("prices") or {}, s, hits[0].get("unavailable") or [])
+                if price:
+                    total += price
+                    found += 1
+        out.append({"store": s, "total": round(total, 2), "found": found, "count": len(names)})
+    return out
+
+
+async def _home_inspiration() -> tuple:
+    # Acties uit de folders van deze week, met foto, om en om per winkel
+    promos = []
+    try:
+        f = await _folders_fresh(wait=False)
+        await _global_products()
+        by_sid = _product_cache.get("by_sid") or {}
+        today = _iso_day(datetime.now(timezone.utc).isoformat())
+        per_store = []
+        for s in COMPARE_STORES:
+            items = []
+            for per in ((f.get("data") or {}).get(s) or [])[:1]:
+                for it in per["items"]:
+                    if it["end"] and it["end"] < today:
+                        continue
+                    docs = [by_sid[(s, x)] for x in it["ids"] if (s, x) in by_sid]
+                    img = it.get("image") or (docs[0].get("image") if docs else None)
+                    if not img or not docs:
+                        continue
+                    items.append({"store": s, "title": it["title"], "label": it["label"], "image": img,
+                                  "price": it.get("price"), "regular": it.get("regular"),
+                                  "product_ids": [d["product_id"] for d in docs], "end": it.get("end")})
+            import random
+            random.shuffle(items)
+            per_store.append(items[:6])
+        promos = [x for group in itertools.zip_longest(*per_store) for x in group if x]
+    except Exception as e:
+        logger.warning("Home acties: %r", e)
+    # Recept-inspiratie: een paar willekeurige recepten van de winkels
+    recipes = []
+    try:
+        import random
+        dirk = await _dirk_all_recipes()
+        recipes += [{k: v for k, v in r.items() if not k.startswith("_")} for r in random.sample(dirk, min(3, len(dirk)))]
+        ah = await _store_recipes("ah", "", {"veel-gebruikt": ["makkelijk"]}, random.randint(0, 20), 12)
+        recipes += random.sample(ah["recipes"], min(3, len(ah["recipes"])))
+        random.shuffle(recipes)
+    except Exception as e:
+        logger.warning("Home recepten: %r", e)
+    return promos[:12], recipes
+
+
+@api_router.get("/home")
+async def home(user: dict = Depends(get_current_user)):
+    perms = await user_permissions(user)
+    camps = await db.camps.find(camp_access_filter(user["user_id"]), {"_id": 0}).sort("created_at", -1).to_list(50)
+    camp = None
+    compare = None
+    if camps:
+        c = camps[0]
+        dish_ids = {did for day in c.get("days", []) for cat in MEAL_CATEGORIES for did in (day.get("meals") or {}).get(cat, [])}
+        dishes = await db.dishes.find({"dish_id": {"$in": list(dish_ids)}}, {"_id": 0, "dish_id": 1, "name": 1, "ingredients": 1}).to_list(500)
+        names = {}
+        for d in dishes:
+            for i in d.get("ingredients") or []:
+                if i.get("name"):
+                    names.setdefault(_norm_text(i["name"]), i["name"])
+        for day in c.get("days", []):
+            for e in day.get("extras") or []:
+                if e.get("name"):
+                    names.setdefault(_norm_text(e["name"]), e["name"])
+        for e in c.get("general") or []:
+            if e.get("name"):
+                names.setdefault(_norm_text(e["name"]), e["name"])
+        days = c.get("days", [])
+        camp = {"id": c["camp_id"], "name": c["name"], "days": len(days),
+                "max_people": max((d.get("adults", 0) + d.get("children", 0) for d in days), default=0),
+                "shopping_days": sum(1 for d in days if d.get("is_shopping_day")),
+                "meals_planned": sum(len((d.get("meals") or {}).get(cat, [])) for d in days for cat in MEAL_CATEGORIES),
+                "products": len(names), "other_camps": len(camps) - 1}
+        if names:
+            key = ("compare", tuple(sorted(names))[:40])
+            hit = _home_cache.get(key)
+            if hit and time.time() - hit[0] < 1800:
+                compare = hit[1]
+            else:
+                docs = await _global_products()
+                compare = await asyncio.to_thread(_compare_stores, [names[k] for k in sorted(names)][:40], docs)
+                _home_cache[key] = (time.time(), compare)
+    hit = _home_cache.get("inspiration")
+    if hit and time.time() - hit[0] < 600:
+        promos, recipes = hit[1]
+    else:
+        promos, recipes = await _home_inspiration()
+        if promos or recipes:
+            _home_cache["inspiration"] = (time.time(), (promos, recipes))
+    todo = {}
+    if "review_submissions" in perms:
+        todo["dishes"] = await db.submissions.count_documents({"status": "pending"})
+    if "manage_products" in perms:
+        todo["products"] = len(await _pending_product_subs())
+    if "manage_settings" in perms:
+        todo["stores"] = await db.store_requests.count_documents({"status": "pending"})
+    own_dishes = await db.dishes.count_documents({"owner_id": user["user_id"], "deleted_at": None})
+    return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "promos": promos,
+            "recipes": recipes, "todo": todo, "own_dishes": own_dishes}
 
 
 async def _dirk_post(client, query, variables):

@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 
@@ -35,7 +35,11 @@ export default function DishesScreen() {
 
   const [search, setSearch] = useState("");
   const [cat, setCat] = useState<MealCategory | "all">("all");
-  const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("own");
+  const params = useLocalSearchParams<{ tab?: string }>();
+  const [tab, setTab] = useState<(typeof TABS)[number]["key"]>(params.tab === "online" ? "online" : "own");
+  useEffect(() => {
+    if (params.tab === "online" || params.tab === "own") setTab(params.tab);
+  }, [params.tab]);
 
   const { data, isLoading } = useQuery({
     queryKey: ["dishes"],

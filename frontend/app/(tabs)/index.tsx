@@ -1,159 +1,298 @@
-import { useCallback } from "react";
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, Text, View } from "react-native";
+import { Image, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import Animated, { FadeInDown } from "react-native-reanimated";
+import { useQuery } from "@tanstack/react-query";
 
-import { Button, EmptyState, Icon } from "@/src/components/ui";
+import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { usesNativeTabs } from "@/src/navigation";
-import { useAppSettings } from "@/src/settings";
-import { useToast } from "@/src/toast";
+import { euro } from "@/src/search";
+import { STORE_LABEL, type RecipeTile } from "@/src/OnlineRecipes";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Day = { index: number; adults: number; children: number; is_shopping_day: boolean };
-type Camp = { id: string; name: string; days: Day[] };
+type Home = {
+  name: string;
+  camp: {
+    id: string;
+    name: string;
+    days: number;
+    max_people: number;
+    shopping_days: number;
+    meals_planned: number;
+    products: number;
+    other_camps: number;
+  } | null;
+  compare: { store: string; total: number; found: number; count: number }[] | null;
+  promos: {
+    store: string;
+    title: string;
+    label: string;
+    image: string;
+    price?: number | null;
+    regular?: number | null;
+    product_ids: string[];
+    end?: string | null;
+  }[];
+  recipes: RecipeTile[];
+  todo: { dishes?: number; products?: number; stores?: number };
+  own_dishes: number;
+};
 
-export default function CampsScreen() {
+const SHORT: Record<string, string> = { "Albert Heijn": "AH", Jumbo: "Jumbo", Dirk: "Dirk" };
+
+function greeting() {
+  const h = new Date().getHours();
+  return h < 6 ? "Goedenacht" : h < 12 ? "Goedemorgen" : h < 18 ? "Goedemiddag" : "Goedenavond";
+}
+
+export default function HomeScreen() {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const s = useAppSettings();
   const router = useRouter();
-  const toast = useToast();
-  const qc = useQueryClient();
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
 
-  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
-    queryKey: ["camps"],
-    queryFn: () => api<{ camps: Camp[] }>("/camps"),
+  const { data, refetch, isRefetching, isLoading } = useQuery({
+    queryKey: ["home"],
+    queryFn: () => api<Home>("/home"),
+    staleTime: 60 * 1000,
   });
 
-  const restore = useMutation({
-    mutationFn: (id: string) => api(`/camps/${id}/restore`, { method: "POST" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["camps"] }),
-    onError: (e: any) => toast.show(e?.message ?? "Herstellen mislukt", "error"),
-  });
+  const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
+  const actions = [
+    { icon: "tent", label: "Nieuw kamp", onPress: () => router.push("/camp/new") },
+    { icon: "magnify", label: "Product zoeken", onPress: () => router.push("/products") },
+    { icon: "silverware-fork-knife", label: "Gerecht maken", onPress: () => router.push("/dish/edit") },
+    { icon: "newspaper-variant-outline", label: "Folders", onPress: () => router.push("/folders") },
+  ];
+  const compare = (data?.compare ?? []).filter((c) => c.found > 0);
+  // Alleen winkels waar (bijna) alles gevonden is tellen mee voor "goedkoopst"
+  const maxFound = Math.max(0, ...compare.map((c) => c.found));
+  const fair = compare.filter((c) => c.found >= maxFound * 0.8);
+  const best = fair.length > 1 ? fair.reduce((a, b) => (b.total < a.total ? b : a)) : null;
+  const maxTotal = Math.max(1, ...compare.map((c) => c.total));
+  const todo = data?.todo ?? {};
+  const todoRows = [
+    todo.dishes ? { n: todo.dishes, label: "gerechten wachten op goedkeuring", to: "/admin/submissions" } : null,
+    todo.products ? { n: todo.products, label: "productvoorstellen wachten op goedkeuring", to: "/admin/submissions" } : null,
+    todo.stores ? { n: todo.stores, label: "winkelaanvragen", to: "/admin/store-requests" } : null,
+  ].filter(Boolean) as { n: number; label: string; to: string }[];
 
-  const duplicate = useMutation({
-    mutationFn: (id: string) => api(`/camps/${id}/duplicate`, { method: "POST" }),
-    onSuccess: () => {
-      toast.show("Kamp gekopieerd", "success");
-      qc.invalidateQueries({ queryKey: ["camps"] });
-    },
-    onError: (e: any) => toast.show(e?.message ?? "Kopiëren mislukt", "error"),
-  });
+  return (
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={{ paddingTop: insets.top + 8, paddingBottom: bottomChrome + 40, gap: 22 }}
+      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={colors.brandPrimary} />}
+    >
+      <View style={styles.pad}>
+        <Text style={styles.date}>{today.charAt(0).toUpperCase() + today.slice(1)}</Text>
+        <Text style={styles.hello}>
+          {greeting()}
+          {data?.name ? `, ${data.name}` : ""}
+        </Text>
+      </View>
 
-  const del = useMutation({
-    mutationFn: (id: string) => api(`/camps/${id}`, { method: "DELETE" }),
-    onSuccess: (_d, id) => {
-      qc.invalidateQueries({ queryKey: ["camps"] });
-      toast.show("Kamp verwijderd", "info", { label: "Ongedaan maken", onPress: () => restore.mutate(id) });
-    },
-    onError: (e: any) => toast.show(e?.message ?? "Verwijderen mislukt", "error"),
-  });
-
-  const renderCard = useCallback(
-    ({ item, index }: { item: Camp; index: number }) => {
-      const totalAdults = item.days.reduce((s, d) => s + d.adults, 0);
-      const totalChildren = item.days.reduce((s, d) => s + d.children, 0);
-      const maxPeople = item.days.reduce((m, d) => Math.max(m, d.adults + d.children), 0);
-      return (
-        <Animated.View entering={FadeInDown.delay(index * 50).springify()}>
-          <Pressable
-            testID={`camp-card-${item.id}`}
-            onPress={() => router.push(`/camp/${item.id}`)}
-            style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
-          >
-            <View style={styles.cardIcon}>
-              <Icon name="tent" size={24} color={colors.brandPrimary} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle} numberOfLines={1}>
-                {item.name}
-              </Text>
-              <Text style={styles.cardMeta}>
-                {item.days.length} {item.days.length === 1 ? "dag" : "dagen"} · max {maxPeople} pers.
-              </Text>
-              <View style={styles.badgeRow}>
-                <View style={styles.badge}>
-                  <Icon name="account" size={13} color={colors.onBrandTertiary} />
-                  <Text style={styles.badgeText}>{totalAdults} volw.</Text>
-                </View>
-                <View style={styles.badge}>
-                  <Icon name="account-child" size={13} color={colors.onBrandTertiary} />
-                  <Text style={styles.badgeText}>{totalChildren} kind.</Text>
-                </View>
+      {/* Je kamp */}
+      <View style={styles.pad}>
+        {data?.camp ? (
+          <Pressable testID="home-camp" onPress={() => router.push(`/camp/${data.camp!.id}`)} style={styles.campCard}>
+            <View style={styles.campTop}>
+              <View style={styles.campIcon}>
+                <Icon name="tent" size={26} color={colors.onBrandPrimary} />
               </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.campLabel}>Je kamp</Text>
+                <Text style={styles.campName} numberOfLines={1}>
+                  {data.camp.name}
+                </Text>
+              </View>
+              <Icon name="chevron-right" size={24} color={colors.onBrandPrimary} />
             </View>
-            <View style={styles.cardActions}>
-              <Pressable
-                testID={`camp-duplicate-${item.id}`}
-                hitSlop={8}
-                onPress={() => duplicate.mutate(item.id)}
-                style={styles.cardActionBtn}
-              >
-                <Icon name="content-copy" size={19} color={colors.muted} />
+            <View style={styles.campStats}>
+              <Stat n={data.camp.days} label={data.camp.days === 1 ? "dag" : "dagen"} />
+              <Stat n={data.camp.max_people} label="personen" />
+              <Stat n={data.camp.meals_planned} label="maaltijden" />
+              <Stat n={data.camp.shopping_days} label="boodschap­dagen" />
+            </View>
+            <View style={styles.campBtns}>
+              <Pressable onPress={() => router.push(`/shopping/${data.camp!.id}`)} style={styles.campBtn}>
+                <Icon name="format-list-checks" size={18} color={colors.brandPrimary} />
+                <Text style={styles.campBtnText}>Boodschappenlijst</Text>
               </Pressable>
-              <Pressable
-                testID={`camp-delete-${item.id}`}
-                hitSlop={8}
-                onPress={() => del.mutate(item.id)}
-                style={styles.cardActionBtn}
-              >
-                <Icon name="trash-can-outline" size={20} color={colors.muted} />
+              <Pressable onPress={() => router.push("/camps")} style={[styles.campBtn, styles.campBtnGhost]}>
+                <Text style={styles.campBtnGhostText}>
+                  {data.camp.other_camps ? `Alle kampen (${data.camp.other_camps + 1})` : "Alle kampen"}
+                </Text>
               </Pressable>
             </View>
           </Pressable>
-        </Animated.View>
-      );
-    },
-    [styles, colors, router, del, duplicate],
-  );
-
-  return (
-    <View style={[styles.root, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Text style={styles.title}>{s.tab_camps}</Text>
-        <Text style={styles.subtitle}>{s.sub_camps}</Text>
+        ) : !isLoading ? (
+          <Pressable onPress={() => router.push("/camp/new")} style={styles.emptyCamp}>
+            <Icon name="tent" size={28} color={colors.brandPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle}>Plan je eerste kamp</Text>
+              <Text style={styles.muted}>Kies dagen, mensen en gerechten. De app maakt je boodschappenlijst.</Text>
+            </View>
+            <Icon name="chevron-right" size={22} color={colors.muted} />
+          </Pressable>
+        ) : (
+          <View style={[styles.campCard, { height: 190, opacity: 0.4 }]} />
+        )}
       </View>
 
-      {isLoading ? (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={colors.brandPrimary} />
-        </View>
-      ) : isError ? (
-        <View style={styles.center}>
-          <EmptyState icon="wifi-off" title="Kon kampen niet laden" subtitle="Controleer je verbinding" />
-          <Button label="Opnieuw" variant="secondary" onPress={() => refetch()} style={{ marginTop: 12 }} />
-        </View>
-      ) : (
-        <FlatList
-          data={data?.camps ?? []}
-          keyExtractor={(c) => c.id}
-          renderItem={renderCard}
-          contentContainerStyle={{ padding: 16, paddingBottom: bottomChrome + 96, gap: 12 }}
-          refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={colors.brandPrimary} />
-          }
-          ListEmptyComponent={
-            <EmptyState
-              icon="tent"
-              title="Nog geen kampen gepland"
-              subtitle="Maak een kamp aan en plan per dag de maaltijden en het aantal personen."
-            />
-          }
-        />
-      )}
+      {/* Snelle knoppen */}
+      <View style={[styles.pad, styles.actions]}>
+        {actions.map((a) => (
+          <Pressable key={a.label} onPress={a.onPress} style={({ pressed }) => [styles.action, pressed && { opacity: 0.8 }]}>
+            <View style={styles.actionIcon}>
+              <Icon name={a.icon as any} size={22} color={colors.brandPrimary} />
+            </View>
+            <Text style={styles.actionText} numberOfLines={2}>
+              {a.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
 
-      <Pressable
-        testID="new-camp-fab"
-        onPress={() => router.push("/camp/new")}
-        style={({ pressed }) => [styles.fab, { bottom: bottomChrome + 16 }, pressed && { opacity: 0.9 }]}
-      >
-        <Icon name="plus" size={22} color={colors.onBrandPrimary} />
-        <Text style={styles.fabText}>Nieuw kamp</Text>
+      {/* Admin-taken */}
+      {todoRows.length ? (
+        <View style={[styles.pad, { gap: 8 }]}>
+          {todoRows.map((t) => (
+            <Pressable key={t.label} onPress={() => router.push(t.to as any)} style={styles.todo}>
+              <View style={styles.todoBadge}>
+                <Text style={styles.todoBadgeText}>{t.n}</Text>
+              </View>
+              <Text style={[styles.body, { flex: 1 }]}>{t.label}</Text>
+              <Icon name="chevron-right" size={20} color={colors.muted} />
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+
+      {/* Aanbiedingen */}
+      {data?.promos.length ? (
+        <View style={{ gap: 10 }}>
+          <SectionHead title="Nu in de aanbieding" link="Alle folders" onPress={() => router.push("/folders")} />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.hRow}>
+            {data.promos.map((p, i) => (
+              <Pressable
+                key={i}
+                onPress={() =>
+                  p.product_ids.length === 1
+                    ? router.push(`/product/${p.product_ids[0]}`)
+                    : router.push({ pathname: "/folders", params: { store: p.store } })
+                }
+                style={styles.promo}
+              >
+                <View style={styles.promoImgBox}>
+                  <Image source={{ uri: p.image }} style={styles.promoImg} resizeMode="contain" />
+                  <View style={styles.storeBadge}>
+                    <Text style={styles.storeBadgeText}>{SHORT[p.store] ?? p.store}</Text>
+                  </View>
+                </View>
+                <View style={styles.promoLabel}>
+                  <Text style={styles.promoLabelText} numberOfLines={1}>
+                    {p.label}
+                  </Text>
+                </View>
+                <Text style={styles.promoTitle} numberOfLines={2}>
+                  {p.title}
+                </Text>
+                {p.price ? (
+                  <View style={{ flexDirection: "row", gap: 6, alignItems: "baseline" }}>
+                    {p.regular && p.regular > p.price ? <Text style={styles.old}>{euro(p.regular)}</Text> : null}
+                    <Text style={styles.promoPrice}>{euro(p.price)}</Text>
+                  </View>
+                ) : null}
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
+
+      {/* Recepten */}
+      {data?.recipes.length ? (
+        <View style={{ gap: 10 }}>
+          <SectionHead
+            title="Recept-inspiratie"
+            link="Alle recepten"
+            onPress={() => router.push({ pathname: "/dishes", params: { tab: "online" } })}
+          />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.hRow}>
+            {data.recipes.map((r) => (
+              <Pressable key={r.id} onPress={() => router.push({ pathname: "/recipe/[id]", params: { id: r.id } })} style={styles.recipe}>
+                {r.image ? <Image source={{ uri: r.image }} style={styles.recipeImg} resizeMode="cover" /> : <View style={styles.recipeImg} />}
+                <View style={styles.storeBadge}>
+                  <Text style={styles.storeBadgeText}>{STORE_LABEL[r.store] ?? r.store}</Text>
+                </View>
+                <View style={{ padding: 10, gap: 3 }}>
+                  <Text style={styles.recipeTitle} numberOfLines={2}>
+                    {r.title}
+                  </Text>
+                  {r.time ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
+                      <Icon name="clock-outline" size={13} color={colors.muted} />
+                      <Text style={styles.small}>{r.time} min</Text>
+                    </View>
+                  ) : null}
+                </View>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
+
+      {/* Prijsvergelijking */}
+      {compare.length && data?.camp ? (
+        <View style={[styles.pad, { gap: 10 }]}>
+          <Text style={styles.section}>Waar is je lijst het goedkoopst?</Text>
+          <View style={styles.compareCard}>
+            {compare.map((c) => (
+              <View key={c.store} style={{ gap: 4 }}>
+                <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                  <Text style={[styles.body, c === best && { fontFamily: fonts.bold }]}>
+                    {c.store}
+                    {c === best ? "  ·  goedkoopst" : ""}
+                  </Text>
+                  <Text style={[styles.body, c === best && { fontFamily: fonts.bold, color: colors.success }]}>{euro(c.total)}</Text>
+                </View>
+                <View style={styles.barTrack}>
+                  <View style={[styles.bar, { width: `${(c.total / maxTotal) * 100}%` }, c === best && { backgroundColor: colors.success }]} />
+                </View>
+                <Text style={styles.small}>
+                  {c.found} van {c.count} producten gevonden
+                </Text>
+              </View>
+            ))}
+            <Text style={styles.small}>
+              Indicatie voor "{data.camp.name}": per product één verpakking van het best passende artikel in die winkel.
+            </Text>
+          </View>
+        </View>
+      ) : null}
+    </ScrollView>
+  );
+}
+
+function Stat({ n, label }: { n: number; label: string }) {
+  const styles = useStyles();
+  return (
+    <View style={{ flex: 1, alignItems: "center" }}>
+      <Text style={styles.statN}>{n}</Text>
+      <Text style={styles.statLabel} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+function SectionHead({ title, link, onPress }: { title: string; link: string; onPress: () => void }) {
+  const styles = useStyles();
+  return (
+    <View style={[styles.pad, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}>
+      <Text style={styles.section}>{title}</Text>
+      <Pressable onPress={onPress} hitSlop={8}>
+        <Text style={styles.link}>{link}</Text>
       </Pressable>
     </View>
   );
@@ -161,58 +300,51 @@ export default function CampsScreen() {
 
 const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.surface },
-  header: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 },
-  title: { fontSize: 32, fontFamily: fonts.bold, color: colors.onSurface },
-  subtitle: { fontSize: 15, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
-  card: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-    backgroundColor: colors.surface,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: 14,
-  },
-  cardIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 14,
-    backgroundColor: colors.brandTertiary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cardTitle: { fontSize: 17, fontFamily: fonts.semibold, color: colors.onSurface },
-  cardMeta: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },
-  badgeRow: { flexDirection: "row", gap: 8, marginTop: 8 },
-  badge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: colors.brandTertiary,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-  },
-  badgeText: { fontSize: 12, fontFamily: fonts.medium, color: colors.onBrandTertiary },
-  cardActions: { flexDirection: "column", gap: 10, alignItems: "center" },
-  cardActionBtn: { padding: 4 },
-  fab: {
-    position: "absolute",
-    right: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: colors.brandPrimary,
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderRadius: 999,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
-  },
-  fabText: { color: colors.onBrandPrimary, fontSize: 15, fontFamily: fonts.semibold },
+  pad: { paddingHorizontal: 16 },
+  date: { fontSize: 14, fontFamily: fonts.medium, color: colors.muted },
+  hello: { fontSize: 30, fontFamily: fonts.bold, color: colors.onSurface, marginTop: 2 },
+  muted: { fontSize: 14, fontFamily: fonts.regular, color: colors.muted },
+  small: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted },
+  body: { fontSize: 15, fontFamily: fonts.regular, color: colors.onSurface },
+  link: { fontSize: 14, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  section: { fontSize: 19, fontFamily: fonts.bold, color: colors.onSurface },
+  cardTitle: { fontSize: 16, fontFamily: fonts.semibold, color: colors.onSurface },
+  campCard: { backgroundColor: colors.brandPrimary, borderRadius: 20, padding: 16, gap: 14 },
+  campTop: { flexDirection: "row", alignItems: "center", gap: 12 },
+  campIcon: { width: 48, height: 48, borderRadius: 14, backgroundColor: "rgba(255,255,255,0.18)", alignItems: "center", justifyContent: "center" },
+  campLabel: { fontSize: 13, fontFamily: fonts.medium, color: colors.onBrandPrimary, opacity: 0.8 },
+  campName: { fontSize: 20, fontFamily: fonts.bold, color: colors.onBrandPrimary },
+  campStats: { flexDirection: "row", backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 14, paddingVertical: 10 },
+  statN: { fontSize: 20, fontFamily: fonts.bold, color: colors.onBrandPrimary },
+  statLabel: { fontSize: 11, fontFamily: fonts.medium, color: colors.onBrandPrimary, opacity: 0.85 },
+  campBtns: { flexDirection: "row", gap: 10 },
+  campBtn: { flex: 1, flexDirection: "row", gap: 6, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderRadius: 12, paddingVertical: 11 },
+  campBtnText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  campBtnGhost: { backgroundColor: "rgba(255,255,255,0.15)" },
+  campBtnGhostText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onBrandPrimary },
+  emptyCamp: { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.brandTertiary },
+  actions: { flexDirection: "row", gap: 10 },
+  action: { flex: 1, alignItems: "center", gap: 6, paddingVertical: 12, paddingHorizontal: 4, borderRadius: 16, borderWidth: 1, borderColor: colors.border },
+  actionIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
+  actionText: { fontSize: 12, fontFamily: fonts.medium, color: colors.onSurface, textAlign: "center" },
+  todo: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 14, backgroundColor: colors.surfaceTertiary },
+  todoBadge: { minWidth: 26, height: 26, borderRadius: 13, backgroundColor: colors.warning, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 },
+  todoBadgeText: { fontSize: 13, fontFamily: fonts.bold, color: colors.onWarning },
+  hRow: { gap: 10, paddingHorizontal: 16 },
+  promo: { width: 150, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 10, gap: 6 },
+  promoImgBox: { height: 110, borderRadius: 10, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  promoImg: { width: "90%", height: "90%" },
+  promoLabel: { alignSelf: "flex-start", backgroundColor: colors.warning, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, maxWidth: "100%" },
+  promoLabelText: { fontSize: 12, fontFamily: fonts.bold, color: colors.onWarning },
+  promoTitle: { fontSize: 13, fontFamily: fonts.medium, color: colors.onSurface, minHeight: 34 },
+  promoPrice: { fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface },
+  old: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, textDecorationLine: "line-through" },
+  storeBadge: { position: "absolute", top: 6, left: 6, backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999 },
+  storeBadgeText: { color: "#fff", fontSize: 11, fontFamily: fonts.semibold },
+  recipe: { width: 200, borderRadius: 16, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
+  recipeImg: { width: "100%", height: 120, backgroundColor: colors.surfaceTertiary },
+  recipeTitle: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface, minHeight: 36 },
+  compareCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 14 },
+  barTrack: { height: 8, borderRadius: 4, backgroundColor: colors.surfaceTertiary, overflow: "hidden" },
+  bar: { height: 8, borderRadius: 4, backgroundColor: colors.brandPrimary },
 }));

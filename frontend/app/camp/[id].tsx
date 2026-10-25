@@ -179,7 +179,7 @@ export default function CampDetailScreen() {
     <View style={styles.root}>
       {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
-        <Pressable testID="back-button" onPress={() => goBack()} hitSlop={10} style={styles.headerBtn}>
+        <Pressable testID="back-button" onPress={() => goBack("/camps")} hitSlop={10} style={styles.headerBtn}>
           <Icon name="chevron-left" size={28} color={colors.onSurface} />
         </Pressable>
         <Pressable testID="edit-camp-button" onPress={() => setEditOpen(true)} style={styles.titlePress} hitSlop={6}>

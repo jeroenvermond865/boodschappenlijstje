@@ -52,7 +52,7 @@ export default function NewCampScreen() {
   return (
     <View style={styles.root}>
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
-        <Pressable testID="close-button" onPress={() => goBack()} hitSlop={10} style={styles.headerBtn}>
+        <Pressable testID="close-button" onPress={() => goBack("/camps")} hitSlop={10} style={styles.headerBtn}>
           <Icon name="close" size={24} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.headerTitle}>Nieuw kamp</Text>
