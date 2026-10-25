@@ -2256,7 +2256,7 @@ async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_curr
             deal = _promo_deal(it["label"], regular or (first or {}).get("price") or 0) if len(docs) <= 1 else None
             cat = it.get("category") or (docs[0].get("aisle") if docs else None) or "Overig"
             items.append({**{k: v for k, v in it.items() if k not in ("ids", "prices")}, "category": cat, "price": price, "regular": regular, "deal": deal,
-                          "image": it.get("image") or (first or {}).get("image"),
+                          "image": ((first or {}).get("image") if store == "Dirk" else None) or it.get("image") or (first or {}).get("image"),
                           "product_ids": [d["product_id"] for d in docs], "count": len(docs) or len(it["ids"]),
                           "period": f"{_nice_day(it['start'])} t/m {_nice_day(it['end'])}" if it["start"] and it["end"] else None})
         if not items:
@@ -2279,8 +2279,8 @@ async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_curr
                         "folder_url": per.get("folder_url"), "categories": cats, "items": items})
     have = {p["key"] for p in periods}
     for ex in (f.get("extra") or {}).get(store) or []:
-        if not isinstance(ex, dict) or not ex.get("pages") or ex["key"] in have or ex["key"] == "next":
-            continue  # volgende week alleen als losse acties, niet als folderplaatjes
+        if not isinstance(ex, dict) or not ex.get("pages") or ex["key"] in have or ex["key"] in ("next", "extra", "dirck3"):
+            continue  # Dirk: alleen losse acties, geen folderplaatjes
         periods.append({**ex, "period": f"{_nice_day(ex['start'])} t/m {_nice_day(ex['end'])}" if ex.get("start") and ex.get("end") else None,
                         "categories": [], "items": []})
     return {"store": store, "stores": list(COUPLED_STORES), "periods": periods, "loading": f["at"] is None,
@@ -3228,11 +3228,9 @@ async def _dirk_folder() -> list:
             label = "Actie"
         else:
             label = f"Actie {label.lower()}"
-        img = o.get("image") or ""
-        if not img:
-            # Niet elke actie heeft een eigen foto; neem dan die van het eerste product
-            img = next((p["productInformation"].get("image") for p in o.get("products") or []
-                        if isinstance(p, dict) and isinstance(p.get("productInformation"), dict) and p["productInformation"].get("image")), "") or ""
+        # De actiefoto's van Dirk laden vaak niet; die van het eerste product wel
+        img = next((p["productInformation"].get("image") for p in o.get("products") or []
+                    if isinstance(p, dict) and isinstance(p.get("productInformation"), dict) and p["productInformation"].get("image")), "") or o.get("image") or ""
         if img and not img.startswith("http"):
             from urllib.parse import quote
             img = DIRK_IMAGE_BASE + quote(img.lstrip("/"))
@@ -4391,7 +4389,7 @@ async def _home_inspiration() -> tuple:
                     if it["end"] and it["end"] < today:
                         continue
                     docs = [by_sid[(s, x)] for x in it["ids"] if (s, x) in by_sid]
-                    img = it.get("image") or (docs[0].get("image") if docs else None)
+                    img = (docs[0].get("image") if docs and s == "Dirk" else None) or it.get("image") or (docs[0].get("image") if docs else None)
                     if not img or not docs:
                         continue
                     items.append({"store": s, "id": it["id"], "title": it["title"], "label": it["label"], "image": img,
