@@ -3253,7 +3253,7 @@ async def _ah_folder() -> list:
 
 
 async def _dirk_folder() -> list:
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+    async with httpx.AsyncClient(timeout=40, follow_redirects=True) as c:
         r = await c.get("https://www.dirk.nl/aanbiedingen", headers=_PAGE_HEADERS)
     data = _nuxt_data(r.text)
     offers: dict = {}
@@ -3532,12 +3532,16 @@ async def _jumbo_folder_products() -> list:
 
 async def _load_folders() -> None:
     data, by_id = {}, {}
+    failed = False
     for store, fn in (("Albert Heijn", _ah_folder), ("Dirk", _dirk_folder), ("Jumbo", _jumbo_folder)):
-        try:
-            data[store] = await fn()
-        except Exception as e:
-            logger.warning("Folder %s mislukt: %r", store, e)
-            data[store] = (_folders["data"] or {}).get(store) or []
+        for attempt in range(2):
+            try:
+                data[store] = await fn()
+                break
+            except Exception as e:
+                logger.warning("Folder %s mislukt: %r", store, e)
+                data[store] = (_folders["data"] or {}).get(store) or []
+                failed = failed or (attempt == 1 and not data[store])
         for per in data[store]:
             for it in per["items"]:
                 for i in it["ids"]:
@@ -3556,7 +3560,10 @@ async def _load_folders() -> None:
                     by_id.setdefault(("Dirk", i), []).append(it)
     except Exception as e:
         logger.warning("Dirk volgende week mislukt: %r", e)
-    _folders.update({"at": datetime.now(timezone.utc), "data": data, "by_id": by_id, "extra": extra})
+    at = datetime.now(timezone.utc)
+    if failed:
+        at -= timedelta(seconds=max(0, FOLDER_REFRESH_SECONDS - 300))  # een winkel lukte niet: over 5 minuten opnieuw
+    _folders.update({"at": at, "data": data, "by_id": by_id, "extra": extra})
     _search_cache.clear()
     logger.info("Folders geladen: %s", {k: [len(p["items"]) for p in v] for k, v in data.items()})
 
