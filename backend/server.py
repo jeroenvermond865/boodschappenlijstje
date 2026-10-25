@@ -3729,23 +3729,38 @@ _home_cache: dict = {}
 COMPARE_STORES = ["Albert Heijn", "Jumbo", "Dirk"]
 
 
-def _compare_stores(names: list, docs: list) -> list:
-    # Per winkel: wat kost één verpakking van de best passende product per ingrediënt
+_compare_running: set = set()
+
+
+def _compare_stores(items: list, docs: list) -> list:
+    # Per winkel: wat kost één verpakking van het best passende product per artikel op je lijst.
+    # Staat het product niet in die winkel, dan zoeken we daar een vergelijkbaar alternatief (zonder merknaam en verpakking),
+    # zodat elke winkel met zoveel mogelijk dezelfde lijst vergeleken wordt.
+    by_pid = {d["product_id"]: d for d in docs}
     by_store: dict = {s: [] for s in COMPARE_STORES}
     for d in docs:
         if d.get("_src") in by_store and d.get("is_global"):
             by_store[d["_src"]].append(d)
     out = []
-    for s, cands in by_store.items():
-        total, found = 0.0, 0
-        for n in names:
-            hits = _search_products(cands, n)[:1]
-            if hits:
-                price = resolve_price(hits[0].get("prices") or {}, s, hits[0].get("unavailable") or [])
-                if price:
-                    total += price
-                    found += 1
-        out.append({"store": s, "total": round(total, 2), "found": found, "count": len(names)})
+    for st, cands in by_store.items():
+        total, found, lines = 0.0, 0, []
+        for name, pid in items:
+            base = by_pid.get(pid) if pid else None
+            hit, alt = None, False
+            if base and base.get("_src") == st:
+                hit = base
+            else:
+                terms = _alt_terms(name, base) or name
+                hits = _best_matches(cands, terms, 1)
+                hit, alt = (hits[0] if hits else None), True
+            price = resolve_price(hit.get("prices") or {}, st, hit.get("unavailable") or []) if hit else 0
+            if hit and price:
+                total += price
+                found += 1
+            lines.append({"name": name, "product": hit["name"] if hit and price else None, "product_id": hit["product_id"] if hit and price else None,
+                          "image": hit.get("image") if hit and price else None, "price": round(price, 2) if hit and price else None,
+                          "alternative": bool(hit and price and alt and not (base and _norm_text(base["name"]) == hit["_norm"]))})
+        out.append({"store": st, "total": round(total, 2), "found": found, "count": len(items), "items": lines})
     return out
 
 
@@ -3797,6 +3812,7 @@ async def home(user: dict = Depends(get_current_user)):
     camps = await db.camps.find(camp_access_filter(user["user_id"]), {"_id": 0}).sort("created_at", -1).to_list(50)
     camp = None
     compare = None
+    compare_pending = False
     if camps:
         c = camps[0]
         dish_ids = {did for day in c.get("days", []) for cat in MEAL_CATEGORIES for did in (day.get("meals") or {}).get(cat, [])}
@@ -3805,14 +3821,14 @@ async def home(user: dict = Depends(get_current_user)):
         for d in dishes:
             for i in d.get("ingredients") or []:
                 if i.get("name"):
-                    names.setdefault(_norm_text(i["name"]), i["name"])
+                    names.setdefault(_norm_text(i["name"]), (i["name"], i.get("product_id")))
         for day in c.get("days", []):
             for e in day.get("extras") or []:
                 if e.get("name"):
-                    names.setdefault(_norm_text(e["name"]), e["name"])
+                    names.setdefault(_norm_text(e["name"]), (e["name"], e.get("product_id")))
         for e in c.get("general") or []:
             if e.get("name"):
-                names.setdefault(_norm_text(e["name"]), e["name"])
+                names.setdefault(_norm_text(e["name"]), (e["name"], e.get("product_id")))
         days = c.get("days", [])
         camp = {"id": c["camp_id"], "name": c["name"], "days": len(days),
                 "max_people": max((d.get("adults", 0) + d.get("children", 0) for d in days), default=0),
@@ -3820,14 +3836,26 @@ async def home(user: dict = Depends(get_current_user)):
                 "meals_planned": sum(len((d.get("meals") or {}).get(cat, [])) for d in days for cat in MEAL_CATEGORIES),
                 "products": len(names), "other_camps": len(camps) - 1}
         if names:
-            key = ("compare", tuple(sorted(names))[:40])
+            key = ("compare2", tuple(sorted(names))[:40])
             hit = _home_cache.get(key)
-            if hit and time.time() - hit[0] < 1800:
+            if hit:
                 compare = hit[1]
-            else:
-                docs = await _global_products()
-                compare = await asyncio.to_thread(_compare_stores, [names[k] for k in sorted(names)][:40], docs)
-                _home_cache[key] = (time.time(), compare)
+            if not hit or time.time() - hit[0] > 1800:
+                # Alternatieven zoeken in elke winkel duurt even: op de achtergrond, de app vraagt het zo opnieuw
+                if key not in _compare_running:
+                    _compare_running.add(key)
+                    items = [names[k] for k in sorted(names)][:40]
+
+                    async def run(key=key, items=items):
+                        try:
+                            docs = await _global_products()
+                            _home_cache[key] = (time.time(), await asyncio.to_thread(_compare_stores, items, docs))
+                        except Exception as e:
+                            logger.warning("Vergelijken: %r", e)
+                        finally:
+                            _compare_running.discard(key)
+                    asyncio.create_task(run())
+                compare_pending = not hit
     hit = _home_cache.get("inspiration")
     if hit and time.time() - hit[0] < 600:
         promos, recipes = hit[1]
@@ -3843,7 +3871,7 @@ async def home(user: dict = Depends(get_current_user)):
     if "manage_settings" in perms:
         todo["stores"] = await db.store_requests.count_documents({"status": "pending"})
     own_dishes = await db.dishes.count_documents({"owner_id": user["user_id"], "deleted_at": None})
-    return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "promos": promos,
+    return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "compare_pending": compare_pending, "promos": promos,
             "recipes": recipes, "todo": todo, "own_dishes": own_dishes}
 
 

@@ -1,4 +1,5 @@
-import { Image, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { useState } from "react";
+import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -23,7 +24,8 @@ type Home = {
     products: number;
     other_camps: number;
   } | null;
-  compare: { store: string; total: number; found: number; count: number }[] | null;
+  compare: CompareStore[] | null;
+  compare_pending?: boolean;
   promos: {
     store: string;
     title: string;
@@ -37,6 +39,14 @@ type Home = {
   recipes: RecipeTile[];
   todo: { dishes?: number; products?: number; stores?: number };
   own_dishes: number;
+};
+
+type CompareStore = {
+  store: string;
+  total: number;
+  found: number;
+  count: number;
+  items?: { name: string; product: string | null; product_id: string | null; image?: string | null; price: number | null; alternative: boolean }[];
 };
 
 const SHORT: Record<string, string> = { "Albert Heijn": "AH", Jumbo: "Jumbo", Dirk: "Dirk" };
@@ -58,7 +68,10 @@ export default function HomeScreen() {
     queryKey: ["home"],
     queryFn: () => api<Home>("/home"),
     staleTime: 60 * 1000,
+    // De vergelijking wordt op de achtergrond uitgerekend: even later nog eens vragen
+    refetchInterval: (q) => (q.state.data?.compare_pending ? 4000 : false),
   });
+  const [openStore, setOpenStore] = useState<string | null>(null);
 
   const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
   const actions = [
@@ -245,12 +258,21 @@ export default function HomeScreen() {
       ) : null}
 
       {/* Prijsvergelijking */}
+      {data?.compare_pending && data?.camp ? (
+        <View style={[styles.pad, { gap: 10 }]}>
+          <Text style={styles.section}>Waar is je lijst het goedkoopst?</Text>
+          <View style={[styles.compareCard, { flexDirection: "row", alignItems: "center", gap: 10 }]}>
+            <ActivityIndicator color={colors.brandPrimary} />
+            <Text style={styles.small}>We zoeken je producten op bij AH, Jumbo en Dirk…</Text>
+          </View>
+        </View>
+      ) : null}
       {compare.length && data?.camp ? (
         <View style={[styles.pad, { gap: 10 }]}>
           <Text style={styles.section}>Waar is je lijst het goedkoopst?</Text>
           <View style={styles.compareCard}>
             {compare.map((c) => (
-              <View key={c.store} style={{ gap: 4 }}>
+              <Pressable key={c.store} testID={`compare-${c.store}`} onPress={() => setOpenStore((v) => (v === c.store ? null : c.store))} style={{ gap: 4 }}>
                 <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
                   <Text style={[styles.body, c === best && { fontFamily: fonts.bold }]}>
                     {c.store}
@@ -261,13 +283,36 @@ export default function HomeScreen() {
                 <View style={styles.barTrack}>
                   <View style={[styles.bar, { width: `${(c.total / maxTotal) * 100}%` }, c === best && { backgroundColor: colors.success }]} />
                 </View>
-                <Text style={styles.small}>
-                  {c.found} van {c.count} producten gevonden
-                </Text>
-              </View>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={styles.small}>
+                    {c.found} van {c.count} producten
+                    {c.items?.some((i) => i.alternative) ? ` · ${c.items.filter((i) => i.alternative).length} vervangen door iets vergelijkbaars` : ""}
+                  </Text>
+                  <Icon name={openStore === c.store ? "chevron-up" : "chevron-down"} size={18} color={colors.muted} />
+                </View>
+                {openStore === c.store
+                  ? (c.items ?? []).map((i) => (
+                      <Pressable
+                        key={i.name}
+                        onPress={() => i.product_id && router.push(`/product/${i.product_id}`)}
+                        style={styles.cmpRow}
+                      >
+                        {i.image ? <Image source={{ uri: i.image }} style={styles.cmpImg} resizeMode="contain" /> : <View style={styles.cmpImg} />}
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.cmpName} numberOfLines={1}>{i.product ?? i.name}</Text>
+                          <Text style={[styles.small, i.alternative && { color: colors.warning }]} numberOfLines={1}>
+                            {!i.product ? "Niet gevonden in deze winkel" : i.alternative ? `In plaats van ${i.name}` : "Zelfde product"}
+                          </Text>
+                        </View>
+                        <Text style={styles.cmpPrice}>{i.price != null ? euro(i.price) : "—"}</Text>
+                      </Pressable>
+                    ))
+                  : null}
+              </Pressable>
             ))}
             <Text style={styles.small}>
-              Indicatie voor "{data.camp.name}": per product één verpakking van het best passende artikel in die winkel.
+              Indicatie voor "{data.camp.name}": per product één verpakking. Staat iets niet in een winkel, dan rekenen we met het best
+              passende alternatief daar. Tik op een winkel voor de details.
             </Text>
           </View>
         </View>
@@ -348,6 +393,10 @@ const useStyles = makeStyles((colors) => ({
   recipe: { width: 200, borderRadius: 16, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
   recipeImg: { width: "100%", height: 120, backgroundColor: colors.surfaceTertiary },
   recipeTitle: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface, minHeight: 36 },
+  cmpRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 6, borderTopWidth: 1, borderTopColor: colors.divider },
+  cmpImg: { width: 34, height: 34, borderRadius: 8, backgroundColor: "#fff" },
+  cmpName: { fontSize: 14, fontFamily: fonts.medium, color: colors.onSurface },
+  cmpPrice: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },
   compareCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 14 },
   barTrack: { height: 8, borderRadius: 4, backgroundColor: colors.surfaceTertiary, overflow: "hidden" },
   bar: { height: 8, borderRadius: 4, backgroundColor: colors.brandPrimary },
