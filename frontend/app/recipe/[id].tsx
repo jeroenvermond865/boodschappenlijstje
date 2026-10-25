@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useTerms } from "@/src/settings";
 import { goBack } from "@/src/nav";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory, formatQty } from "@/src/constants";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
@@ -50,6 +51,7 @@ function guessCategory(r: Recipe): MealCategory {
 export default function RecipeScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -212,7 +214,7 @@ export default function RecipeScreen() {
               </Pressable>
               <Pressable testID="recipe-to-camp" onPress={() => setCampOpen(true)} style={[styles.primary, { flex: 1 }]}>
                 <Icon name="tent" size={18} color={colors.onBrandPrimary} />
-                <Text style={styles.primaryText}>Toevoegen aan kamp</Text>
+                <Text style={styles.primaryText}>{`Toevoegen aan ${T.one}`}</Text>
               </Pressable>
             </View>
           </View>
@@ -264,6 +266,7 @@ function CampSheet({
   include: number[];
 }) {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
@@ -313,13 +316,13 @@ function CampSheet({
                   }}
                   style={[styles.primary, { flex: 1 }]}
                 >
-                  <Text style={styles.primaryText}>Naar kamp</Text>
+                  <Text style={styles.primaryText}>{`Naar ${T.one}`}</Text>
                 </Pressable>
               </View>
             </View>
           ) : (
             <ScrollView contentContainerStyle={{ gap: 12 }}>
-              <Text style={styles.sheetTitle}>Toevoegen aan kamp</Text>
+              <Text style={styles.sheetTitle}>{`Toevoegen aan ${T.one}`}</Text>
               {camps.isLoading ? <ActivityIndicator color={colors.brandPrimary} /> : null}
               {!camps.isLoading && !list.length ? (
                 <Pressable
@@ -330,12 +333,12 @@ function CampSheet({
                   style={styles.catRow}
                 >
                   <Icon name="plus" size={22} color={colors.brandPrimary} />
-                  <Text style={styles.catText}>Eerst een kamp maken</Text>
+                  <Text style={styles.catText}>{`Eerst een ${T.one} maken`}</Text>
                 </Pressable>
               ) : null}
               {list.length > 1 ? (
                 <View style={{ gap: 8 }}>
-                  <Text style={styles.label}>Kamp</Text>
+                  <Text style={styles.label}>{T.One}</Text>
                   {list.map((c) => (
                     <Pressable key={c.id} onPress={() => { setCampId(c.id); setDay(0); }} style={[styles.catRow, camp?.id === c.id && styles.catRowSuggested]}>
                       <Icon name="tent" size={20} color={colors.brandPrimary} />
@@ -393,6 +396,7 @@ function IngRow({
   toggle?: { on: boolean; onPress: () => void };
 }) {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const router = useRouter();
   return (
@@ -432,6 +436,7 @@ function IngRow({
 
 function Meta({ icon, text }: { icon: string; text: string }) {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   return (
     <View style={styles.meta}>

@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useTerms } from "@/src/settings";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
@@ -22,6 +23,7 @@ const KIND_ICON: Record<Kind, any> = {
 
 export default function AdminTrashScreen() {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const toast = useToast();
@@ -89,7 +91,7 @@ export default function AdminTrashScreen() {
           <EmptyState
             icon="delete-restore"
             title="Niets verwijderd"
-            subtitle={`Verwijderde gebruikers, kampen, gerechten en producten blijven hier ${data?.days ?? 30} dagen staan.`}
+            subtitle={`Verwijderde gebruikers, ${T.many}, gerechten en producten blijven hier ${data?.days ?? 30} dagen staan.`}
           />
         </View>
       ) : (
@@ -116,7 +118,7 @@ export default function AdminTrashScreen() {
             <View key={`${it.kind}-${it.id}`} style={styles.card} testID={`trash-${it.kind}-${it.id}`}>
               <View style={styles.cardHead}>
                 <Icon name={KIND_ICON[it.kind]} size={18} color={colors.muted} />
-                <Text style={styles.kind}>{KIND_LABEL[it.kind]}</Text>
+                <Text style={styles.kind}>{it.kind === "camp" ? T.One : KIND_LABEL[it.kind]}</Text>
                 <Text style={styles.days}>
                   {it.days_left === 1 ? "nog 1 dag" : `nog ${it.days_left} dagen`}
                 </Text>

@@ -1050,18 +1050,19 @@ async def add_member(camp_id: str, data: MemberInput, user: dict = Depends(get_c
         upsert=True,
     )
     link = FRONTEND_URL or "https://scoutkook.app"
+    t = await _terms()
     html = (
         '<table role="presentation" width="100%"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#1C1B1A">'
         f'<h2 style="color:#2E5E38;margin:0 0 12px">Uitnodiging voor Boodschappenlijstje</h2>'
-        f'<p>{escape(user.get("name") or "Een leider")} nodigt je uit om samen te plannen in het kamp '
+        f'<p>{escape(user.get("name") or "Een leider")} nodigt je uit om samen te plannen in {t["de"]} {escape(t["one"])} '
         f'<strong>{escape(camp["name"])}</strong>.</p>'
-        f'<p>Maak een account aan met dit e-mailadres ({escape(email)}) en je wordt automatisch aan het kamp toegevoegd.</p>'
+        f'<p>Maak een account aan met dit e-mailadres ({escape(email)}) en je wordt automatisch aan {t["de"]} {escape(t["one"])} toegevoegd.</p>'
         f'<p style="margin:20px 0"><a href="{escape(link)}" style="background:#2E5E38;color:#fff;'
         f'padding:12px 20px;border-radius:10px;text-decoration:none;display:inline-block">Open Boodschappenlijstje</a></p>'
         f'<p style="font-size:12px;color:#888">Verstuurd door Boodschappenlijstje. We vragen nooit je wachtwoord via e-mail.</p>'
         '</td></tr></table>'
     )
-    await send_email(email, "Je bent uitgenodigd voor een kamp in Boodschappenlijstje", html)
+    await send_email(email, f"Je bent uitgenodigd voor een {t['one']} in Boodschappenlijstje", html)
     return {"ok": True, "invited": True}
 
 
@@ -3359,7 +3360,7 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
         for suf in ("sche", "se"):
             if w.endswith(suf) and len(w) - len(suf) >= 4:
                 levels.append(([w[: -len(suf)]], 1.6))
-    levels.append((core[-1:], 1.2 if len(core) == 1 else 4))
+    levels.append((core[-1:], 1.2 if len(core) == 1 else 2.5))
     best: dict = {}
     seen = set()
     for lv, extra in levels:
@@ -3382,14 +3383,16 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
 
 _NONFOOD = {"Huishoud & huisdieren", "Kind & drogisterij", "Non food"}
 _NONFOOD_RE = re.compile(r"drogist|huishoud|huisdier|baby|verzorging|cosmetica|non food|shampoo|douche|zeep|tandpasta|wasmiddel|afwas|"
-                         r"deodorant|bodylotion|conditioner|wc |toilet|schoonmaak|kattenvoer|hondenvoer|luier|parfum|scheer|haar")
+                         r"deodorant|bodylotion|conditioner|wc |toilet|schoonmaak|kattenvoer|hondenvoer|luier|parfum|scheer|haar|navulling|douchegel|handzeep|"
+                         r"palmolive|nivea|dove |andrelon|robijn|dreft|ariel|persil|sanex|zwitsal|rexona|glorix|cillit|vanish|lenor|page |zewa")
 _CANDY_RE = re.compile(r"\b(snoep|drop|winegum|spekjes|chips|koek|koekjes|chocolade|lolly|kauwgom)\b")
 # Bewerkte producten: "ciabatta" is geen ciabatta-cracker, "citroen" geen citroenkoek, "olijf" geen tapenade
 _PROCESSED = ("koek", "cracker", "tapenade", "azijn", "saus", "chips", "spread", "sap", "drank", "siroop", "thee", "snoep", "taart", "cake",
               "smaak", "kimchi", "dressing", "soep", "salade", "pasta", "toast", "wafel", "reep", "ijs", "yoghurt", "kwark", "vla", "limonade",
               "frisdrank", "bier", "radler", "likeur", "zeep", "geur", "poeder", "aroma", "pesto", "dip", "smeer", "mix", "kruiden", "biscuit",
               "kroket", "salami", "worst", "honing", "kogel", "zuurkool", "snack", "bonbon", "brandewijn", "jenever", "mayo", "ketchup", "jus",
-              "bar", "vloeibaar", "braden", "focaccia", "brood", "margarine", "shake", "drink")
+              "bar", "vloeibaar", "braden", "focaccia", "brood", "margarine", "shake", "drink",
+              "olie", "skyr", "muffin", "viennetta", "feta")
 # Woorden die alleen iets over het product zeggen ("citroenen verpakt", "kaas plakken")
 _DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", "plakjes", "blokjes", "reepjes", "schijfjes", "zwart", "wit",
                 "rood", "groen", "geel", "bio", "biologisch", "biologische", "naturel", "kruimig", "vastkokend", "s", "m", "l", "xl", "kanjers",
@@ -3453,6 +3456,11 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
         pen += 5
     if d.get("aisle") in _NONFOOD or _NONFOOD_RE.search(d.get("aisle") or "") or _NONFOOD_RE.search(name):
         pen += 30
+    # "witte wijn" is geen rode wijn
+    colors = {"wit": ("witte", "wit"), "rood": ("rode", "rood"), "groen": ("groene", "groen"), "zwart": ("zwarte", "zwart")}
+    want = {c for c, ws in colors.items() if any(q in ws for q in words)}
+    if want and any(w in ws for c, ws in colors.items() if c not in want for w in nw):
+        pen += 6
     if d.get("aisle") == "Snacks & snoep" and not any(_CANDY_RE.search(q) for q in words):
         pen += 8
     if d.get("aisle") == "Dranken, sap, koffie & thee" and not any(q in ("sap", "melk", "wijn", "bier", "koffie", "thee", "water") for q in words):
@@ -4860,6 +4868,7 @@ class SettingsInput(BaseModel):
     hero_url: Optional[str] = None
     logo_url: Optional[str] = None
     tab_camps: Optional[str] = None
+    term_one: Optional[str] = None
     tab_dishes: Optional[str] = None
     tab_products: Optional[str] = None
     tab_account: Optional[str] = None
@@ -4875,6 +4884,7 @@ DEFAULT_SETTINGS = {
     "hero_url": "https://images.unsplash.com/photo-1466220549276-aef9ce186540?crop=entropy&cs=srgb&fm=jpg&q=85&w=1200",
     "logo_url": "",
     "tab_camps": "Kampen",
+    "term_one": "",
     "tab_dishes": "Gerechten",
     "tab_products": "Producten",
     "tab_account": "Account",
@@ -4940,6 +4950,20 @@ async def serve_file(path: str):
     if ct not in IMAGE_TYPES.values():
         ct = "application/octet-stream"
     return Response(content=content, media_type=ct, headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"})
+
+
+_HET_WORDS = re.compile(r"(kamp|weekend|evenement|uitje|feest|project|programma|festival|reisje|toernooi|kampement|weekeinde)$")
+
+
+async def _terms() -> dict:
+    # Hoe een kamp in deze app heet (Beheer -> App), voor e-mails; zelfde regels als useTerms in de app
+    doc = await db.settings.find_one({"key": "app"}, {"_id": 0, "tab_camps": 1, "term_one": 1}) or {}
+    many = (doc.get("tab_camps") or "Kampen").strip()
+    one = (doc.get("term_one") or "").strip()
+    if not one:
+        one = many[:-2] if many.endswith("en") and len(many) > 4 else many[:-1] if many.endswith("s") and len(many) > 3 else many
+    one = one.lower()
+    return {"one": one, "many": many.lower(), "de": "het" if _HET_WORDS.search(one) else "de"}
 
 
 @api_router.get("/settings")

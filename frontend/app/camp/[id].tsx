@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, EmptyState, Icon, Select, Stepper } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useTerms } from "@/src/settings";
 import { fetchProducts, useDebounced } from "@/src/search";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory, formatQty } from "@/src/constants";
 import type { Dish } from "@/app/(tabs)/dishes";
@@ -38,6 +39,7 @@ type Camp = {
 
 export default function CampDetailScreen() {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -270,7 +272,7 @@ export default function CampDetailScreen() {
           ) : canManageBudget ? (
             <Pressable testID="camp-budget-set" onPress={openBudget} style={styles.budgetSetBtn}>
               <Icon name="wallet-plus-outline" size={18} color={colors.brandPrimary} />
-              <Text style={styles.budgetSetText}>Kampbudget instellen</Text>
+              <Text style={styles.budgetSetText}>{`Budget instellen`}</Text>
             </Pressable>
           ) : null
         ) : null}
@@ -289,7 +291,7 @@ export default function CampDetailScreen() {
                 <Text style={styles.addBtnText}>Product</Text>
               </Pressable>
             </View>
-            <Text style={styles.counterSub}>Losse spullen voor het hele kamp (komt op de lijst bij dag 1).</Text>
+            <Text style={styles.counterSub}>{`Losse spullen voor ${T.de} hele ${T.one} (komt op de lijst bij dag 1).`}</Text>
             {(camp.general ?? []).length === 0 ? (
               <Text style={styles.noMeal}>Nog geen losse producten</Text>
             ) : (
@@ -346,7 +348,7 @@ export default function CampDetailScreen() {
           </View>
           <View style={styles.cardDivider} />
           <Text style={styles.counterSub}>
-            {day.adults + day.children} personen vandaag · max {maxPerDay} per dag in dit kamp
+            {day.adults + day.children} personen vandaag · max {maxPerDay} per dag in {T.deze} {T.one}
             {vegaA + vegaC > 0 ? ` · ${vegaA + vegaC} vega-eter(s)` : ""}
           </Text>
         </View>
@@ -479,7 +481,7 @@ export default function CampDetailScreen() {
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Kampbudget</Text>
+              <Text style={styles.sheetTitle}>{`Budget`}</Text>
               <Pressable testID="budget-modal-close" onPress={() => setBudgetOpen(false)} hitSlop={8}>
                 <Icon name="close" size={22} color={colors.onSurface} />
               </Pressable>
@@ -516,6 +518,7 @@ function ExtraAddModal({
   onAdd: (ex: Extra) => void;
 }) {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -635,6 +638,7 @@ function EditCampModal({
   onSaved: (newCount: number) => void;
 }) {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
@@ -676,7 +680,7 @@ function EditCampModal({
       qc.invalidateQueries({ queryKey: ["camp", camp.id] });
       qc.invalidateQueries({ queryKey: ["camps"] });
       qc.invalidateQueries({ queryKey: ["shopping", camp.id] });
-      toast.show("Kamp bijgewerkt", "success");
+      toast.show(`${T.One} bijgewerkt`, "success");
       onSaved(count);
       onClose();
     },
@@ -689,7 +693,7 @@ function EditCampModal({
       <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.sheetHandle} />
         <View style={styles.sheetHeader}>
-          <Text style={styles.sheetTitle}>Kamp aanpassen</Text>
+          <Text style={styles.sheetTitle}>{`${T.One} aanpassen`}</Text>
           <Pressable testID="edit-camp-close" onPress={onClose} hitSlop={8}>
             <Icon name="close" size={22} color={colors.onSurface} />
           </Pressable>
@@ -701,7 +705,7 @@ function EditCampModal({
             testID="edit-camp-name"
             value={name}
             onChangeText={setName}
-            placeholder="Naam van het kamp"
+            placeholder={`Naam van ${T.de} ${T.one}`}
             placeholderTextColor={colors.muted}
             style={styles.memberInput}
           />
@@ -749,6 +753,7 @@ function MembersModal({
   onClose: () => void;
 }) {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
@@ -866,6 +871,7 @@ function DishPickerModal({
   onCreate: () => void;
 }) {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const [q, setQ] = useState("");

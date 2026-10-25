@@ -7,6 +7,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Card, Field, Icon, Stepper } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useTerms } from "@/src/settings";
 import { MEAL_CATEGORIES } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
@@ -14,6 +15,7 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 export default function NewCampScreen() {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -38,12 +40,12 @@ export default function NewCampScreen() {
       }));
       return api<{ id: string }>("/camps", {
         method: "POST",
-        body: { name: name.trim() || "Nieuw kamp", days: dayArr, vega_adults: vegaA, vega_children: vegaC },
+        body: { name: name.trim() || `${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`, days: dayArr, vega_adults: vegaA, vega_children: vegaC },
       });
     },
     onSuccess: (camp) => {
       qc.invalidateQueries({ queryKey: ["camps"] });
-      toast.show("Kamp aangemaakt", "success");
+      toast.show(`${T.One} aangemaakt`, "success");
       router.replace(`/camp/${camp.id}`);
     },
     onError: (e: any) => toast.show(e?.message ?? "Aanmaken mislukt", "error"),
@@ -55,7 +57,7 @@ export default function NewCampScreen() {
         <Pressable testID="close-button" onPress={() => goBack("/camps")} hitSlop={10} style={styles.headerBtn}>
           <Icon name="close" size={24} color={colors.onSurface} />
         </Pressable>
-        <Text style={styles.headerTitle}>Nieuw kamp</Text>
+        <Text style={styles.headerTitle}>{`${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`}</Text>
         <View style={styles.headerBtn} />
       </View>
 
@@ -65,9 +67,9 @@ export default function NewCampScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <Field
-          label="Naam van het kamp"
+          label={`Naam van ${T.de} ${T.one}`}
           testID="camp-name"
-          placeholder="Bijv. Zomerkamp 2026"
+          placeholder={`Bijv. Zomer${T.one} 2026`}
           value={name}
           onChangeText={setName}
         />
@@ -79,7 +81,7 @@ export default function NewCampScreen() {
             </View>
             <View>
               <Text style={styles.rowTitle}>Aantal dagen</Text>
-              <Text style={styles.rowSub}>Hoeveel dagen duurt het kamp?</Text>
+              <Text style={styles.rowSub}>{`Hoeveel dagen duurt ${T.de} ${T.one}?`}</Text>
             </View>
           </View>
           <Stepper value={days} onChange={setDays} min={1} max={60} testID="days-stepper" />
@@ -134,7 +136,7 @@ export default function NewCampScreen() {
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
         <Button
-          label="Kamp aanmaken"
+          label={`${T.One} aanmaken`}
           onPress={() => create.mutate()}
           loading={create.isPending}
           testID="create-camp-button"

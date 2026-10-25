@@ -8,6 +8,7 @@ export type AppSettings = {
   hero_url: string;
   logo_url: string;
   tab_camps: string;
+  term_one: string;
   tab_dishes: string;
   tab_products: string;
   tab_account: string;
@@ -23,6 +24,7 @@ const DEFAULTS: AppSettings = {
   hero_url: "",
   logo_url: "",
   tab_camps: "Kampen",
+  term_one: "",
   tab_dishes: "Gerechten",
   tab_products: "Producten",
   tab_account: "Account",
@@ -39,4 +41,24 @@ export function useAppSettings() {
     staleTime: 60_000,
   });
   return { ...DEFAULTS, ...(q.data ?? {}) } as AppSettings;
+}
+
+// Hoe een kamp in deze app heet (instelbaar bij Beheer → App): "Kampen"/"Kamp" of bijv. "Activiteiten"/"Activiteit"
+export function singularOf(many: string): string {
+  const m = many.trim();
+  if (/en$/.test(m) && m.length > 4) return m.slice(0, -2); // Kampen -> Kamp, Activiteiten -> Activiteit
+  if (/s$/.test(m) && m.length > 3) return m.slice(0, -1); // Weekends -> Weekend
+  return m;
+}
+
+const HET_WORDS = /(kamp|weekend|evenement|uitje|feest|project|programma|festival|reisje|toernooi|kampement|weekeinde)$/;
+
+export function useTerms() {
+  const s = useAppSettings();
+  const Many = s.tab_camps?.trim() || "Kampen";
+  const One = s.term_one?.trim() || singularOf(Many);
+  const one = One.toLowerCase();
+  const het = HET_WORDS.test(one);
+  // Lidwoord en bijvoeglijk naamwoord: "het kamp / nieuw kamp", "de activiteit / nieuwe activiteit"
+  return { One, Many, one, many: Many.toLowerCase(), de: het ? "het" : "de", deze: het ? "dit" : "deze", nieuw: het ? "nieuw" : "nieuwe" };
 }

@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useTerms } from "@/src/settings";
 import { usesNativeTabs } from "@/src/navigation";
 import { euro } from "@/src/search";
 import { STORE_LABEL, type RecipeTile } from "@/src/OnlineRecipes";
@@ -47,6 +48,7 @@ function greeting() {
 
 export default function HomeScreen() {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -60,7 +62,7 @@ export default function HomeScreen() {
 
   const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
   const actions = [
-    { icon: "tent", label: "Nieuw kamp", onPress: () => router.push("/camp/new") },
+    { icon: "tent", label: `${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`, onPress: () => router.push("/camp/new") },
     { icon: "magnify", label: "Product zoeken", onPress: () => router.push("/products") },
     { icon: "silverware-fork-knife", label: "Gerecht maken", onPress: () => router.push("/dish/edit") },
     { icon: "newspaper-variant-outline", label: "Folders", onPress: () => router.push("/folders") },
@@ -101,7 +103,7 @@ export default function HomeScreen() {
                 <Icon name="tent" size={26} color={colors.onBrandPrimary} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.campLabel}>Je kamp</Text>
+                <Text style={styles.campLabel}>{`Je ${T.one}`}</Text>
                 <Text style={styles.campName} numberOfLines={1}>
                   {data.camp.name}
                 </Text>
@@ -121,7 +123,7 @@ export default function HomeScreen() {
               </Pressable>
               <Pressable onPress={() => router.push("/camps")} style={[styles.campBtn, styles.campBtnGhost]}>
                 <Text style={styles.campBtnGhostText}>
-                  {data.camp.other_camps ? `Alle kampen (${data.camp.other_camps + 1})` : "Alle kampen"}
+                  {data.camp.other_camps ? `Alle ${T.many} (${data.camp.other_camps + 1})` : `Alle ${T.many}`}
                 </Text>
               </Pressable>
             </View>
@@ -130,7 +132,7 @@ export default function HomeScreen() {
           <Pressable onPress={() => router.push("/camp/new")} style={styles.emptyCamp}>
             <Icon name="tent" size={28} color={colors.brandPrimary} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>Plan je eerste kamp</Text>
+              <Text style={styles.cardTitle}>{`Plan je eerste ${T.one}`}</Text>
               <Text style={styles.muted}>Kies dagen, mensen en gerechten. De app maakt je boodschappenlijst.</Text>
             </View>
             <Icon name="chevron-right" size={22} color={colors.muted} />
@@ -276,6 +278,7 @@ export default function HomeScreen() {
 
 function Stat({ n, label }: { n: number; label: string }) {
   const styles = useStyles();
+  const T = useTerms();
   return (
     <View style={{ flex: 1, alignItems: "center" }}>
       <Text style={styles.statN}>{n}</Text>
@@ -288,6 +291,7 @@ function Stat({ n, label }: { n: number; label: string }) {
 
 function SectionHead({ title, link, onPress }: { title: string; link: string; onPress: () => void }) {
   const styles = useStyles();
+  const T = useTerms();
   return (
     <View style={[styles.pad, { flexDirection: "row", alignItems: "center", justifyContent: "space-between" }]}>
       <Text style={styles.section}>{title}</Text>

@@ -8,7 +8,7 @@ import Animated, { FadeInDown } from "react-native-reanimated";
 import { Button, EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { usesNativeTabs } from "@/src/navigation";
-import { useAppSettings } from "@/src/settings";
+import { useAppSettings, useTerms } from "@/src/settings";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -17,6 +17,7 @@ type Camp = { id: string; name: string; days: Day[] };
 
 export default function CampsScreen() {
   const styles = useStyles();
+  const T = useTerms();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const s = useAppSettings();
@@ -39,7 +40,7 @@ export default function CampsScreen() {
   const duplicate = useMutation({
     mutationFn: (id: string) => api(`/camps/${id}/duplicate`, { method: "POST" }),
     onSuccess: () => {
-      toast.show("Kamp gekopieerd", "success");
+      toast.show(`${T.One} gekopieerd`, "success");
       qc.invalidateQueries({ queryKey: ["camps"] });
     },
     onError: (e: any) => toast.show(e?.message ?? "Kopiëren mislukt", "error"),
@@ -49,7 +50,7 @@ export default function CampsScreen() {
     mutationFn: (id: string) => api(`/camps/${id}`, { method: "DELETE" }),
     onSuccess: (_d, id) => {
       qc.invalidateQueries({ queryKey: ["camps"] });
-      toast.show("Kamp verwijderd", "info", { label: "Ongedaan maken", onPress: () => restore.mutate(id) });
+      toast.show(`${T.One} verwijderd`, "info", { label: "Ongedaan maken", onPress: () => restore.mutate(id) });
     },
     onError: (e: any) => toast.show(e?.message ?? "Verwijderen mislukt", "error"),
   });
@@ -125,7 +126,7 @@ export default function CampsScreen() {
         </View>
       ) : isError ? (
         <View style={styles.center}>
-          <EmptyState icon="wifi-off" title="Kon kampen niet laden" subtitle="Controleer je verbinding" />
+          <EmptyState icon="wifi-off" title={`Kon ${T.many} niet laden`} subtitle="Controleer je verbinding" />
           <Button label="Opnieuw" variant="secondary" onPress={() => refetch()} style={{ marginTop: 12 }} />
         </View>
       ) : (
@@ -140,8 +141,8 @@ export default function CampsScreen() {
           ListEmptyComponent={
             <EmptyState
               icon="tent"
-              title="Nog geen kampen gepland"
-              subtitle="Maak een kamp aan en plan per dag de maaltijden en het aantal personen."
+              title={`Nog geen ${T.many} gepland`}
+              subtitle={`Maak een ${T.one} aan en plan per dag de maaltijden en het aantal personen.`}
             />
           }
         />
@@ -153,7 +154,7 @@ export default function CampsScreen() {
         style={({ pressed }) => [styles.fab, { bottom: bottomChrome + 16 }, pressed && { opacity: 0.9 }]}
       >
         <Icon name="plus" size={22} color={colors.onBrandPrimary} />
-        <Text style={styles.fabText}>Nieuw kamp</Text>
+        <Text style={styles.fabText}>{`${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`}</Text>
       </Pressable>
     </View>
   );
