@@ -6361,37 +6361,31 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
-    asyncio.create_task(_stest12())
+    asyncio.create_task(_stest13())
 
 
-async def _stest12():
-    # Tijdelijk: de promotie-query van jumbo.com uitlezen en proberen
+async def _stest13():
+    # Tijdelijk: welke tabbladen en weken heeft jumbo.com, en hoe zien de producten eruit
     await asyncio.sleep(20)
     try:
-        async with httpx.AsyncClient(timeout=20, headers={**JUMBO_HEADERS, "Accept": "*/*"}, follow_redirects=True) as c:
-            t = (await c.get("https://www.jumbo.com/_nuxt/Clq6K_UN.js")).text
-            blocks = {}
-            for m in re.finditer(r'(query|fragment) ([A-Za-z]+)[^{]*\{', t):
-                i, depth = m.end(), 1
-                while depth and i < len(t):
-                    depth += {"{": 1, "}": -1}.get(t[i], 0)
-                    i += 1
-                blocks[m.group(2)] = re.sub(r"\s+", " ", t[m.start():i].replace("\\n", " "))
-            for n in ("getPromotions", "PromotionTabFields", "PromotionTabFieldsInactive", "PromotionFields", "GetPromotionDetails"):
-                logger.info("Stest12 %s: %s", n, (blocks.get(n) or "-")[:2500])
-            q = blocks.get("getPromotions")
-            if q:
-                need = set(re.findall(r"\.\.\.([A-Za-z]+)", q))
-                for _ in range(3):
-                    for n in list(need):
-                        need |= set(re.findall(r"\.\.\.([A-Za-z]+)", blocks.get(n, "")))
-                full = q + " " + " ".join(blocks[n] for n in need if n in blocks)
-                for name in ("JUMBO_WEB-promotions", "JUMBO_WEB-search"):
-                    r = await c.post(JUMBO_GQL, headers={"Content-Type": "application/json", "apollographql-client-name": name, "x-source": name},
-                                     json={"operationName": "getPromotions", "query": full, "variables": {}})
-                    logger.info("Stest12 run %s %s %s", name, r.status_code, r.text[:3000])
+        async with httpx.AsyncClient(timeout=30, headers={**JUMBO_HEADERS, "Accept": "*/*"}) as c:
+            async def run(q, v=None):
+                r = await c.post(JUMBO_GQL, json={"query": q, "variables": v or {}})
+                return r.status_code, r.json()
+            for q in ("{ promotionTabs { id shortTitle } }", "{ promotionTabs(storeId: null) { id shortTitle } }", "{ promotionOverview { tabs { id shortTitle } } }"):
+                st, j = await run(q)
+                logger.info("Stest13 tabs %s %s", st, str(j)[:800])
+            for tab in ("actieprijs", "alle", "alle-aanbiedingen", "volgende-week", "deze-week"):
+                st, j = await run("query($id: String!) { promotionTab(id: $id) { id shortTitle runtimes { id start { iso } active title shortTitle sections { id title "
+                                  "promotions { id title subtitle start { iso } end { iso } tags { text } isKiesAndMix image products { id title link } } } } } }", {"id": tab})
+                rt = (((j.get("data") or {}).get("promotionTab") or {}).get("runtimes")) or []
+                logger.info("Stest13 tab %s %s err=%s runtimes=%s", tab, st, str(j.get("errors"))[:300],
+                            [(x.get("id"), x.get("title"), (x.get("start") or {}).get("iso"), x.get("active"), sum(len(sc.get("promotions") or []) for sc in x.get("sections") or [])) for x in rt])
+                for x in rt:
+                    for sc in (x.get("sections") or [])[:1]:
+                        logger.info("Stest13 ex %s %s", x.get("title"), str((sc.get("promotions") or [])[:2])[:1200])
     except Exception as e:
-        logger.warning("Stest12: %r", e)
+        logger.warning("Stest13: %r", e)
 
 async def _daily_refresh_loop():
     # Run shortly after boot, then every 24h
