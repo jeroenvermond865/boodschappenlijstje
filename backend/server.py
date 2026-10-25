@@ -1986,6 +1986,23 @@ def _dirk_aisle(department: str, webgroup: str, name: str = "") -> str:
     return "Overig"
 
 
+async def _probe_jumbo() -> None:
+    # Tijdelijk: uitzoeken welk Jumbo-adres nog werkt (v17 van de mobiele API geeft 404)
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            for v in range(18, 26):
+                r = await c.get(f"https://mobileapi.jumbo.com/v{v}/search", params={"q": "melk", "offset": 0, "limit": 2}, headers=JUMBO_HEADERS)
+                logger.info("Jumbo probe v%d -> %s %s", v, r.status_code, r.text[:200].replace("\n", " "))
+            gql = """query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { count products { id title brand category image link packSizeDisplay prices: price { price promoPrice } } } }"""
+            H = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36",
+                 "apollographql-client-name": "JUMBO_WEB-search", "apollographql-client-version": "master-v1", "x-source": "JUMBO_WEB-search", "Origin": "https://www.jumbo.com"}
+            r = await c.post("https://www.jumbo.com/api/graphql", headers=H, json={"operationName": "SearchProducts", "query": gql,
+                             "variables": {"input": {"searchType": "keyword", "searchTerms": "melk", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=melk", "previousUrl": "", "bloomreachCookieId": ""}}})
+            logger.info("Jumbo probe graphql -> %s %s", r.status_code, r.text[:1500].replace("\n", " "))
+    except Exception as e:
+        logger.warning("Jumbo probe mislukt: %s", e)
+
+
 async def _dirk_post(client, query, variables):
     r = await client.post(DIRK_GQL, json={"query": query, "variables": variables})
     if r.status_code >= 500:
@@ -3436,6 +3453,7 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
+    asyncio.create_task(_probe_jumbo())
 
 
 async def _daily_refresh_loop():
