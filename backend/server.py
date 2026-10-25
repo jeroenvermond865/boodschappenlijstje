@@ -3326,7 +3326,7 @@ _PREPS = {"zonder", "met", "in", "uit", "van", "voor", "op", "naar", "of", "en",
 
 
 def _best_matches(pool: list, name: str, limit: int = 1) -> list:
-    # Eerst alle woorden; lukt dat niet, dan zonder bijvoeglijke woorden, dan alleen het hoofdwoord (ook enkelvoud)
+    # Eerst alle woorden; lukt dat niet, dan zonder bijvoeglijke woorden, dan alleen het hoofdwoord (ook enkelvoud/meervoud)
     words = _alt_terms(name, None).split()
     if not words:
         return []
@@ -3338,25 +3338,45 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
             break
     head = [w for w in head if w not in _PREPS] or words
     core = [w for w in head if w not in _FILLER] or head
-    tries = [" ".join(words), " ".join(head), " ".join(core)]
-    for st in _stems(core[-1]):
-        tries.append(" ".join(core[:-1] + [st]))
-        tries.append(st)
-    for t in dict.fromkeys(tries):
-        if len(t) < 2:
+    levels = [words, head, core]
+    # "parmezaanse kaas": liever parmezaan dan zomaar kaas
+    for w in core[:-1]:
+        for suf in ("sche", "se"):
+            if w.endswith(suf) and len(w) - len(suf) >= 4:
+                levels.append([w[: -len(suf)]])
+    levels.append(core[-1:])
+    seen = set()
+    for lv in levels:
+        key = " ".join(lv)
+        if key in seen or len(key) < 2:
             continue
-        hits = _search_products(pool, t)
+        seen.add(key)
+        hits, ids = [], set()
+        for st in _stems(lv[-1]):
+            for d in _search_products(pool, " ".join(lv[:-1] + [st])):
+                if id(d) not in ids:
+                    ids.add(id(d))
+                    hits.append(d)
         if hits:
-            return _rank_food(hits[:80], t.split())[:limit]
+            return _rank_food(hits[:400], lv)[:limit]
     return []
 
 
 _NONFOOD = {"Huishoud & huisdieren", "Kind & drogisterij", "Non food"}
 _CANDY_RE = re.compile(r"\b(snoep|drop|winegum|spekjes|chips|koek|koekjes|chocolade|lolly|kauwgom)\b")
+# Bewerkte producten: "ciabatta" is geen ciabatta-cracker, "citroen" geen citroenkoek, "olijf" geen tapenade
+_PROCESSED = ("koek", "cracker", "tapenade", "azijn", "saus", "chips", "spread", "sap", "drank", "siroop", "thee", "snoep", "taart", "cake",
+              "smaak", "kimchi", "dressing", "soep", "salade", "pasta", "toast", "wafel", "reep", "ijs", "yoghurt", "kwark", "vla", "limonade",
+              "frisdrank", "bier", "radler", "likeur", "zeep", "geur", "poeder", "aroma", "pesto", "dip", "smeer", "mix", "kruiden")
 
 
 def _rank_food(hits: list, words: list) -> list:
-    # Een recept vraagt om eten: "citroen" is geen afwasmiddel, "aardbeien" geen snoep, "ui" liever uien dan gehakt met ui
+    # Een recept vraagt om eten: "citroen" is geen afwasmiddel, "aardbeien" geen snoep, "ui" liever uien dan bosui of gehakt met ui
+    qstems = {st for q in words for st in _stems(q)}
+
+    def related(w):
+        return any(w == q or w in _stems(q) or q in _stems(w) or q in w for q in words)
+
     def penalty(rank_d):
         rank, d = rank_d
         name = d["_norm"]
@@ -3364,16 +3384,18 @@ def _rank_food(hits: list, words: list) -> list:
         nw = name.split()
         if brand and name.startswith(brand + " "):
             nw = nw[len(brand.split()):]
+        nw = [w for w in nw if not re.fullmatch(r"[\d.,%]+|\d+\w{0,3}|st|stuks?|kg|g|gram|ml|l|liter", w)] or nw
+
         # Positie van het gezochte woord; in het Nederlands zit het hoofdwoord achteraan ("tarwebloem" is bloem, "bloemkool" niet)
         def place(q):
             best = None
             for k, w in enumerate(nw):
                 if w == q or w in _stems(q) or q in _stems(w):
-                    v = k * 2
-                elif w.endswith(q):
-                    v = k * 2 + 1
+                    v = k
+                elif w.endswith(q) or any(w.endswith(st) for st in _stems(q) if len(st) >= 3):
+                    v = 3 + k
                 elif w.startswith(q):
-                    v = k * 2 + 5
+                    v = 8 + k
                 else:
                     continue
                 best = v if best is None else min(best, v)
@@ -3381,7 +3403,10 @@ def _rank_food(hits: list, words: list) -> list:
         # Het laatste zoekwoord is het hoofdwoord ("witte wijn" is wijn, geen wijnazijn)
         head = place(words[-1])
         pos = head if head is not None else min((p for p in map(place, words) if p is not None), default=11) + 3
-        pen = rank * 0.02 + pos + len(nw) * 0.4
+        extra = [w for w in nw if not related(w)]
+        pen = rank * 0.01 + pos + len(extra) * 0.7
+        if any(x in w and not any(x in q for q in qstems) for w in extra for x in _PROCESSED):
+            pen += 5
         if d.get("aisle") in _NONFOOD:
             pen += 30
         if d.get("aisle") == "Snacks & snoep" and not any(_CANDY_RE.search(q) for q in words):
@@ -3493,23 +3518,10 @@ async def _selftest2() -> None:
     await asyncio.sleep(45)
     try:
         docs = await _global_products()
-        await _folders_fresh()
-        for aard in [d for d in docs if d.get("_src") == "Dirk" and "aardappel" in d["_norm"] and "kruimig" in d["_norm"]]:
-            logger.info("Stest aardappel %s id=%s unit=%s %s on_offer=%s promo=%s", aard["name"], aard.get("dirk_id"), aard.get("unit"), aard.get("prices"),
-                        aard.get("on_offer"), _promo_public(aard, _doc_price(aard)))
-        by_sid = _product_cache.get("by_sid") or {}
-        for x in ("108146", "108147"):
-            dd = by_sid.get(("Dirk", x))
-            logger.info("Stest dirk %s in db: %s", x, (dd or {}).get("name"))
-        for per in (_folders.get("data") or {}).get("Dirk") or []:
-            for it in per["items"]:
-                if "aardappel" in (it["title"] or "").lower():
-                    logger.info("Stest folder Dirk %s ids=%s price=%s regular=%s prices=%s", it["title"], it["ids"], it.get("price"), it.get("regular"), it.get("prices"))
-        base = next((d for d in docs if d.get("_src") == "Jumbo" and "olijfolie" in d["_norm"]), None)
-        if base:
-            res = _alternatives(docs, base["name"], base)
-            logger.info("Stest alt %s terms=%r %s", base["name"], res["terms"],
-                        {k: [(d["name"], _doc_price(d), _alt_note(d, res["base_up"], res["base_price"])) for d in v[:3]] for k, v in res["by_store"].items()})
+        for st in ("Albert Heijn", "Jumbo", "Dirk"):
+            pool = [d for d in docs if d.get("_src") == st and d.get("is_global")]
+            for q in ("middelgrote ui", "citroen", "parmezaanse kaas", "witte wijn", "ciabatta", "zwarte olijf zonder pit", "bloem", "eieren", "lasagnevel", "knoflook"):
+                logger.info("Stest match %s %r: %s", st, q, [d["name"] for d in _best_matches(pool, q, 3)])
         for rid in ("ah-1302917", "dirk-aardbeien-caprese", "dirk-aspergesoep", "ah-1302830"):
             rec = await _recipe_products(await _recipe_detail(rid), {"user_id": "x"})
             logger.info("Stest recept %s: %s", rid, [(i["name"], i["pantry"], (i["product"] or {}).get("name")) for i in rec["ingredients"]])
