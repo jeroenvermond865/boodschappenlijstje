@@ -9,11 +9,11 @@ import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type ImportStatus = { status?: string; found?: number; todo?: number; added?: number; skipped?: number; added_ah?: number; finished_at?: string | null; error?: string | null; running: boolean };
+type ImportStatus = { status?: string; found?: number; todo?: number; added?: number; skipped?: number; added_ah?: number; added_jumbo?: number; finished_at?: string | null; error?: string | null; running: boolean };
 
 type DirkResult = { image?: string | null; source_id: string; name: string; brand?: string | null; quantity?: string | null; price: number; on_offer?: boolean; aisle: string };
 
-const COUPLED = ["Dirk", "Albert Heijn"];
+const COUPLED = ["Dirk", "Albert Heijn", "Jumbo"];
 
 export default function DirkImportScreen() {
   const styles = useStyles();
@@ -41,7 +41,7 @@ export default function DirkImportScreen() {
   });
 
   const importAllMut = useMutation({
-    mutationFn: () => api("/admin/products/import-dirk-all", { method: "POST" }),
+    mutationFn: (only?: string) => api(`/admin/products/import-dirk-all${only ? `?only=${only}` : ""}`, { method: "POST" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["dirk-import-all"] });
       toast.show("Import gestart, dit duurt een tijdje", "info");
@@ -51,14 +51,14 @@ export default function DirkImportScreen() {
 
   const wasRunning = importStatus?.running;
   const importLine = importStatus?.running
-    ? `Bezig: ${importStatus.status ?? ""} · ${importStatus.found ?? 0} gevonden · ${(importStatus.added ?? 0) + (importStatus.added_ah ?? 0)} toegevoegd. Laat dit scherm open.`
+    ? `Bezig: ${importStatus.status ?? ""} · ${importStatus.found ?? 0} gevonden · ${(importStatus.added ?? 0) + (importStatus.added_ah ?? 0) + (importStatus.added_jumbo ?? 0)} toegevoegd. Laat dit scherm open.`
     : importStatus?.status === "klaar"
-      ? `Klaar: ${importStatus.added ?? 0} van Dirk en ${importStatus.added_ah ?? 0} van Albert Heijn toegevoegd.${importStatus.skipped ? ` ${importStatus.skipped} Dirk-producten zijn niet leverbaar en overgeslagen.` : ""}`
+      ? `Klaar: ${importStatus.added ?? 0} van Dirk, ${importStatus.added_ah ?? 0} van Albert Heijn en ${importStatus.added_jumbo ?? 0} van Jumbo toegevoegd.${importStatus.skipped ? ` ${importStatus.skipped} Dirk-producten zijn niet leverbaar en overgeslagen.` : ""}`
       : importStatus?.status === "onderbroken"
         ? "De vorige import is onderbroken. Start hem opnieuw; wat er al is, wordt overgeslagen."
         : importStatus?.status === "mislukt"
           ? `Mislukt: ${importStatus.error ?? "onbekende fout"}`
-          : "Haalt het hele assortiment van Dirk en Albert Heijn binnen. Dit kan een half uur duren.";
+          : "Haalt het hele assortiment van Dirk, Albert Heijn en Jumbo binnen. Dit kan een half uur duren.";
 
   const runSearch = async () => {
     if (!q.trim()) return;
@@ -150,7 +150,7 @@ export default function DirkImportScreen() {
           </View>
           <Pressable
             testID="import-all"
-            onPress={() => importAllMut.mutate()}
+            onPress={() => importAllMut.mutate(undefined)}
             disabled={importAllMut.isPending || !!wasRunning}
             style={styles.refreshBtn}
           >
@@ -158,6 +158,14 @@ export default function DirkImportScreen() {
             <Text style={styles.refreshBtnText}>Start</Text>
           </Pressable>
         </View>
+        <Pressable
+          testID="import-jumbo"
+          onPress={() => importAllMut.mutate("jumbo")}
+          disabled={importAllMut.isPending || !!wasRunning}
+          style={styles.storeChip}
+        >
+          <Text style={styles.storeChipText}>Alleen Jumbo importeren</Text>
+        </Pressable>
 
         <Text style={styles.hint}>Zoek een product bij {store} en voeg het toe aan de algemene productenlijst. Prijzen worden daarna elke dag automatisch bijgewerkt.</Text>
 

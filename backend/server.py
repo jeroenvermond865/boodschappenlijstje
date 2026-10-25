@@ -1564,7 +1564,13 @@ def resolve_price(prices: dict, store: str, unavailable: Optional[list] = None) 
 
 
 def product_source(doc: dict) -> Optional[str]:
-    return "Dirk" if doc.get("dirk_id") else ("Albert Heijn" if doc.get("ah_id") else None)
+    if doc.get("dirk_id"):
+        return "Dirk"
+    if doc.get("ah_id"):
+        return "Albert Heijn"
+    if doc.get("jumbo_id"):
+        return "Jumbo"
+    return None
 
 
 def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set] = None) -> dict:
@@ -1955,7 +1961,7 @@ def _aisles_in(text: str) -> list:
     return [aisle for aisle, words in AISLE_RULES if toks & words]
 
 
-def _dirk_aisle(department: str, webgroup: str) -> str:
+def _dirk_aisle(department: str, webgroup: str, name: str = "") -> str:
     # 1. Precies een van onze afdelingen (onze lijst volgt de indeling van Dirk)
     key = " ".join(_cat_tokens(department)).replace(" en ", " ")
     if key in _AISLE_EXACT:
@@ -1969,6 +1975,12 @@ def _dirk_aisle(department: str, webgroup: str) -> str:
     if sub:
         both = [a for a in sub if a in main] if main else sub
         return (both or sub)[0]
+    # 4. Geen subcategorie: de productnaam beslist (bijv. "Jong belegen kaas" bij "Kaas, vleeswaren en tapas")
+    if name:
+        by_name = _aisles_in(name)
+        hit = [a for a in by_name if a in main] if main else by_name
+        if hit:
+            return hit[0]
     if main:
         return main[0]
     return "Overig"
@@ -2161,6 +2173,58 @@ async def _ah_search(term: str) -> list:
     return [n for n in (_ah_normalize(p) for p in prods) if n]
 
 
+# --- Jumbo (publieke mobiele API) ---
+JUMBO_API = "https://mobileapi.jumbo.com/v17"
+JUMBO_HEADERS = {"User-Agent": "Jumbo/10.4.0 (Android)", "Accept": "application/json"}
+_jumbo_sample_logged = False
+
+
+def _jumbo_normalize(p: dict) -> Optional[dict]:
+    global _jumbo_sample_logged
+    if not _jumbo_sample_logged:
+        _jumbo_sample_logged = True
+        logger.info("Jumbo voorbeeldproduct: %s", str(p)[:800])
+    name = (p.get("title") or "").strip()
+    if not name or not p.get("id"):
+        return None
+    prices = p.get("prices") or {}
+    promo = (prices.get("promotionalPrice") or {}).get("amount")
+    normal = (prices.get("price") or {}).get("amount")
+    cents = promo or normal or 0
+    imgs = [i for i in ((p.get("imageInfo") or {}).get("primaryView") or []) if isinstance(i, dict) and i.get("url")]
+    imgs.sort(key=lambda i: abs((i.get("width") or 200) - 200))
+    main = p.get("topLevelCategory") or ""
+    sub = p.get("category") or p.get("subCategory") or ""
+    if isinstance(main, dict):
+        main = main.get("title") or main.get("name") or ""
+    if isinstance(sub, dict):
+        sub = sub.get("title") or sub.get("name") or ""
+    return {
+        "image": imgs[0]["url"] if imgs else None,
+        "jumbo_id": str(p.get("id")),
+        "name": name[:80],
+        "brand": p.get("brand") or None,
+        "quantity": p.get("quantity") or None,
+        "price": round(float(cents) / 100, 2) if cents else 0,
+        "on_offer": bool(promo and normal and promo < normal),
+        "aisle": _dirk_aisle(str(main), str(sub), name),
+    }
+
+
+async def _jumbo_search_page(client, term: str, offset: int = 0, limit: int = 30) -> tuple:
+    r = await client.get(f"{JUMBO_API}/search", params={"q": term, "offset": offset, "limit": limit})
+    if r.status_code >= 400:
+        raise httpx.HTTPStatusError(f"Jumbo {r.status_code}: {r.text[:200]}", request=r.request, response=r)
+    data = (r.json() or {}).get("products") or {}
+    return data.get("data") or [], int(data.get("total") or 0)
+
+
+async def _jumbo_search(term: str) -> list:
+    async with httpx.AsyncClient(timeout=15, headers=JUMBO_HEADERS) as c:
+        prods, _ = await _jumbo_search_page(c, term, 0, 15)
+    return [n for n in (_jumbo_normalize(p) for p in prods) if n]
+
+
 @api_router.get("/stores/search")
 async def store_search(q: str, store: str = "Dirk", user: dict = Depends(get_current_user)):
     if not q.strip():
@@ -2170,6 +2234,10 @@ async def store_search(q: str, store: str = "Dirk", user: dict = Depends(get_cur
             out = await _ah_search(q.strip())
             for r in out:
                 r["source_id"] = str(r.pop("ah_id"))
+        elif store == "Jumbo":
+            out = await _jumbo_search(q.strip())
+            for r in out:
+                r["source_id"] = str(r.pop("jumbo_id"))
         else:
             async with httpx.AsyncClient(timeout=15, headers=DIRK_HEADERS) as c:
                 ids = await _dirk_search_ids(c, q.strip())
@@ -2185,7 +2253,7 @@ async def store_search(q: str, store: str = "Dirk", user: dict = Depends(get_cur
 
 
 # --- Admin: import supermarket products into the catalog + daily refresh ---
-COUPLED_STORES = ["Dirk", "Albert Heijn"]
+COUPLED_STORES = ["Dirk", "Albert Heijn", "Jumbo"]
 
 
 class StoreImportItem(BaseModel):
@@ -2204,7 +2272,7 @@ class StoreImportInput(BaseModel):
 
 
 def _id_field(store: str) -> str:
-    return "ah_id" if store == "Albert Heijn" else "dirk_id"
+    return {"Albert Heijn": "ah_id", "Jumbo": "jumbo_id"}.get(store, "dirk_id")
 
 
 async def _store_mults() -> dict:
@@ -2337,11 +2405,46 @@ async def _import_all_ah(mults: dict) -> int:
     return added
 
 
+async def _import_all_jumbo(mults: dict) -> int:
+    existing = {str(p["jumbo_id"]) async for p in db.products.find({"jumbo_id": {"$exists": True}, "deleted_at": None}, {"_id": 0, "jumbo_id": 1})}
+    added = 0
+    async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
+        for n, term in enumerate(DIRK_ALL_TERMS, 1):
+            docs = []
+            offset = 0
+            while offset < 600:
+                try:
+                    prods, total = await _jumbo_search_page(c, term, offset, 30)
+                except Exception as e:
+                    logger.warning("Jumbo zoekterm %s mislukt: %s", term, e)
+                    if n == 1:
+                        raise
+                    break
+                for p in prods:
+                    nrm = _jumbo_normalize(p)
+                    if not nrm or nrm["jumbo_id"] in existing:
+                        continue
+                    existing.add(nrm["jumbo_id"])
+                    nrm["source_id"] = nrm["jumbo_id"]
+                    docs.append(_new_store_product("jumbo_id", nrm, "Jumbo", mults))
+                offset += 30
+                if len(prods) < 30 or offset >= total:
+                    break
+            if docs:
+                await db.products.insert_many(docs)
+                added += len(docs)
+                _invalidate_products()
+            if n % 5 == 0:
+                await _set_import_status(status=f"Jumbo ({n}/{len(DIRK_ALL_TERMS)})", added_jumbo=added)
+    logger.info("Jumbo-import klaar: %d toegevoegd", added)
+    return added
+
+
 async def _import_all_dirk() -> None:
     global _dirk_import_running
     _dirk_import_running = True
     try:
-        await _set_import_status(status="zoeken", found=0, added=0, added_ah=0, started_at=now_utc(), finished_at=None, error=None)
+        await _set_import_status(status="zoeken", found=0, added=0, added_ah=0, started_at=now_utc(), finished_at=None, error=None, added_jumbo=0)
         mults = await _store_mults()
         ids: list = []
         seen: set = set()
@@ -2398,7 +2501,12 @@ async def _import_all_dirk() -> None:
         except Exception as e:
             logger.warning("AH-import mislukt: %s", e)
             added_ah = 0
-        await _set_import_status(status="klaar", added=added, added_ah=added_ah, finished_at=now_utc())
+        try:
+            added_jumbo = await _import_all_jumbo(mults)
+        except Exception as e:
+            logger.warning("Jumbo-import mislukt: %s", e)
+            added_jumbo = 0
+        await _set_import_status(status="klaar", added=added, added_ah=added_ah, added_jumbo=added_jumbo, finished_at=now_utc())
     except Exception as e:
         logger.error("Dirk-import mislukt: %s", e)
         await _set_import_status(status="mislukt", error=str(e)[:200], finished_at=now_utc())
@@ -2407,11 +2515,25 @@ async def _import_all_dirk() -> None:
 
 
 @api_router.post("/admin/products/import-dirk-all")
-async def start_import_all_dirk(user: dict = Depends(get_current_user)):
+async def start_import_all_dirk(only: str = "", user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_products")
     if not _dirk_import_running:
-        asyncio.create_task(_import_all_dirk())
+        asyncio.create_task(_import_only_jumbo() if only == "jumbo" else _import_all_dirk())
     return {"ok": True}
+
+
+async def _import_only_jumbo() -> None:
+    global _dirk_import_running
+    _dirk_import_running = True
+    try:
+        await _set_import_status(status="Jumbo", found=0, added=0, added_ah=0, added_jumbo=0, skipped=0, started_at=now_utc(), finished_at=None, error=None)
+        added_jumbo = await _import_all_jumbo(await _store_mults())
+        await _set_import_status(status="klaar", added_jumbo=added_jumbo, finished_at=now_utc())
+    except Exception as e:
+        logger.warning("Jumbo-import mislukt: %s", e)
+        await _set_import_status(status="mislukt", error=f"Jumbo is nu niet bereikbaar: {str(e)[:150]}", finished_at=now_utc())
+    finally:
+        _dirk_import_running = False
 
 
 @api_router.get("/admin/products/import-dirk-all")
@@ -2483,10 +2605,30 @@ async def _refresh_ah_prices(mults: dict) -> int:
     return updated
 
 
+async def _refresh_jumbo_prices(mults: dict) -> int:
+    prods = await db.products.find({"jumbo_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(20000)
+    if not prods:
+        return 0
+    updated = 0
+    async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
+        for p in prods:
+            try:
+                r = await c.get(f"{JUMBO_API}/products/{p['jumbo_id']}")
+                data = ((r.json() or {}).get("product") or {}).get("data") or {}
+            except Exception:
+                continue
+            n = _jumbo_normalize(data) if data else None
+            if not n or not n["price"]:
+                continue
+            await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n["price"], n["aisle"], mults, n.get("image"))})
+            updated += 1
+    return updated
+
+
 async def _refresh_dirk_prices_all() -> dict:
     mults = await _store_mults()
     updated = 0
-    for fn in (_refresh_dirk_prices, _refresh_ah_prices):
+    for fn in (_refresh_dirk_prices, _refresh_ah_prices, _refresh_jumbo_prices):
         try:
             updated += await fn(mults)
         except Exception as e:
@@ -2505,7 +2647,7 @@ async def refresh_prices(user: dict = Depends(get_current_user)):
 async def refresh_status(user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_products")
     doc = await db.settings.find_one({"key": "app"}, {"_id": 0})
-    linked = await db.products.count_documents({"$or": [{"dirk_id": {"$exists": True}}, {"ah_id": {"$exists": True}}], "deleted_at": None, "is_global": True})
+    linked = await db.products.count_documents({"$or": [{"dirk_id": {"$exists": True}}, {"ah_id": {"$exists": True}}, {"jumbo_id": {"$exists": True}}], "deleted_at": None, "is_global": True})
     ts = (doc or {}).get("dirk_refreshed_at")
     return {"linked": linked, "refreshed_at": ts.isoformat() if isinstance(ts, datetime) else None}
 
@@ -3297,6 +3439,8 @@ async def startup():
         await db.stores.update_many({"name": {"$nin": COUPLED_STORES}}, {"$set": {"active": False}})
         await db.users.update_many({"store": {"$nin": COUPLED_STORES}}, {"$set": {"store": "Dirk"}})
         await db.settings.insert_one({"key": "stores_only_dirk_ah", "done_at": now_utc()})
+    # Gekoppelde winkels altijd actief (Jumbo is later toegevoegd)
+    await db.stores.update_many({"name": {"$in": COUPLED_STORES}}, {"$set": {"active": True}})
     # Eenmalig: geschatte prijzen (via prijsfactor) weghalen, alleen echte winkelprijs bewaren
     if not await db.settings.find_one({"key": "prices_own_store_only"}):
         for idf, store in (("dirk_id", "Dirk"), ("ah_id", "Albert Heijn")):

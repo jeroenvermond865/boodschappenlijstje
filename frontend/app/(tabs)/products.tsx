@@ -26,7 +26,7 @@ export type Product = {
   unavailable_here?: boolean;
   is_global: boolean;
   is_own: boolean;
-  source?: "Dirk" | "Albert Heijn" | null;
+  source?: "Dirk" | "Albert Heijn" | "Jumbo" | null;
   image?: string | null;
   is_favorite?: boolean;
 };
@@ -35,6 +35,7 @@ const STORE_FILTERS = [
   { key: "all", label: "Alle producten" },
   { key: "Dirk", label: "Dirk" },
   { key: "Albert Heijn", label: "Albert Heijn" },
+  { key: "Jumbo", label: "Jumbo" },
 ] as const;
 
 export default function ProductsScreen() {
@@ -50,7 +51,7 @@ export default function ProductsScreen() {
   const [onlyFavorites, setOnlyFavorites] = useState(false);
   const qc = useQueryClient();
   const [aisle, setAisle] = useState<string>("all");
-  const [storeFilter, setStoreFilter] = useState<"all" | "Dirk" | "Albert Heijn">("all");
+  const [storeFilter, setStoreFilter] = useState<"all" | "Dirk" | "Albert Heijn" | "Jumbo">("all");
   const [storeOpen, setStoreOpen] = useState(false);
 
   const debouncedSearch = useDebounced(search);
