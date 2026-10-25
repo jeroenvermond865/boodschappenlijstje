@@ -157,7 +157,14 @@ export default function ProductScreen() {
                     ))}
                   </View>
                   {d.nutrition.rows.map((r, ri) => {
-                    const sub = r[0].startsWith("  ");
+                    const sub = r[0].startsWith("  ") || r[0].toLowerCase().startsWith("waarvan");
+                    if (r.slice(1).every((c) => !c) && r[0].startsWith("*")) {
+                      return (
+                        <Text key={ri} style={[styles.muted, { paddingTop: 6 }]}>
+                          {r[0]}
+                        </Text>
+                      );
+                    }
                     return (
                       <View key={ri} style={[styles.tableRow, ri % 2 === 0 && styles.tableRowAlt]}>
                         {r.map((c, i) => (
