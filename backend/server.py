@@ -1974,6 +1974,23 @@ def _dirk_aisle(department: str, webgroup: str) -> str:
     return "Overig"
 
 
+async def _log_dirk_store_schema() -> None:
+    # Tijdelijk: uitzoeken hoe Dirk zijn winkels (filialen) aanbiedt, om Dirk Leiderdorp te vinden
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
+            r = await c.post(DIRK_GQL, json={"query": "{__schema{queryType{fields{name args{name type{name kind ofType{name}}} type{name kind ofType{name kind ofType{name}}}}}}}"})
+            body = r.json() or {}
+            fields = (((body.get("data") or {}).get("__schema") or {}).get("queryType") or {}).get("fields") or []
+            if not fields:
+                logger.info("Dirk schema: %s", str(body)[:500])
+            for f in fields:
+                if "store" in f["name"].lower() or "winkel" in f["name"].lower() or "shop" in f["name"].lower():
+                    logger.info("Dirk query %s args=%s type=%s", f["name"], [(a["name"], a["type"]) for a in f["args"]], f["type"])
+            logger.info("Dirk alle queries: %s", [f["name"] for f in fields])
+    except Exception as e:
+        logger.warning("Dirk schema mislukt: %s", e)
+
+
 async def _log_category_sample() -> None:
     # Controle: welke categorieën Dirk en AH geven en in welke afdeling ze bij ons landen
     terms = ["melk", "kaas", "brood", "koek", "chips", "rijst", "ijs", "bier", "shampoo", "kip", "appel", "pizza", "ham", "hondenvoer", "afwasmiddel"]
@@ -3311,7 +3328,7 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
-    asyncio.create_task(_log_category_sample())
+    asyncio.create_task(_log_dirk_store_schema())
 
 
 async def _daily_refresh_loop():
