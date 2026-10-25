@@ -2182,10 +2182,12 @@ async def _jumbo_search_page(client, term: str, offset: int = 0) -> tuple:
 
 async def _jumbo_sweep(client, term: str, max_items: int = 600):
     offset = 0
+    first = None
     while offset < max_items:
         prods, total = await _jumbo_search_page(client, term, offset)
-        if not prods:
-            break
+        if not prods or prods[0].get("id") == first:
+            break  # leeg, of Jumbo geeft dezelfde pagina terug
+        first = prods[0].get("id")
         yield prods
         offset += len(prods)
         if offset >= total:
