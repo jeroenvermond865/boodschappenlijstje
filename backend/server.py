@@ -6511,6 +6511,30 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
+    asyncio.create_task(_stest16())
+
+
+async def _stest16():
+    # Tijdelijk: hoe ziet een Dirk-recept er van binnen uit (in huis, prijs per persoon, gekoppelde producten)
+    await asyncio.sleep(25)
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+            resp = await c.get("https://www.dirk.nl/meer/recepten/recept/oreo-cheesecake", headers=_PAGE_HEADERS)
+        data = (_nuxt_data(resp.text) or {}).get("data") or {}
+        logger.info("Stest16 data keys %s", list(data.keys())[:20])
+        r = _find_dict(data, "steps") or {}
+        logger.info("Stest16 recipe keys %s", {k: (str(v)[:150] if not isinstance(v, list) else f"list{len(v)}") for k, v in r.items()})
+        for i in (r.get("ingredients") or [])[:12]:
+            logger.info("Stest16 ing %s", str(i)[:400])
+        for k, v in data.items():
+            if str(k).startswith("products-") and isinstance(v, dict):
+                logger.info("Stest16 prods %s %s", k, [(pk, (pv or {}).get("productId"), ((pv or {}).get("productInformation") or {}).get("headerText")) for pk, pv in list(v.items())[:15]])
+        for kw in ("inHuis", "inHouse", "pantry", "basic", "price", "Price", "prijs"):
+            for k in r:
+                if kw.lower() in k.lower():
+                    logger.info("Stest16 field %s = %s", k, str(r[k])[:600])
+    except Exception as e:
+        logger.warning("Stest16: %r", e)
 
 
 async def _daily_refresh_loop():
