@@ -6825,46 +6825,106 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
-    asyncio.create_task(_stest17())
+    asyncio.create_task(_catalog_loop())
     asyncio.create_task(_log_product_counts())
 
 
-async def _log_product_counts():
-    await asyncio.sleep(15)
+async def _log_product_counts(wait: int = 15):
+    await asyncio.sleep(wait)
     counts = {st: await db.products.count_documents({_id_field(st): {"$exists": True}, "deleted_at": None}) for st in COUPLED_STORES}
     logger.info("Producten per winkel: %s", counts)
 
 
-async def _stest17():
-    # Tijdelijk: kunnen we de hele catalogus van AH en Jumbo doorlopen?
-    await asyncio.sleep(25)
-    try:
-        async with httpx.AsyncClient(timeout=30, headers=AH_HEADERS) as c:
-            tok = await _ah_token(c)
-            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-            r = await c.get("https://api.ah.nl/mobile-services/v1/product-shelves/categories", headers=H)
-            logger.info("Stest17 ah cats %s %s", r.status_code, r.text[:600])
-            cats = r.json() if r.status_code == 200 else []
-            if isinstance(cats, list) and cats:
-                cid = cats[0].get("id")
-                for params in ({"taxonomyId": cid, "size": 1000, "page": 0}, {"taxonomyId": cid, "size": 100, "page": 0}):
-                    r2 = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params=params, headers=H)
-                    j = r2.json() if r2.status_code == 200 else {}
-                    logger.info("Stest17 ah tax %s %s n=%d page=%s", params, r2.status_code, len(j.get("products") or []), j.get("page"))
-            r3 = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"size": 100, "page": 0}, headers=H)
-            j = r3.json() if r3.status_code == 200 else {}
-            logger.info("Stest17 ah all %s n=%d page=%s", r3.status_code, len(j.get("products") or []), j.get("page"))
-        async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
-            for term in ("", "*"):
+async def _import_ah_catalog(mults: dict) -> int:
+    # De hele AH-catalogus: alle categorieën van de app, per 1000 producten
+    existing = {str(p["ah_id"]) async for p in db.products.find({"ah_id": {"$exists": True}}, {"_id": 0, "ah_id": 1})}
+    added = 0
+    async with httpx.AsyncClient(timeout=60, headers=AH_HEADERS) as c:
+        H = {"Authorization": f"Bearer {await _ah_token(c)}", "X-Application": "AHWEBSHOP"}
+        cats = (await c.get("https://api.ah.nl/mobile-services/v1/product-shelves/categories", headers=H)).json() or []
+        for cat in cats:
+            page, pages = 0, 1
+            while page < pages and page < 20:
                 try:
-                    prods, total = await _jumbo_search_page(c, term, 0)
-                    logger.info("Stest17 jumbo term=%r n=%d total=%d", term, len(prods), total)
-                    prods2, _ = await _jumbo_search_page(c, term, 5000)
-                    logger.info("Stest17 jumbo term=%r offset5000 n=%d first=%s", term, len(prods2), (prods2[0].get("title") if prods2 else None))
+                    r = await c.get("https://api.ah.nl/mobile-services/product/search/v2",
+                                    params={"taxonomyId": cat["id"], "size": 1000, "page": page}, headers=H)
+                    if r.status_code == 401:
+                        H["Authorization"] = f"Bearer {await _ah_token(c)}"
+                        continue
+                    j = r.json() or {}
                 except Exception as e:
-                    logger.info("Stest17 jumbo term=%r fout %r", term, e)
-    except Exception as e:
-        logger.warning("Stest17: %r", e)
+                    logger.warning("AH-categorie %s mislukt: %r", cat.get("name"), e)
+                    break
+                pages = int((j.get("page") or {}).get("totalPages") or 0)
+                docs = []
+                for pr in j.get("products") or []:
+                    nrm = _ah_normalize(pr)
+                    if not nrm or not nrm.get("ah_id") or str(nrm["ah_id"]) in existing:
+                        continue
+                    existing.add(str(nrm["ah_id"]))
+                    nrm["source_id"] = nrm["ah_id"]
+                    docs.append(_new_store_product("ah_id", nrm, "Albert Heijn", mults))
+                if docs:
+                    await db.products.insert_many(docs)
+                    added += len(docs)
+                page += 1
+            await asyncio.sleep(0.5)
+    _invalidate_products()
+    logger.info("AH-catalogus: %d producten toegevoegd", added)
+    return added
+
+
+async def _import_jumbo_catalog(mults: dict) -> int:
+    # De hele Jumbo-catalogus: zoeken op "*" geeft alles, 24 per keer
+    existing = {str(p["jumbo_id"]) async for p in db.products.find({"jumbo_id": {"$exists": True}}, {"_id": 0, "jumbo_id": 1})}
+    added = 0
+    async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
+        _, total = await _jumbo_search_page(c, "*", 0)
+        sem = asyncio.Semaphore(4)
+
+        async def page(off):
+            async with sem:
+                for attempt in range(3):
+                    try:
+                        return (await _jumbo_search_page(c, "*", off))[0]
+                    except Exception:
+                        await asyncio.sleep(2 * (attempt + 1))
+                return []
+        for start in range(0, total, 24 * 40):
+            batches = await asyncio.gather(*(page(o) for o in range(start, min(total, start + 24 * 40), 24)))
+            docs = []
+            for prods in batches:
+                for pr in prods:
+                    nrm = _jumbo_normalize(pr)
+                    if not nrm or nrm["jumbo_id"] in existing:
+                        continue
+                    existing.add(nrm["jumbo_id"])
+                    nrm["source_id"] = nrm["jumbo_id"]
+                    docs.append(_new_store_product("jumbo_id", nrm, "Jumbo", mults))
+            if docs:
+                await db.products.insert_many(docs)
+                added += len(docs)
+    _invalidate_products()
+    logger.info("Jumbo-catalogus: %d producten toegevoegd (van %d)", added, total)
+    return added
+
+
+async def _catalog_loop():
+    # Eens per week de volledige catalogus van AH en Jumbo langs, zodat nieuwe producten er ook in komen
+    await asyncio.sleep(120)
+    while True:
+        last = await db.meta.find_one({"key": "catalog_import"}) or {}
+        at = last.get("at")
+        if not at or (datetime.now(timezone.utc) - ensure_aware(at)).total_seconds() > 7 * 86400:
+            await db.meta.update_one({"key": "catalog_import"}, {"$set": {"key": "catalog_import", "at": now_utc()}}, upsert=True)
+            mults = await _store_mults()
+            for fn in (_import_ah_catalog, _import_jumbo_catalog):
+                try:
+                    await fn(mults)
+                except Exception as e:
+                    logger.warning("Catalogus %s mislukt: %r", fn.__name__, e)
+            await _log_product_counts(0)
+        await asyncio.sleep(6 * 3600)
 
 
 async def _daily_refresh_loop():
