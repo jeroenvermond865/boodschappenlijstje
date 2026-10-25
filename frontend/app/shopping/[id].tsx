@@ -15,9 +15,11 @@ import { useToast } from "@/src/toast";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Item = { name: string; unit: string; aisle: string; qty: number };
+type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string };
 type Grouped = { aisle: string; items: Item[] };
-type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[] };
+type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number };
+
+const euro = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
 type PerDay = { index: number; adults: number; children: number; by_store: StoreBlock[] };
 type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean };
 
@@ -55,13 +57,17 @@ export default function ShoppingScreen() {
 
   const multi = data?.multi_store ?? false;
   // Algemeen block first, then each store's totals
-  const totalBlocks: { store: string; label: string; grouped: Grouped[] }[] = useMemo(() => {
+  const totalBlocks: { store: string; label: string; grouped: Grouped[]; total?: number }[] = useMemo(() => {
     if (!data) return [];
-    const out: { store: string; label: string; grouped: Grouped[] }[] = [];
-    (data.general ?? []).forEach((b) => out.push({ store: `alg:${b.store}`, label: multi ? `Algemeen · ${b.store}` : "Algemeen", grouped: b.grouped }));
-    (data.by_store ?? []).forEach((b) => out.push({ store: b.store, label: b.store, grouped: b.grouped }));
+    const out: { store: string; label: string; grouped: Grouped[]; total?: number }[] = [];
+    (data.general ?? []).forEach((b) =>
+      out.push({ store: `alg:${b.store}`, label: multi ? `Algemeen · ${b.store}` : "Algemeen", grouped: b.grouped, total: b.total }),
+    );
+    (data.by_store ?? []).forEach((b) => out.push({ store: b.store, label: b.store, grouped: b.grouped, total: b.total }));
     return out;
   }, [data, multi]);
+  // "Algemeen" staat ook al in de winkeltotalen; het totaal is de som van de winkels
+  const grandTotal = (data?.by_store ?? []).reduce((n, b) => n + (b.total ?? 0), 0);
 
   const allItems = useMemo(() => {
     const arr: { store: string; item: Item }[] = [];
@@ -205,13 +211,21 @@ export default function ShoppingScreen() {
               <Text style={styles.multiText}>Meerdere winkels — elk lijstje staat apart.</Text>
             </View>
           ) : null}
+          {tab === "total" && grandTotal > 0 ? (
+            <View style={styles.totalCard}>
+              <Text style={styles.totalLabel}>Geschat totaal</Text>
+              <Text style={styles.totalValue}>{euro(grandTotal)}</Text>
+              <Text style={styles.totalHint}>Hele verpakkingen tegen de huidige winkelprijs. Producten zonder prijs tellen niet mee.</Text>
+            </View>
+          ) : null}
           {tab === "total"
             ? totalBlocks.map((b) => (
                 <View key={b.store} style={{ gap: 12 }}>
                   {multi || b.label === "Algemeen" ? (
                     <View style={styles.storeHeader}>
                       <Icon name={b.label === "Algemeen" ? "clipboard-list-outline" : "storefront"} size={18} color={colors.brandPrimary} />
-                      <Text style={styles.storeHeaderText}>{b.label}</Text>
+                      <Text style={[styles.storeHeaderText, { flex: 1 }]}>{b.label}</Text>
+                      {b.total ? <Text style={styles.storeHeaderText}>{euro(b.total)}</Text> : null}
                     </View>
                   ) : null}
                   {b.grouped.map((g) => (
@@ -298,15 +312,31 @@ function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boole
   return (
     <Pressable testID={`item-${item.name.toLowerCase()}`} onPress={onToggle} style={[styles.itemRow, !last && styles.itemRowBorder]}>
       <Icon name={checked ? "checkbox-marked-circle" : "checkbox-blank-circle-outline"} size={24} color={checked ? colors.success : colors.borderStrong} />
-      <Text style={[styles.itemName, checked && styles.itemNameChecked]}>{item.name}</Text>
-      <Text style={[styles.itemQty, checked && styles.itemQtyChecked]}>
-        {formatQty(item.qty)} {item.unit}
-      </Text>
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.itemName, checked && styles.itemNameChecked]}>{item.name}</Text>
+        {item.packs ? (
+          <Text style={styles.itemPack} numberOfLines={1}>
+            {item.packs}× {item.pack_unit ? `${item.pack_unit} ` : ""}nodig
+          </Text>
+        ) : null}
+      </View>
+      <View style={{ alignItems: "flex-end" }}>
+        <Text style={[styles.itemQty, checked && styles.itemQtyChecked]}>
+          {formatQty(item.qty)} {item.unit}
+        </Text>
+        {item.price ? <Text style={styles.itemPrice}>{euro(item.price)}</Text> : null}
+      </View>
     </Pressable>
   );
 }
 
 const useStyles = makeStyles((colors) => ({
+  itemPack: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
+  itemPrice: { fontSize: 12, fontFamily: fonts.semibold, color: colors.onSurfaceSecondary, marginTop: 1 },
+  totalCard: { borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 2, backgroundColor: colors.surfaceSecondary },
+  totalLabel: { fontSize: 13, fontFamily: fonts.medium, color: colors.muted },
+  totalValue: { fontSize: 26, fontFamily: fonts.bold, color: colors.onSurface },
+  totalHint: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },
   root: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingBottom: 10 },
   headerBtn: { width: 44, height: 40, alignItems: "center", justifyContent: "center" },

@@ -7,6 +7,7 @@ import os
 import logging
 import asyncio
 import functools
+import math
 import itertools
 import time
 import uuid
@@ -1092,14 +1093,16 @@ def _group_items(item_map: dict) -> tuple:
     return items, grouped
 
 
-def _add_item(store_map: dict, store: str, name: str, unit: str, aisle: str, qty: float):
+def _add_item(store_map: dict, store: str, name: str, unit: str, aisle: str, qty: float, product_id: Optional[str] = None):
     if qty <= 0:
         return
     smap = store_map.setdefault(store, {})
     key = (name.lower(), unit)
     if key not in smap:
-        smap[key] = {"name": name, "unit": unit, "aisle": aisle if aisle in AISLES else "Overig", "qty": 0}
+        smap[key] = {"name": name, "unit": unit, "aisle": aisle if aisle in AISLES else "Overig", "qty": 0, "product_id": product_id}
     smap[key]["qty"] += qty
+    if product_id and not smap[key].get("product_id"):
+        smap[key]["product_id"] = product_id
 
 
 def _diet_counts(day: dict, camp: dict) -> dict:
@@ -1151,11 +1154,11 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
                     qty = ing.get("qty_adult", 0) * a + ing.get("qty_child", 0) * c
                     store = store_of(ing)
                     for tgt in (total_store_map, day_store_map):
-                        _add_item(tgt, store, ing["name"], ing.get("unit", "stuks"), ing.get("aisle", "Overig"), qty)
+                        _add_item(tgt, store, ing["name"], ing.get("unit", "stuks"), ing.get("aisle", "Overig"), qty, ing.get("product_id"))
         for ex in day.get("extras", []):
             store = store_of(ex)
             for tgt in (total_store_map, day_store_map):
-                _add_item(tgt, store, ex["name"], ex.get("unit", "stuks"), ex.get("aisle", "Overig"), ex.get("qty", 0))
+                _add_item(tgt, store, ex["name"], ex.get("unit", "stuks"), ex.get("aisle", "Overig"), ex.get("qty", 0), ex.get("product_id"))
         day_by_store = []
         for store in sorted(day_store_map.keys()):
             flat, grouped = _group_items(day_store_map[store])
@@ -1172,7 +1175,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
     for ex in camp.get("general", []):
         store = store_of(ex)
         for tgt in (total_store_map, general_store_map):
-            _add_item(tgt, store, ex["name"], ex.get("unit", "stuks"), ex.get("aisle", "Overig"), ex.get("qty", 0))
+            _add_item(tgt, store, ex["name"], ex.get("unit", "stuks"), ex.get("aisle", "Overig"), ex.get("qty", 0), ex.get("product_id"))
 
     def pack(store_map: dict) -> list:
         out = []
@@ -1184,6 +1187,27 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
     by_store = pack(total_store_map)
     general = pack(general_store_map)
     stores = sorted(total_store_map.keys())
+
+    # Prijzen: hoeveel verpakkingen je nodig hebt en wat dat kost (150 gram uit een pak van 500 gram = 1 pak)
+    pids = {it.get("product_id") for b in by_store + general + [x for d in per_day for x in d["by_store"]] for it in b["flat"] if it.get("product_id")}
+    prods = {p["product_id"]: p for p in await db.products.find({"product_id": {"$in": list(pids)}}, {"_id": 0}).to_list(5000)} if pids else {}
+
+    def priced(blocks: list) -> None:
+        for b in blocks:
+            total = 0.0
+            for it in b["flat"]:
+                p = prods.get(it.get("product_id") or "")
+                price = resolve_price(p.get("prices", {}), b["store"], p.get("unavailable", [])) if p else 0
+                if price > 0:
+                    packs = max(1, math.ceil(round(it["qty"] * _pack_share(it["unit"], p.get("unit") or ""), 3)))
+                    it.update({"packs": packs, "pack_unit": p.get("unit") or "", "price": round(packs * price, 2), "pack_price": price,
+                               "product": p.get("name")})
+                    total += packs * price
+            b["total"] = round(total, 2)
+    priced(by_store)
+    priced(general)
+    for d in per_day:
+        priced(d["by_store"])
     return {
         "by_store": by_store,
         "general": general,
