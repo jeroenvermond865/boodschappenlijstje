@@ -95,7 +95,7 @@ export function ProductBrowser({
 
   const debouncedSearch = useDebounced(search);
   const queryKey = ["products", "search", storeFilter, aisle, onlyFavorites, debouncedSearch.trim(), filters];
-  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
+  const { data, isLoading, isPlaceholderData, isError, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
     queryKey,
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
@@ -269,9 +269,14 @@ export function ProductBrowser({
         )}
       </View>
 
-      {isLoading ? (
+      {/* Bij een andere afdeling nooit de soorten van de vorige laten staan: eerst laden, of zeggen dat het mislukte */}
+      {isLoading || (isPlaceholderData && mode === "subs") ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color={colors.brandPrimary} />
+          {isError ? (
+            <Text style={{ color: colors.muted }}>Deze afdeling laadt nu niet. Probeer het zo nog eens.</Text>
+          ) : (
+            <ActivityIndicator size="large" color={colors.brandPrimary} />
+          )}
         </View>
       ) : mode === "cats" ? (
         <FlatList

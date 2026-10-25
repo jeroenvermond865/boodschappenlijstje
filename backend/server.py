@@ -2271,7 +2271,7 @@ async def search_products(
         inc = {f"aisles.{_ikey(aisle)}": 1} if aisle else {}
         inc.update({f"brands.{_ikey(_norm_text(b))}": 1 for b in _split_list(brand)})
         inc.update({f"subs.{_ikey(x)}": 1 for x in _split_list(sub)})
-        asyncio.create_task(db.user_interest.update_one({"user_id": user["user_id"]}, {"$inc": inc}, upsert=True))
+        asyncio.ensure_future(db.user_interest.update_one({"user_id": user["user_id"]}, {"$inc": inc}, upsert=True))
 
     offset = max(0, offset)
     limit = max(1, min(limit, 200))
@@ -7041,7 +7041,6 @@ async def startup():
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
     asyncio.create_task(_catalog_loop())
-    asyncio.create_task(_stest18())
     asyncio.create_task(_log_product_counts())
 
 
@@ -7136,30 +7135,6 @@ _heavy_lock = asyncio.Lock()  # prijzen verversen en de catalogus nooit tegelijk
 
 
 
-async def _stest18():
-    try:
-        await asyncio.sleep(20)
-        docs = await db.products.find({"ah_id": {"$exists": True}, "aisle": "Kind & drogisterij", "subcategory": "Koek, snoep, chocolade en chips"},
-                                      {"_id": 0, "name": 1, "ah_id": 1, "created_at": 1}).limit(4).to_list(4)
-        logger.info("Stest18 db %s", [(d["name"], d["ah_id"], str(d.get("created_at"))[:16]) for d in docs])
-        agg = await db.products.aggregate([{"$match": {"ah_id": {"$exists": True}, "created_at": {"$gt": datetime(2026, 10, 25, 16, 0, tzinfo=timezone.utc)}}},
-                                           {"$group": {"_id": "$aisle", "n": {"$sum": 1}}}]).to_list(50)
-        logger.info("Stest18 nieuw per afdeling %s", agg)
-        old = await db.products.aggregate([{"$match": {"ah_id": {"$exists": True}, "created_at": {"$lt": datetime(2026, 10, 25, 16, 0, tzinfo=timezone.utc)}}},
-                                           {"$group": {"_id": "$aisle", "n": {"$sum": 1}}}]).to_list(50)
-        logger.info("Stest18 oud per afdeling %s", old)
-        async with httpx.AsyncClient(timeout=60, headers=AH_HEADERS) as c:
-            H = {"Authorization": f"Bearer {await _ah_token(c)}", "X-Application": "AHWEBSHOP"}
-            cats = (await c.get("https://api.ah.nl/mobile-services/v1/product-shelves/categories", headers=H)).json() or []
-            logger.info("Stest18 cats %s", [(x.get("id"), x.get("name")) for x in cats])
-            r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"taxonomyId": cats[0]["id"], "size": 5, "page": 0}, headers=H)
-            j = r.json() or {}
-            logger.info("Stest18 search %s %s", j.get("page"), [(x.get("title"), x.get("mainCategory"), x.get("subCategory")) for x in j.get("products") or []])
-            r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"taxonomyId": cats[3]["id"], "size": 5, "page": 0}, headers=H)
-            j = r.json() or {}
-            logger.info("Stest18 search3 %s %s", cats[3].get("name"), [(x.get("title"), x.get("mainCategory"), x.get("subCategory")) for x in j.get("products") or []])
-    except Exception as e:
-        logger.warning("Stest18 %r", e)
 
 async def _catalog_loop():
     # Eens per week de volledige catalogus van AH en Jumbo langs, zodat nieuwe producten er ook in komen.
