@@ -1577,6 +1577,8 @@ def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set]
     prices = doc.get("prices", {}) or {}
     store = product_source(doc) or store
     unavailable = doc.get("unavailable", []) or []
+    price = resolve_price(prices, store, unavailable)
+    up = _unit_value(price, doc.get("unit") or "")
     return {
         "id": doc["product_id"],
         "name": doc["name"],
@@ -1586,7 +1588,8 @@ def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set]
         "barcode": doc.get("barcode"),
         "prices": prices,
         "unavailable": unavailable,
-        "price": resolve_price(prices, store, unavailable),
+        "price": price,
+        "unit_price": f"{_euro(up[0])}/{'kg' if up[1] == 'kilo' else 'l'}" if up else None,
         "unavailable_here": store in unavailable,
         "is_global": doc.get("is_global", False),
         "is_own": doc.get("owner_id") == user_id,
@@ -1598,33 +1601,94 @@ def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set]
     }
 
 
-# Productlijst in het geheugen, zodat niet bij elke aanvraag ~17.000 producten uit de database komen
-PRODUCT_CACHE_SECONDS = 120
-_product_cache: dict = {"at": None, "docs": []}
+# Productlijst in het geheugen, zodat niet bij elke aanvraag ~30.000 producten uit de database komen.
+# De server heeft weinig rekenkracht: verversen gebeurt op de achtergrond en ondertussen blijft
+# de vorige lijst gewoon werken.
+PRODUCT_CACHE_SECONDS = 1800
+_product_cache: dict = {"at": None, "docs": [], "stale": True, "task": None}
+_search_cache: dict = {}
 
 
 def _invalidate_products() -> None:
-    _product_cache["at"] = None
+    _product_cache["stale"] = True
+    _search_cache.clear()
+    _own_cache.clear()
+
+
+def _prep_product(d: dict, known_brands: list) -> None:
+    d["_norm"] = _norm_text(d["name"])
+    d["_src"] = product_source(d)
+    if not (d.get("brand") or "").strip():
+        # Geen merk van de winkel: merk afleiden uit het begin van de naam ("AH Halfvolle melk" -> AH)
+        for b, nb in known_brands:
+            if d["_norm"].startswith(nb + " "):
+                d["brand"] = b
+                break
+    d["_bio"] = bool(_BIO_RE.search(d["_norm"]) or _BIO_RE.search(_norm_text(d.get("brand") or "")))
+    price = resolve_price(d.get("prices") or {}, d["_src"] or DEFAULT_STORE, d.get("unavailable") or [])
+    d["_up"] = _unit_value(price, d.get("unit") or "")
+
+
+async def _load_products() -> None:
+    try:
+        docs = await db.products.find({"deleted_at": None, "is_global": True}, {"_id": 0}).to_list(40000)
+        counts: Dict[str, int] = {}
+        for d in docs:
+            b = (d.get("brand") or "").strip()
+            if b:
+                counts[b] = counts.get(b, 0) + 1
+        known = sorted(((b, _norm_text(b)) for b, n in counts.items() if n >= 3 and len(b) >= 2), key=lambda x: -len(x[1]))
+        known = [k for k in known if k[1]]
+        docs.sort(key=lambda d: (AISLES.index(d["aisle"]) if d.get("aisle") in AISLES else 99, d["name"].lower()))
+        for i, d in enumerate(docs):
+            _prep_product(d, known)
+            if i % 2000 == 0:
+                await asyncio.sleep(0)  # andere aanvragen niet blokkeren
+        _product_cache["docs"] = docs
+        _product_cache["at"] = datetime.now(timezone.utc)
+        _search_cache.clear()
+        missing: Dict[str, list] = {}
+        for d in docs:
+            if not d.get("brand"):
+                missing.setdefault(d.get("_src") or "-", []).append(d["name"])
+        logger.info("Productlijst geladen: %d producten; zonder merk: %s", len(docs),
+                    {k: (len(v), v[:12]) for k, v in missing.items()})
+    except Exception as e:
+        logger.warning("Productlijst laden mislukt: %s", e)
 
 
 async def _global_products() -> list:
+    c = _product_cache
     now = datetime.now(timezone.utc)
-    at = _product_cache["at"]
-    if at is None or (now - at).total_seconds() > PRODUCT_CACHE_SECONDS:
-        docs = await db.products.find({"deleted_at": None, "is_global": True}, {"_id": 0}).to_list(40000)
-        docs.sort(key=lambda d: (AISLES.index(d["aisle"]) if d.get("aisle") in AISLES else 99, d["name"].lower()))
-        for d in docs:
-            d["_norm"] = _norm_text(d["name"])
-        _product_cache["docs"] = docs
-        _product_cache["at"] = now
-    return _product_cache["docs"]
+    old = c["at"] is None or (now - c["at"]).total_seconds() > PRODUCT_CACHE_SECONDS
+    if (c["stale"] or old) and not (c["task"] and not c["task"].done()):
+        c["stale"] = False
+        c["task"] = asyncio.create_task(_load_products())
+    if c["at"] is None:
+        await c["task"]
+    return c["docs"]
+
+
+_own_cache: dict = {}
+
+
+async def _own_products(user: dict) -> list:
+    hit = _own_cache.get(user["user_id"])
+    now = datetime.now(timezone.utc)
+    if hit and (now - hit[0]).total_seconds() < 120:
+        return hit[1]
+    own = await db.products.find({"deleted_at": None, "is_global": {"$ne": True}, "owner_id": user["user_id"]}, {"_id": 0}).to_list(2000)
+    for d in own:
+        _prep_product(d, [])
+    if len(_own_cache) > 500:
+        _own_cache.clear()
+    _own_cache[user["user_id"]] = (now, own)
+    return own
 
 
 async def _visible_products(user: dict) -> list:
     docs = await _global_products()
-    own = await db.products.find({"deleted_at": None, "is_global": {"$ne": True}, "owner_id": user["user_id"]}, {"_id": 0}).to_list(2000)
-    for d in own:
-        d["_norm"] = _norm_text(d["name"])
+    own = await _own_products(user)
     return own + docs if own else docs
 
 
@@ -1672,7 +1736,7 @@ def _search_products(docs: list, q: str) -> list:
 
 
 def _clean(doc: dict) -> dict:
-    return {k: v for k, v in doc.items() if k != "_norm"}
+    return {k: v for k, v in doc.items() if not k.startswith("_")}
 
 
 @api_router.get("/products")
@@ -1687,7 +1751,7 @@ _BIO_RE = re.compile(r"\b(bio|biologisch|biologische|organic)\b")
 
 
 def _is_bio(d: dict) -> bool:
-    return bool(_BIO_RE.search(d.get("_norm") or "") or _BIO_RE.search(_norm_text(d.get("brand") or "")))
+    return bool(d.get("_bio"))
 
 
 def _split_list(v: str) -> list:
@@ -1704,27 +1768,11 @@ def _facet(docs: list, field: str, top: int = 60) -> list:
     return [{"value": k, "count": n} for k, n in items]
 
 
-@api_router.get("/products/search")
-async def search_products(
-    q: str = "",
-    source: str = "",
-    aisle: str = "",
-    favorites: bool = False,
-    sub: str = "",
-    brand: str = "",
-    offer: bool = False,
-    bio: bool = False,
-    sort: str = "",
-    offset: int = 0,
-    limit: int = 50,
-    user: dict = Depends(get_current_user),
-):
-    store = user.get("store", DEFAULT_STORE)
-    favs = set(user.get("favorite_products") or [])
-    docs = await _visible_products(user)
+def _run_search(docs: list, q: str, source: str, aisle: str, favs: Optional[set], sub: str, brand: str,
+                offer: bool, bio: bool, sort: str, store: str) -> tuple:
     if source:
-        docs = [d for d in docs if product_source(d) == source]
-    if favorites:
+        docs = [d for d in docs if d.get("_src") == source]
+    if favs is not None:
         docs = [d for d in docs if d["product_id"] in favs]
     aisle_counts: Dict[str, int] = {}
     for d in docs:
@@ -1745,27 +1793,63 @@ async def search_products(
             return False
         if offer and skip != "offer" and not d.get("on_offer"):
             return False
-        if bio and skip != "bio" and not _is_bio(d):
+        if bio and skip != "bio" and not d.get("_bio"):
             return False
         return True
     facets = [
         {"key": "sub", "label": "Soort", "options": _facet([d for d in docs if keep(d, "sub")], "subcategory")},
         {"key": "brand", "label": "Merk", "options": _facet([d for d in docs if keep(d, "brand")], "brand", 80)},
         {"key": "offer", "label": "Aanbieding", "count": sum(1 for d in docs if keep(d, "offer") and d.get("on_offer"))},
-        {"key": "bio", "label": "Biologisch", "count": sum(1 for d in docs if keep(d, "bio") and _is_bio(d))},
+        {"key": "bio", "label": "Biologisch", "count": sum(1 for d in docs if keep(d, "bio") and d.get("_bio"))},
     ]
     if subs or brands or offer or bio:
         docs = [d for d in docs if keep(d)]
 
     if sort in ("price_asc", "price_desc"):
         def price_of(d):
-            v = resolve_price(d.get("prices") or {}, product_source(d) or store, d.get("unavailable") or [])
-            return v if v > 0 else 9999
-        docs = sorted(docs, key=price_of, reverse=(sort == "price_desc"))
-        if sort == "price_desc":
-            docs = [d for d in docs if price_of(d) < 9999] + [d for d in docs if price_of(d) >= 9999]
+            v = resolve_price(d.get("prices") or {}, d.get("_src") or store, d.get("unavailable") or [])
+            return v if v > 0 else None
+        priced = [d for d in docs if price_of(d) is not None]
+        rest = [d for d in docs if price_of(d) is None]
+        docs = sorted(priced, key=price_of, reverse=(sort == "price_desc")) + rest
+    elif sort == "unit_asc":
+        # Prijs per kilo of liter: zo vergelijk je verschillende verpakkingen; zonder kiloprijs achteraan
+        with_up = [d for d in docs if d.get("_up")]
+        docs = sorted(with_up, key=lambda d: d["_up"][0]) + [d for d in docs if not d.get("_up")]
     elif sort == "name":
         docs = sorted(docs, key=lambda d: d["_norm"])
+    return docs, aisle_counts, facets
+
+
+@api_router.get("/products/search")
+async def search_products(
+    q: str = "",
+    source: str = "",
+    aisle: str = "",
+    favorites: bool = False,
+    sub: str = "",
+    brand: str = "",
+    offer: bool = False,
+    bio: bool = False,
+    sort: str = "",
+    offset: int = 0,
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    store = user.get("store", DEFAULT_STORE)
+    favs = set(user.get("favorite_products") or [])
+    own = await _own_products(user)
+    # Dezelfde zoekopdracht (ook bij verder scrollen) komt uit het geheugen
+    key = (source, aisle, _norm_text(q), sub, brand, offer, bio, sort,
+           tuple(sorted(favs)) if favorites else None, user["user_id"] if own else None)
+    hit = _search_cache.get(key)
+    if hit is None:
+        hit = _run_search(own + (await _global_products()) if own else await _global_products(),
+                          q, source, aisle, favs if favorites else None, sub, brand, offer, bio, sort, store)
+        if len(_search_cache) > 60:
+            _search_cache.pop(next(iter(_search_cache)))
+        _search_cache[key] = hit
+    docs, aisle_counts, facets = hit
 
     offset = max(0, offset)
     limit = max(1, min(limit, 200))
@@ -1800,10 +1884,18 @@ def _euro(v: float) -> str:
 
 
 def _unit_price_from(price: float, qty: str) -> Optional[str]:
-    # "2 liter", "1,5 l", "6 x 330 ml", "500 gram" -> prijs per liter of kilo
+    v = _unit_value(price, qty)
+    return f"{_euro(v[0])} per {v[1]}" if v else None
+
+
+_UNIT_RE = re.compile(r"(?:(\d+)\s*x\s*)?(\d+(?:[.,]\d+)?)\s*(kg|kilo|kilogram|gram|gr|g|liter|ltr|l|cl|ml)\b")
+
+
+def _unit_value(price: float, qty: str) -> Optional[tuple]:
+    # "2 liter", "1,5 l", "6 x 330 ml", "500 gram" -> (prijs per liter of kilo, "liter"/"kilo")
     if not price or not qty:
         return None
-    m = re.search(r"(?:(\d+)\s*x\s*)?(\d+(?:[.,]\d+)?)\s*(kg|kilo|kilogram|gram|gr|g|liter|ltr|l|cl|ml)\b", qty.lower())
+    m = _UNIT_RE.search(qty.lower())
     if not m:
         return None
     amount = float(m.group(2).replace(",", ".")) * int(m.group(1) or 1)
@@ -1820,7 +1912,7 @@ def _unit_price_from(price: float, qty: str) -> Optional[str]:
         per = "liter"
     if amount <= 0:
         return None
-    return f"{_euro(price / amount)} per {per}"
+    return (round(price / amount, 2), per)
 
 
 def _strip_html(h: str) -> str:
@@ -2439,6 +2531,81 @@ def _find_dict(obj, key: str, seen=None):
         if f is not None:
             return f
     return None
+
+
+async def _probe_promos() -> None:
+    # Tijdelijk: hoe tonen Dirk, AH en Jumbo acties en folders?
+    import json as _json
+    def dump(x, n=3000):
+        return _json.dumps(x, ensure_ascii=False, default=str)[:n]
+    await asyncio.sleep(25)
+    UA = {"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
+            tok = await _ah_token(c)
+            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
+            for term in ("koffie", "chips"):
+                r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"query": term, "size": 60, "filters": "bonus"}, headers=H)
+                prods = [p for p in (r.json() or {}).get("products") or [] if p.get("isBonus") or p.get("bonusMechanism")]
+                logger.info("Promo probe AH %s: %d bonus", term, len(prods))
+                for p in prods[:4]:
+                    logger.info("Promo probe AH item %s", dump({k: p.get(k) for k in ["title", "currentPrice", "priceBeforeBonus", "bonusMechanism", "bonusStartDate", "bonusEndDate", "bonusPeriodDescription", "bonusSegmentId", "bonusSegmentDescription", "discountLabels", "multipleItemPromotion", "isStapelBonus", "promotionType", "discountType", "segmentType", "stickers"]}, 1500))
+                if prods:
+                    r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{prods[0]['webshopId']}", headers=H)
+                    card = (r.json() or {}).get("productCard") or {}
+                    logger.info("Promo probe AH card %s", dump({k: v for k, v in card.items() if k not in ("images", "descriptionHighlights", "properties")}, 2000))
+            for path in ["/mobile-services/bonuspage/v1/metadata", "/mobile-services/bonuspage/v2/section?application=AHWEBSHOP&promotionType=NATIONAL&date=2026-10-25",
+                         "/mobile-services/bonuspage/v1/section?application=AHWEBSHOP&date=2026-10-25", "/mobile-services/bonuspage/v3/metadata"]:
+                r = await c.get("https://api.ah.nl" + path, headers=H)
+                logger.info("Promo probe AH folder %s -> %s %s", path, r.status_code, r.text[:1500])
+        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS, follow_redirects=True) as c:
+            ids = await _dirk_search_ids(c, "koffie", 80)
+            prods = await _dirk_fetch_products(c, ids)
+            offer = [p for p in prods if p.get("offerPrice")]
+            logger.info("Promo probe Dirk koffie: %d met actie", len(offer))
+            if offer:
+                pid = offer[0]["productId"]
+                r = await c.get(f"https://www.dirk.nl/boodschappen/x/x/x/{pid}", headers=UA)
+                d = _nuxt_data(r.text)
+                po = _find_dict(d, "productOffer")
+                logger.info("Promo probe Dirk offer %s", dump({k: v for k, v in (po or {}).items() if k != "productInformation"}, 2500))
+            r = await c.get("https://www.dirk.nl/aanbiedingen", headers=UA)
+            d = _nuxt_data(r.text)
+            logger.info("Promo probe Dirk folder %s %s nuxt=%s", r.status_code, str(r.url), d is not None)
+            for k in ["offers", "productOffers", "folder", "folders", "weekOffers", "offerPeriod", "startDate", "periods"]:
+                f = _find_dict(d, k)
+                if f is not None:
+                    logger.info("Promo probe Dirk folder veld %s -> %s", k, dump(f.get(k), 1200))
+            for q in ["query{offers(storeId:66){offerId}}", "query{listOffers(storeId:66){offerId}}", "query{currentOffers(storeId:66){offerId}}",
+                      "query{weekOffers(storeId:66){offerId}}", "query{productOffers(storeId:66){offerId}}", "query{folders{id}}"]:
+                r = await c.post(DIRK_GQL, json={"query": q})
+                logger.info("Promo probe Dirk gql %s -> %s", q[6:30], r.text[:300])
+        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS, follow_redirects=True) as c:
+            v = {"input": {"searchType": "keyword", "searchTerms": "koffie", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=koffie", "previousUrl": "", "bloomreachCookieId": ""}}
+            r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": JUMBO_SEARCH_QUERY, "variables": v})
+            prods = (((r.json() or {}).get("data") or {}).get("searchProducts") or {}).get("products") or []
+            promo = [p for p in prods if (p.get("prices") or {}).get("promoPrice")]
+            logger.info("Promo probe Jumbo koffie: %d van %d met promoPrice", len(promo), len(prods))
+            if promo:
+                r = await c.get(f"https://www.jumbo.com/producten/x-{promo[0]['id']}", headers=UA)
+                d = _nuxt_data(r.text)
+                pr = _find_dict(d, "nutritionsTable") or {}
+                logger.info("Promo probe Jumbo promotions %s", dump(pr.get("promotions"), 2500))
+                logger.info("Promo probe Jumbo price %s badges %s", dump(pr.get("price"), 400), dump(pr.get("primaryProductBadges"), 600))
+            for extra in ["promotions { id title tags { text } start { dayShort date } end { dayShort date } }", "promotions { id }", "promotions { title }"]:
+                q = "query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { products { id %s } } }" % extra
+                r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": q, "variables": v})
+                logger.info("Promo probe Jumbo veld %s -> %s", extra[:40], r.text[:900])
+            for url in ["https://www.jumbo.com/aanbiedingen/nu", "https://www.jumbo.com/aanbiedingen/volgende-week"]:
+                r = await c.get(url, headers=UA)
+                d = _nuxt_data(r.text)
+                logger.info("Promo probe Jumbo folder %s %s nuxt=%s", url, r.status_code, d is not None)
+                for k in ["promotions", "promotionTabs", "tabs", "categories", "startDate", "periods"]:
+                    f = _find_dict(d, k)
+                    if f is not None:
+                        logger.info("Promo probe Jumbo folder veld %s -> %s", k, dump(f.get(k), 1200))
+    except Exception as e:
+        logger.warning("Promo probe mislukt: %r", e)
 
 
 async def _dirk_post(client, query, variables):
@@ -4064,6 +4231,8 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
+    asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
+    asyncio.create_task(_probe_promos())
 
 
 async def _daily_refresh_loop():

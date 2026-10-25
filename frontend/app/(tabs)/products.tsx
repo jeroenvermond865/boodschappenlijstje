@@ -32,12 +32,14 @@ export type Product = {
   is_favorite?: boolean;
   subcategory?: string | null;
   on_offer?: boolean;
+  unit_price?: string | null;
 };
 
 const SORTS: { key: ProductFilters["sort"]; label: string }[] = [
   { key: "", label: "Beste treffers" },
   { key: "price_asc", label: "Prijs laag-hoog" },
   { key: "price_desc", label: "Prijs hoog-laag" },
+  { key: "unit_asc", label: "Prijs per kilo/liter" },
   { key: "name", label: "Naam A-Z" },
 ];
 
@@ -238,6 +240,7 @@ export default function ProductsScreen() {
               ) : (
                 <View style={{ alignItems: "flex-end" }}>
                   <Text style={styles.price}>{item.price > 0 ? `€ ${item.price.toFixed(2)}` : "—"}</Text>
+                  {item.unit_price ? <Text style={styles.unitTag}>{item.unit_price}</Text> : null}
                   {item.on_offer ? <Text style={styles.offerTag}>Aanbieding</Text> : null}
                 </View>
               )}
@@ -471,6 +474,7 @@ const useStyles = makeStyles((colors) => ({
   favToggleTextActive: { color: colors.onBrandPrimary },
   toggleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   clearText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  unitTag: { fontSize: 11, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
   offerTag: { fontSize: 11, fontFamily: fonts.semibold, color: colors.warning, marginTop: 2 },
   filterLabel: { fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface },
   chipWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
