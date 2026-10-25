@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Field, Icon, Select } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { fetchProducts, useDebounced } from "@/src/search";
+import { ProductBrowser } from "@/src/ProductBrowser";
 import {
   AISLES,
   CATEGORY_LABELS,
@@ -239,7 +240,6 @@ export default function DishEditScreen() {
       ...prev,
       { name: p.name, unit: p.unit, qtyAdult: "1", qtyChild: "1", aisle: p.aisle, price: "0", productId: p.id, store: p.source ?? null, diet: "all" },
     ]);
-    setPickerOpen(false);
   };
 
   const swapProduct = (idx: number, p: Product) => {
@@ -590,7 +590,7 @@ export default function DishEditScreen() {
         )}
       </View>
 
-      <DishProductPicker open={pickerOpen} onClose={() => setPickerOpen(false)} onPick={addProductIngredient} />
+      <DishProductPicker key={pickerOpen ? "open" : "closed"} open={pickerOpen} onClose={() => setPickerOpen(false)} onPick={addProductIngredient} />
       <SwapSheet
         ing={swapIdx != null ? ings[swapIdx] : null}
         onClose={() => setSwapIdx(null)}
@@ -712,56 +712,28 @@ function SwapSheet({ ing, onClose, onPick }: { ing: Ing | null; onClose: () => v
 }
 
 function DishProductPicker({ open, onClose, onPick }: { open: boolean; onClose: () => void; onPick: (p: Product) => void }) {
+  // Zelfde zoeken en filters als de Producten-pagina
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const router = useRouter();
-  const [q, setQ] = useState("");
-  const debouncedQ = useDebounced(q);
-  const { data } = useQuery({
-    queryKey: ["products", "search", "picker", debouncedQ.trim()],
-    queryFn: () => fetchProducts({ q: debouncedQ, limit: 60 }),
-    enabled: open,
-    placeholderData: (prev) => prev,
-  });
-  const list = data?.products ?? [];
+  const [picked, setPicked] = useState<string[]>([]);
   return (
     <Modal visible={open} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.pickerBackdrop}>
-        <View style={[styles.pickerSheet, { paddingBottom: insets.bottom + 16 }]}>
-          <View style={styles.pickerHeader}>
+        <View style={[styles.pickerSheet, { height: "92%", paddingHorizontal: 0, paddingBottom: insets.bottom + 8 }]}>
+          <View style={[styles.pickerHeader, { paddingHorizontal: 16 }]}>
             <Text style={styles.pickerTitle}>Kies een product</Text>
             <Pressable testID="dish-picker-close" onPress={onClose} hitSlop={8}>
-              <Icon name="close" size={22} color={colors.onSurface} />
+              <Text style={[styles.pickerTitle, { color: colors.brandPrimary, fontSize: 15 }]}>{picked.length ? `Klaar (${picked.length})` : "Sluiten"}</Text>
             </Pressable>
           </View>
-          <View style={styles.pickerSearch}>
-            <Icon name="magnify" size={20} color={colors.muted} />
-            <TextInput
-              testID="dish-product-search"
-              placeholder="Zoek product"
-              placeholderTextColor={colors.muted}
-              value={q}
-              onChangeText={setQ}
-              style={styles.pickerSearchInput}
-            />
-          </View>
-          <FlatList
-            data={list}
-            keyExtractor={(p) => p.id}
-            style={{ maxHeight: 400 }}
-            keyboardShouldPersistTaps="handled"
-            renderItem={({ item }) => (
-              <Pressable testID={`dish-product-${item.id}`} onPress={() => onPick(item)} style={styles.pickerRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.pickerName} numberOfLines={1}>{item.name}</Text>
-                  <Text style={styles.pickerMeta}>{item.aisle} · per {item.unit}</Text>
-                </View>
-                <Text style={styles.pickerPrice}>{item.price > 0 ? `€ ${item.price.toFixed(2)}` : "—"}</Text>
-                <Icon name="plus-circle-outline" size={22} color={colors.brandPrimary} />
-              </Pressable>
-            )}
-            ListEmptyComponent={<Text style={styles.pickerEmpty}>Geen producten gevonden.</Text>}
+          <ProductBrowser
+            bottomPadding={16}
+            pickedIds={picked}
+            onPick={(p) => {
+              setPicked((x) => (x.includes(p.id) ? x : [...x, p.id]));
+              onPick(p);
+            }}
           />
         </View>
       </View>

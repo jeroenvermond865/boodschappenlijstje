@@ -8,6 +8,7 @@ import { Button, EmptyState, Icon, Select, Stepper } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { useTerms } from "@/src/settings";
 import { fetchProducts, useDebounced } from "@/src/search";
+import { ProductBrowser } from "@/src/ProductBrowser";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory, formatQty } from "@/src/constants";
 import type { Dish } from "@/app/(tabs)/dishes";
 import type { Product } from "@/app/(tabs)/products";
@@ -522,18 +523,9 @@ function ExtraAddModal({
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const [q, setQ] = useState("");
   const [sel, setSel] = useState<Product | null>(null);
   const [qty, setQty] = useState(1);
   const [store, setStore] = useState(defaultStore ?? stores[0] ?? "Overig");
-
-  const debouncedQ = useDebounced(q);
-  const { data } = useQuery({
-    queryKey: ["products", "search", "picker", debouncedQ.trim()],
-    queryFn: () => fetchProducts({ q: debouncedQ, limit: 60 }),
-    enabled: visible,
-    placeholderData: (prev) => prev,
-  });
 
   useEffect(() => {
     if (visible) {
@@ -545,8 +537,6 @@ function ExtraAddModal({
   useEffect(() => {
     setStore((prev) => prev || defaultStore || stores[0] || "Overig");
   }, [defaultStore, stores]);
-
-  const list = data?.products ?? [];
 
   const confirm = () => {
     if (!sel) return;
@@ -589,35 +579,8 @@ function ExtraAddModal({
               <Button label="Toevoegen" onPress={confirm} testID="extra-add-button" />
             </View>
           ) : (
-            <View style={{ gap: 12 }}>
-              <View style={styles.pickerSearch}>
-                <Icon name="magnify" size={20} color={colors.muted} />
-                <TextInput
-                  testID="extra-product-search"
-                  placeholder="Zoek product"
-                  placeholderTextColor={colors.muted}
-                  value={q}
-                  onChangeText={setQ}
-                  style={styles.pickerSearchInput}
-                />
-              </View>
-              <FlatList
-                data={list}
-                keyExtractor={(p) => p.id}
-                style={{ maxHeight: 340 }}
-                keyboardShouldPersistTaps="handled"
-                renderItem={({ item }) => (
-                  <Pressable testID={`extra-product-${item.id}`} onPress={() => setSel(item)} style={styles.pickerRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.selName} numberOfLines={1}>{item.name}</Text>
-                      <Text style={styles.selMeta}>{item.aisle} · per {item.unit}</Text>
-                    </View>
-                    <Text style={styles.pickerPrice}>{item.price > 0 ? `€ ${item.price.toFixed(2)}` : "—"}</Text>
-                    <Icon name="plus-circle-outline" size={22} color={colors.brandPrimary} />
-                  </Pressable>
-                )}
-                ListEmptyComponent={<Text style={styles.noMeal}>Geen product gevonden.</Text>}
-              />
+            <View style={{ height: 560, marginHorizontal: -16 }}>
+              <ProductBrowser onPick={setSel} bottomPadding={16} />
             </View>
           )}
         </View>
