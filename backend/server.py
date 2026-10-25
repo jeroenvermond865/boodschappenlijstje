@@ -3711,32 +3711,38 @@ async def remove_recipe_favorite(id: str, user: dict = Depends(get_current_user)
 
 
 async def _selftest2() -> None:
-    # Tijdelijk: waar staan de Dirk-folders van volgende week en de Dirck3-folder?
+    # Tijdelijk: folder volgende week en extra folder van Dirk
     await asyncio.sleep(30)
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            r = await c.get("https://www.dirk.nl/folder", headers=_PAGE_HEADERS)
-            links = sorted(set(re.findall(r"https?://[^\"'\\ <>]*(?:publitas|folder|dirck|view\.)[^\"'\\ <>]*", r.text)))
-            logger.info("Stest folderpagina %s %d links: %s", r.status_code, len(links), links[:60])
-            hrefs = sorted(set(re.findall(r'href="([^"]*folder[^"]*)"', r.text)))
-            logger.info("Stest folder hrefs: %s", hrefs[:60])
-            data = _nuxt_data(r.text)
-            found = []
+            for path in ("/folder/volgende-week", "/folder/extra-folder", "/folder"):
+                r = await c.get("https://www.dirk.nl" + path, headers=_PAGE_HEADERS)
+                srcs = sorted(set(re.findall(r'(?:src|href|data-src)="(https?://[^"]+)"', r.text)))
+                logger.info("Stest dirk %s %s srcs: %s", path, r.status_code, [u for u in srcs if "fileserver" not in u and "fonts" not in u][:40])
+                data = _nuxt_data(r.text)
+                offers, strs = 0, []
 
-            def walk(x, path="", depth=0):
-                if depth > 25 or len(found) > 80:
-                    return
-                if isinstance(x, dict):
-                    for k, v in x.items():
-                        if isinstance(v, str) and re.search(r"(?i)publitas|folder|dirck|week", v) and len(v) < 300:
-                            found.append(f"{path}.{k}={v}")
-                        walk(v, f"{path}.{k}", depth + 1)
-                elif isinstance(x, list):
-                    for i, v in enumerate(x[:50]):
-                        walk(v, f"{path}[{i}]", depth + 1)
-            walk(data)
-            for line in found:
-                logger.info("Stest folderdata %s", line)
+                def walk(x, p="", depth=0):
+                    nonlocal offers
+                    if depth > 30:
+                        return
+                    if isinstance(x, dict):
+                        if x.get("offerId"):
+                            offers += 1
+                        for k, v in x.items():
+                            if isinstance(v, str) and re.search(r"(?i)publitas|issuu|embed|viewer|flipbook|\.pdf|iframe", v) and len(v) < 400:
+                                strs.append(f"{p}.{k}={v}")
+                            walk(v, f"{p}.{k}", depth + 1)
+                    elif isinstance(x, list):
+                        for i, v in enumerate(x[:200]):
+                            walk(v, f"{p}[{i}]", depth + 1)
+                walk(data)
+                logger.info("Stest dirk %s offers=%d embeds=%s", path, offers, strs[:30])
+                m = re.findall(r"<iframe[^>]+>", r.text)
+                logger.info("Stest dirk %s iframes=%s", path, m[:5])
+            for path in ("/aanbiedingen?week=volgende", "/aanbiedingen/volgende-week"):
+                r = await c.get("https://www.dirk.nl" + path, headers=_PAGE_HEADERS)
+                logger.info("Stest dirk %s %s len=%d", path, r.status_code, len(r.text))
     except Exception as e:
         logger.warning("Stest: %r", e)
 
