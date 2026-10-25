@@ -2994,7 +2994,7 @@ async def _ah_recipes(q: str, filters: dict, page: int, size: int) -> dict:
     d = await _ah_gql(AH_RECIPE_SEARCH, {"q": q or None, "start": page * size, "size": size, "filters": flt or None})
     res = d.get("recipeSearchV2") or {}
     total = int((res.get("page") or {}).get("total") or 0)
-    recipes = [{"id": f"ah:{r['id']}", "store": "ah", "title": r.get("title"), "image": _ah_image(r.get("images")),
+    recipes = [{"id": f"ah-{r['id']}", "store": "ah", "title": r.get("title"), "image": _ah_image(r.get("images")),
                 "time": (r.get("time") or {}).get("cook"), "servings": (r.get("serving") or {}).get("number"),
                 "course": (r.get("courses") or [None])[0], "rating": (r.get("rating") or {}).get("average") or None}
                for r in res.get("result") or [] if r.get("id")]
@@ -3020,7 +3020,7 @@ async def _jumbo_recipes(q: str, filters: dict, page: int, size: int) -> dict:
     for x in st.get("recipes") or []:
         if not isinstance(x, dict) or not x.get("link"):
             continue
-        recipes.append({"id": "jumbo:" + x["link"].rstrip("/").split("/")[-1], "store": "jumbo", "title": (x.get("title") or "").strip(),
+        recipes.append({"id": "jumbo-" + x["link"].rstrip("/").split("/")[-1], "store": "jumbo", "title": (x.get("title") or "").strip(),
                         "image": x.get("fullImageUrl"), "time": x.get("time") or x.get("cookingTime"), "servings": x.get("numberOfPersons"),
                         "course": x.get("course"), "rating": ((x.get("rating") or {}).get("value") or None)})
     facets = []
@@ -3064,7 +3064,7 @@ async def _dirk_all_recipes() -> list:
     for x in found.values():
         names = lambda k: [t.get("name") for t in x.get(k) or [] if isinstance(t, dict) and t.get("name")]
         img = x.get("filename")
-        out.append({"id": "dirk:" + _slug(x["title"]), "store": "dirk", "title": x["title"].strip(),
+        out.append({"id": "dirk-" + _slug(x["title"]), "store": "dirk", "title": x["title"].strip(),
                     "image": (DIRK_IMAGE_BASE + img.lstrip("/")) if img else None, "time": _iso_minutes(x.get("preparationTime")),
                     "servings": None, "course": (names("courses") or [None])[0], "rating": None,
                     "_courses": names("courses"), "_kitchens": names("kitchens"), "_tags": names("tags"),
@@ -3214,7 +3214,10 @@ async def _recipe_detail(rid: str) -> dict:
     hit = _rc_get(("detail", rid), 6 * 3600)
     if hit is not None:
         return hit
-    store, _, key = rid.partition(":")
+    # id = "<winkel>-<sleutel>" (een ":" zou de app als link-schema zien)
+    m = re.match(r"(ah|jumbo|dirk)[-:](.+)$", rid or "")
+    store, key = (m.group(1), m.group(2)) if m else ("", "")
+    rid = f"{store}-{key}"
     if store == "ah" and key.isdigit():
         d = await _ah_gql("""query($id:Int!){recipe(id:$id){id title description cookTime servings{number} images{url width} courses
             tags{key value} nutritions{energy{value unit}} ingredients{text quantity quantityUnit{singular} name{singular}} preparation{steps}}}""",
