@@ -37,7 +37,7 @@ type FolderPeriod = {
   items: FolderItem[];
 };
 
-type FoldersResponse = { store: string; stores: string[]; periods: FolderPeriod[]; loading: boolean };
+type FoldersResponse = { store: string; stores: string[]; periods: FolderPeriod[]; loading: boolean; extra_folders?: { title: string; url: string }[] };
 
 export default function FoldersScreen() {
   const params = useLocalSearchParams<{ store?: string }>();
@@ -116,8 +116,18 @@ export default function FoldersScreen() {
           </View>
         ) : null}
         {periods.length === 1 && periods[0].key === "current" ? (
-          <Text style={styles.muted}>De folder van volgende week staat er nog niet; die verschijnt zodra {store} hem publiceert.</Text>
+          <Text style={styles.muted}>
+            {(data?.extra_folders ?? []).some((x) => x.title.startsWith("Folder volgende week"))
+              ? `De losse acties van volgende week zet ${store} er later in; de folder zelf kun je hieronder al bekijken.`
+              : `De folder van volgende week staat er nog niet; die verschijnt zodra ${store} hem publiceert.`}
+          </Text>
         ) : null}
+        {(data?.extra_folders ?? []).map((x) => (
+          <Pressable key={x.url} onPress={() => Linking.openURL(x.url)} style={styles.folderLink}>
+            <Icon name="file-document-outline" size={18} color={colors.brandPrimary} />
+            <Text style={styles.folderLinkText}>{x.title}</Text>
+          </Pressable>
+        ))}
         {period?.folder_url ? (
           <Pressable onPress={() => Linking.openURL(period.folder_url!)} style={styles.folderLink}>
             <Icon name="book-open-page-variant-outline" size={18} color={colors.brandPrimary} />

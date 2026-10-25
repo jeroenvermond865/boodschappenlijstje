@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFi
 from fastapi.responses import Response, HTMLResponse, RedirectResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
@@ -2025,6 +2026,7 @@ async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_curr
                         "period": f"{_nice_day(per.get('start'))} t/m {_nice_day(per.get('end'))}" if per.get("start") and per.get("end") else None,
                         "folder_url": per.get("folder_url"), "categories": cats, "items": items})
     return {"store": store, "stores": list(COUPLED_STORES), "periods": periods, "loading": f["at"] is None,
+            "extra_folders": (f.get("extra") or {}).get(store) or [],
             "updated_at": f["at"].isoformat() if f["at"] else None}
 
 
@@ -2930,6 +2932,44 @@ async def _dirk_folder() -> list:
     return out
 
 
+async def _dirk_extra_folders() -> list:
+    # Dirk zet de folder van volgende week en de extra folder alleen als PDF online (de losse acties pas vanaf woensdag)
+    out = []
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        for path, title in (("/folder/volgende-week", "Folder volgende week"), ("/folder/extra-folder", "Extra folder")):
+            try:
+                r = await c.get("https://www.dirk.nl" + path, headers=_PAGE_HEADERS)
+                data = _nuxt_data(r.text)
+            except Exception as e:
+                logger.warning("Dirk %s: %r", path, e)
+                continue
+            files = []
+
+            def walk(x, depth=0):
+                if depth > 30:
+                    return
+                if isinstance(x, dict):
+                    name = x.get("originalName")
+                    if isinstance(name, str) and name.lower().endswith(".pdf"):
+                        url = next((v for v in x.values() if isinstance(v, str) and v.startswith("http") and ".pdf" in v.lower()), None)
+                        url = url or next((v for v in x.values() if isinstance(v, str) and v.startswith("http")), None)
+                        if not url:
+                            logger.info("Dirk PDF zonder link: %s", {k: (v if isinstance(v, (str, int)) else type(v).__name__) for k, v in x.items()})
+                        files.append({"name": name[:-4], "url": url})
+                        return
+                    for v in x.values():
+                        walk(v, depth + 1)
+                elif isinstance(x, list):
+                    for v in x:
+                        walk(v, depth + 1)
+            walk((data or {}).get("data") or data)
+            for fl in files:
+                if fl["url"]:
+                    out.append({"title": title if len(files) == 1 else f"{title} · {fl['name']}", "url": fl["url"]})
+    out.append({"title": "Super Dirck3-folder", "url": "https://www.dirk.nl/meer/over-dirk/super-dirck-3"})
+    return out
+
+
 async def _jumbo_folder() -> list:
     # Jumbo: acties komen mee met de producten (bij import en de dagelijkse update)
     docs = await db.products.find({"jumbo_id": {"$exists": True}, "promo": {"$ne": None}, "deleted_at": None, "is_global": True},
@@ -2974,7 +3014,12 @@ async def _load_folders() -> None:
             for it in per["items"]:
                 for i in it["ids"]:
                     by_id.setdefault((store, i), []).append(it)
-    _folders.update({"at": datetime.now(timezone.utc), "data": data, "by_id": by_id})
+    try:
+        extra = {"Dirk": await _dirk_extra_folders()}
+    except Exception as e:
+        logger.warning("Dirk extra folders mislukt: %r", e)
+        extra = _folders.get("extra") or {}
+    _folders.update({"at": datetime.now(timezone.utc), "data": data, "by_id": by_id, "extra": extra})
     _search_cache.clear()
     logger.info("Folders geladen: %s", {k: [len(p["items"]) for p in v] for k, v in data.items()})
 
@@ -3710,43 +3755,6 @@ async def remove_recipe_favorite(id: str, user: dict = Depends(get_current_user)
     return {"ok": True}
 
 
-async def _selftest2() -> None:
-    # Tijdelijk: folder volgende week en extra folder van Dirk
-    await asyncio.sleep(30)
-    try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            for path in ("/folder/volgende-week", "/folder/extra-folder", "/folder"):
-                r = await c.get("https://www.dirk.nl" + path, headers=_PAGE_HEADERS)
-                srcs = sorted(set(re.findall(r'(?:src|href|data-src)="(https?://[^"]+)"', r.text)))
-                logger.info("Stest dirk %s %s srcs: %s", path, r.status_code, [u for u in srcs if "fileserver" not in u and "fonts" not in u][:40])
-                data = _nuxt_data(r.text)
-                offers, strs = 0, []
-
-                def walk(x, p="", depth=0):
-                    nonlocal offers
-                    if depth > 30:
-                        return
-                    if isinstance(x, dict):
-                        if x.get("offerId"):
-                            offers += 1
-                        for k, v in x.items():
-                            if isinstance(v, str) and re.search(r"(?i)publitas|issuu|embed|viewer|flipbook|\.pdf|iframe", v) and len(v) < 400:
-                                strs.append(f"{p}.{k}={v}")
-                            walk(v, f"{p}.{k}", depth + 1)
-                    elif isinstance(x, list):
-                        for i, v in enumerate(x[:200]):
-                            walk(v, f"{p}[{i}]", depth + 1)
-                walk(data)
-                logger.info("Stest dirk %s offers=%d embeds=%s", path, offers, strs[:30])
-                m = re.findall(r"<iframe[^>]+>", r.text)
-                logger.info("Stest dirk %s iframes=%s", path, m[:5])
-            for path in ("/aanbiedingen?week=volgende", "/aanbiedingen/volgende-week"):
-                r = await c.get("https://www.dirk.nl" + path, headers=_PAGE_HEADERS)
-                logger.info("Stest dirk %s %s len=%d", path, r.status_code, len(r.text))
-    except Exception as e:
-        logger.warning("Stest: %r", e)
-
-
 class RecipeImport(BaseModel):
     id: str
     category: str = "avondeten"
@@ -3947,12 +3955,23 @@ async def home(user: dict = Depends(get_current_user)):
                     asyncio.create_task(run())
                 compare_pending = not hit
     hit = _home_cache.get("inspiration")
-    if hit and time.time() - hit[0] < 600:
-        promos, recipes = hit[1]
-    else:
-        promos, recipes = await _home_inspiration()
-        if promos or recipes:
-            _home_cache["inspiration"] = (time.time(), (promos, recipes))
+    promos, recipes = hit[1] if hit else ([], [])
+    if not hit or time.time() - hit[0] > 600:
+        # Folders en recepten ophalen kan even duren: op de achtergrond, zodat de startpagina meteen verschijnt
+        if "inspiration" not in _compare_running:
+            _compare_running.add("inspiration")
+
+            async def run_insp():
+                try:
+                    p, r = await _home_inspiration()
+                    if p or r:
+                        _home_cache["inspiration"] = (time.time(), (p, r))
+                except Exception as e:
+                    logger.warning("Inspiratie: %r", e)
+                finally:
+                    _compare_running.discard("inspiration")
+            asyncio.create_task(run_insp())
+        compare_pending = compare_pending or not hit
     todo = {}
     if "review_submissions" in perms:
         todo["dishes"] = await db.submissions.count_documents({"status": "pending"})
@@ -5549,6 +5568,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)  # js-bundel en icoon-lettertype sneller binnen
 
 
 # ---------------------------------------------------------------------------
@@ -5856,7 +5876,6 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
-    asyncio.create_task(_selftest2())
 
 
 async def _daily_refresh_loop():
@@ -5892,8 +5911,20 @@ async def serve_web(full_path: str):
         raise HTTPException(status_code=404, detail="Niet gevonden")
     target = (WEB_DIR / full_path).resolve()
     if full_path and target.is_file() and WEB_DIR in target.parents:
+        # Bestanden met een hash in de naam veranderen nooit: laat de browser ze bewaren, dan start de app een stuk sneller
+        if full_path.startswith(("_expo/static/", "assets/")) or re.search(r"\.[0-9a-f]{16,}\.", full_path):
+            return FileResponse(target, headers={"Cache-Control": "public, max-age=31536000, immutable"})
         return FileResponse(target)
-    return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+    return HTMLResponse(_index_html(), headers={"Cache-Control": "no-cache"})
+
+
+@functools.lru_cache(maxsize=1)
+def _index_html() -> str:
+    # Het icoon-lettertype meteen laten ophalen, anders zie je even lege vakjes in plaats van icoontjes
+    html = (WEB_DIR / "index.html").read_text()
+    links = "".join(f'<link rel="preload" href="/{f.relative_to(WEB_DIR).as_posix()}" as="font" type="font/ttf" crossorigin>'
+                    for f in WEB_DIR.glob("assets/**/MaterialDesignIcons*.ttf"))
+    return html.replace("</head>", links + "</head>", 1) if links else html
 
 
 @app.on_event("shutdown")
