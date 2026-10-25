@@ -53,12 +53,16 @@ export default function DirkImportScreen() {
   const importLine = importStatus?.running
     ? `Bezig: ${importStatus.status ?? ""} · ${importStatus.found ?? 0} gevonden · ${(importStatus.added ?? 0) + (importStatus.added_ah ?? 0) + (importStatus.added_jumbo ?? 0)} toegevoegd. Laat dit scherm open.`
     : importStatus?.status === "klaar"
-      ? `Klaar: ${importStatus.added ?? 0} van Dirk, ${importStatus.added_ah ?? 0} van Albert Heijn en ${importStatus.added_jumbo ?? 0} van Jumbo toegevoegd.${importStatus.skipped ? ` ${importStatus.skipped} Dirk-producten zijn niet leverbaar en overgeslagen.` : ""}`
+      ? `Klaar: ${[
+          importStatus.added ? `${importStatus.added} van Dirk` : "",
+          importStatus.added_ah ? `${importStatus.added_ah} van Albert Heijn` : "",
+          importStatus.added_jumbo ? `${importStatus.added_jumbo} van Jumbo` : "",
+        ].filter(Boolean).join(", ") || "geen nieuwe producten"} toegevoegd.${importStatus.skipped ? ` ${importStatus.skipped} Dirk-producten zijn niet leverbaar en overgeslagen.` : ""}`
       : importStatus?.status === "onderbroken"
         ? "De vorige import is onderbroken. Start hem opnieuw; wat er al is, wordt overgeslagen."
         : importStatus?.status === "mislukt"
           ? `Mislukt: ${importStatus.error ?? "onbekende fout"}`
-          : "Haalt het hele assortiment van Dirk, Albert Heijn en Jumbo binnen. Dit kan een half uur duren.";
+          : `Haalt het hele assortiment van ${store} binnen. Dit kan een kwartier duren.`;
 
   const runSearch = async () => {
     if (!q.trim()) return;
@@ -145,12 +149,12 @@ export default function DirkImportScreen() {
 
         <View style={styles.refreshCard}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.refreshTitle}>Alle producten importeren</Text>
+            <Text style={styles.refreshTitle}>Alle producten van {store} importeren</Text>
             <Text style={styles.refreshSub}>{importLine}</Text>
           </View>
           <Pressable
             testID="import-all"
-            onPress={() => importAllMut.mutate(undefined)}
+            onPress={() => importAllMut.mutate(store === "Jumbo" ? "jumbo" : store === "Albert Heijn" ? "ah" : "dirk")}
             disabled={importAllMut.isPending || !!wasRunning}
             style={styles.refreshBtn}
           >
@@ -158,14 +162,6 @@ export default function DirkImportScreen() {
             <Text style={styles.refreshBtnText}>Start</Text>
           </Pressable>
         </View>
-        <Pressable
-          testID="import-only-store"
-          onPress={() => importAllMut.mutate(store === "Jumbo" ? "jumbo" : store === "Albert Heijn" ? "ah" : "dirk")}
-          disabled={importAllMut.isPending || !!wasRunning}
-          style={styles.storeChip}
-        >
-          <Text style={styles.storeChipText}>Alleen {store} importeren</Text>
-        </Pressable>
 
         <Text style={styles.hint}>Zoek een product bij {store} en voeg het toe aan de algemene productenlijst. Prijzen worden daarna elke dag automatisch bijgewerkt.</Text>
 
