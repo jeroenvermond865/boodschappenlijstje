@@ -3436,14 +3436,21 @@ _STORE_WORDS = {"ah", "jumbo", "dirk", "1 de beste", "excellent", "biologisch"}
 
 def _food_penalty(d: dict, rank: int, words: list) -> float:
     # Een recept vraagt om eten: "citroen" is geen afwasmiddel, "aardbeien" geen snoep, "ui" liever uien dan bosui of gehakt met ui
-    name = d["_norm"]
-    brand = _norm_text(d.get("brand") or "")
-    if brand and name.startswith(brand + " "):
-        name = name[len(brand) + 1:]
-    for sw in _STORE_WORDS:
-        if name.startswith(sw + " "):
-            name = name[len(sw) + 1:]
-    nw = [w for w in name.split() if not re.fullmatch(r"[\d.,%]+|\d+\w{0,3}|x|st|stuks?|kg|g|gram|ml|cl|l|liter", w)] or name.split()
+    pre = d.get("_fp")
+    if pre is None or pre[0] != d["_norm"]:
+        # Eén keer per product uitrekenen (zoeken loopt over duizenden producten)
+        name = d["_norm"]
+        brand = _norm_text(d.get("brand") or "")
+        if brand and name.startswith(brand + " "):
+            name = name[len(brand) + 1:]
+        for sw in _STORE_WORDS:
+            if name.startswith(sw + " "):
+                name = name[len(sw) + 1:]
+        words0 = [w for w in name.split() if not re.fullmatch(r"[\d.,%]+|\d+\w{0,3}|x|st|stuks?|kg|g|gram|ml|cl|l|liter", w)] or name.split()
+        nonfood = bool(d.get("aisle") in _NONFOOD or _NONFOOD_RE.search(d.get("aisle") or "") or _NONFOOD_RE.search(name))
+        pre = (d["_norm"], words0, nonfood, _norm_text(d.get("subcategory") or "").split())
+        d["_fp"] = pre
+    _, nw, nonfood, subw = pre
     qstems = {st for q in words for st in _stems(q)}
 
     def related(w):
@@ -3460,8 +3467,7 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
             elif w.endswith(q) or any(w.endswith(st) for st in _stems(q) if len(st) >= 3):
                 v = 3 + k + (1 if len(w) - len(q) > 6 else 0)
             elif w.startswith(q):
-                v = 3.5 + k  # kipfilet, appelmoes: vaak precies wat je zoekt
-
+                v = 2.5 + k  # kipfilet, appelmoes: vaak precies wat je zoekt
             else:
                 continue
             best = v if best is None else min(best, v)
@@ -3471,10 +3477,9 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     pos = head if head is not None else min((p for p in map(place, words) if p is not None), default=11) + 3
     if head is None:
         # Soort van de winkel telt ook: "Bakker van der Akker Rond wit heel" is gewoon brood
-        sub = _norm_text(d.get("subcategory") or "").split()
-        if any(w == words[-1] or w in _stems(words[-1]) or words[-1] in _stems(w) for w in sub):
+        if any(w == words[-1] or w in _stems(words[-1]) or words[-1] in _stems(w) for w in subw):
             pos = min(pos, 3.5)
-    elif any(words[-1] in w for w in _norm_text(d.get("subcategory") or "").split()):
+    elif any(words[-1] in w for w in subw):
         pos -= 0.5  # soort past ook: kipfilet bij kip, broden bij brood
     pen = min(rank, 100) * 0.01 + pos
     # Een zelfstandig naamwoord ná het gezochte woord maakt er iets anders van ("bloemen honing", "citroen kogels")
@@ -3495,9 +3500,11 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
 
     def processed(w, x):
         return x in w if len(x) > 4 else (w == x or w.startswith(x) and len(w) <= len(x) + 3 or w.endswith(x))
-    if any(processed(w, x) and not related(w) and not any(x in q for q in qstems) for w in nw for x in _PROCESSED):
+    # Ook in samenstellingen: "pastasaus" is geen pasta, "appelsap" geen appel
+    rests = [w if not related(w) else w.replace(words[-1], " ") for w in nw]
+    if any(processed(r, x) and not any(x in q for q in qstems) for rest in rests for r in rest.split() for x in _PROCESSED):
         pen += 5
-    if d.get("aisle") in _NONFOOD or _NONFOOD_RE.search(d.get("aisle") or "") or _NONFOOD_RE.search(name):
+    if nonfood:
         pen += 30
     # "witte wijn" is geen rode wijn
     colors = {"wit": ("witte", "wit"), "rood": ("rode", "rood"), "groen": ("groene", "groen"), "zwart": ("zwarte", "zwart")}
