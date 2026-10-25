@@ -1986,23 +1986,6 @@ def _dirk_aisle(department: str, webgroup: str, name: str = "") -> str:
     return "Overig"
 
 
-async def _probe_jumbo() -> None:
-    # Tijdelijk: uitzoeken welk Jumbo-adres nog werkt (v17 van de mobiele API geeft 404)
-    try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            for v in range(18, 26):
-                r = await c.get(f"https://mobileapi.jumbo.com/v{v}/search", params={"q": "melk", "offset": 0, "limit": 2}, headers=JUMBO_HEADERS)
-                logger.info("Jumbo probe v%d -> %s %s", v, r.status_code, r.text[:200].replace("\n", " "))
-            gql = """query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { count products { id title brand category image link packSizeDisplay prices: price { price promoPrice } } } }"""
-            H = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36",
-                 "apollographql-client-name": "JUMBO_WEB-search", "apollographql-client-version": "master-v1", "x-source": "JUMBO_WEB-search", "Origin": "https://www.jumbo.com"}
-            r = await c.post("https://www.jumbo.com/api/graphql", headers=H, json={"operationName": "SearchProducts", "query": gql,
-                             "variables": {"input": {"searchType": "keyword", "searchTerms": "melk", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=melk", "previousUrl": "", "bloomreachCookieId": ""}}})
-            logger.info("Jumbo probe graphql -> %s %s", r.status_code, r.text[:1500].replace("\n", " "))
-    except Exception as e:
-        logger.warning("Jumbo probe mislukt: %s", e)
-
-
 async def _dirk_post(client, query, variables):
     r = await client.post(DIRK_GQL, json={"query": query, "variables": variables})
     if r.status_code >= 500:
@@ -2150,56 +2133,69 @@ async def _ah_search(term: str) -> list:
     return [n for n in (_ah_normalize(p) for p in prods) if n]
 
 
-# --- Jumbo (publieke mobiele API) ---
-JUMBO_API = "https://mobileapi.jumbo.com/v17"
-JUMBO_HEADERS = {"User-Agent": "Jumbo/10.4.0 (Android)", "Accept": "application/json"}
-_jumbo_sample_logged = False
+# --- Jumbo (GraphQL van jumbo.com; de oude mobiele API bestaat niet meer) ---
+JUMBO_GQL = "https://www.jumbo.com/api/graphql"
+JUMBO_HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36",
+    "apollographql-client-name": "JUMBO_WEB-search",
+    "apollographql-client-version": "master-v1",
+    "x-source": "JUMBO_WEB-search",
+    "Origin": "https://www.jumbo.com",
+}
+JUMBO_SEARCH_QUERY = """query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) {
+  count products { id title brand category image packSizeDisplay prices: price { price promoPrice } } } }"""
 
 
 def _jumbo_normalize(p: dict) -> Optional[dict]:
-    global _jumbo_sample_logged
-    if not _jumbo_sample_logged:
-        _jumbo_sample_logged = True
-        logger.info("Jumbo voorbeeldproduct: %s", str(p)[:800])
     name = (p.get("title") or "").strip()
     if not name or not p.get("id"):
         return None
     prices = p.get("prices") or {}
-    promo = (prices.get("promotionalPrice") or {}).get("amount")
-    normal = (prices.get("price") or {}).get("amount")
+    normal = prices.get("price")
+    promo = prices.get("promoPrice")
     cents = promo or normal or 0
-    imgs = [i for i in ((p.get("imageInfo") or {}).get("primaryView") or []) if isinstance(i, dict) and i.get("url")]
-    imgs.sort(key=lambda i: abs((i.get("width") or 200) - 200))
-    main = p.get("topLevelCategory") or ""
-    sub = p.get("category") or p.get("subCategory") or ""
-    if isinstance(main, dict):
-        main = main.get("title") or main.get("name") or ""
-    if isinstance(sub, dict):
-        sub = sub.get("title") or sub.get("name") or ""
     return {
-        "image": imgs[0]["url"] if imgs else None,
+        "image": p.get("image") or None,
         "jumbo_id": str(p.get("id")),
         "name": name[:80],
         "brand": p.get("brand") or None,
-        "quantity": p.get("quantity") or None,
+        "quantity": p.get("packSizeDisplay") or None,
         "price": round(float(cents) / 100, 2) if cents else 0,
         "on_offer": bool(promo and normal and promo < normal),
-        "aisle": _dirk_aisle(str(main), str(sub), name),
+        "aisle": _dirk_aisle(p.get("category") or "", "", name),
     }
 
 
-async def _jumbo_search_page(client, term: str, offset: int = 0, limit: int = 30) -> tuple:
-    r = await client.get(f"{JUMBO_API}/search", params={"q": term, "offset": offset, "limit": limit})
+async def _jumbo_search_page(client, term: str, offset: int = 0) -> tuple:
+    variables = {"input": {"searchType": "keyword", "searchTerms": term, "friendlyUrl": "", "offSet": offset,
+                           "currentUrl": f"/producten/?searchType=keyword&searchTerms={term}", "previousUrl": "", "bloomreachCookieId": ""}}
+    r = await client.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": JUMBO_SEARCH_QUERY, "variables": variables})
     if r.status_code >= 400:
         raise httpx.HTTPStatusError(f"Jumbo {r.status_code}: {r.text[:200]}", request=r.request, response=r)
-    data = (r.json() or {}).get("products") or {}
-    return data.get("data") or [], int(data.get("total") or 0)
+    body = r.json() or {}
+    data = (body.get("data") or {}).get("searchProducts") or {}
+    if not data and body.get("errors"):
+        raise RuntimeError(f"Jumbo: {str(body.get('errors'))[:200]}")
+    return data.get("products") or [], int(data.get("count") or 0)
+
+
+async def _jumbo_sweep(client, term: str, max_items: int = 600):
+    offset = 0
+    while offset < max_items:
+        prods, total = await _jumbo_search_page(client, term, offset)
+        if not prods:
+            break
+        yield prods
+        offset += len(prods)
+        if offset >= total:
+            break
 
 
 async def _jumbo_search(term: str) -> list:
     async with httpx.AsyncClient(timeout=15, headers=JUMBO_HEADERS) as c:
-        prods, _ = await _jumbo_search_page(c, term, 0, 15)
-    return [n for n in (_jumbo_normalize(p) for p in prods) if n]
+        prods, _ = await _jumbo_search_page(c, term, 0)
+    return [n for n in (_jumbo_normalize(p) for p in prods[:15]) if n]
 
 
 @api_router.get("/stores/search")
@@ -2388,25 +2384,19 @@ async def _import_all_jumbo(mults: dict) -> int:
     async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
         for n, term in enumerate(DIRK_ALL_TERMS, 1):
             docs = []
-            offset = 0
-            while offset < 600:
-                try:
-                    prods, total = await _jumbo_search_page(c, term, offset, 30)
-                except Exception as e:
-                    logger.warning("Jumbo zoekterm %s mislukt: %s", term, e)
-                    if n == 1:
-                        raise
-                    break
-                for p in prods:
-                    nrm = _jumbo_normalize(p)
-                    if not nrm or nrm["jumbo_id"] in existing:
-                        continue
-                    existing.add(nrm["jumbo_id"])
-                    nrm["source_id"] = nrm["jumbo_id"]
-                    docs.append(_new_store_product("jumbo_id", nrm, "Jumbo", mults))
-                offset += 30
-                if len(prods) < 30 or offset >= total:
-                    break
+            try:
+                async for prods in _jumbo_sweep(c, term):
+                    for p in prods:
+                        nrm = _jumbo_normalize(p)
+                        if not nrm or nrm["jumbo_id"] in existing:
+                            continue
+                        existing.add(nrm["jumbo_id"])
+                        nrm["source_id"] = nrm["jumbo_id"]
+                        docs.append(_new_store_product("jumbo_id", nrm, "Jumbo", mults))
+            except Exception as e:
+                logger.warning("Jumbo zoekterm %s mislukt: %s", term, e)
+                if n == 1 and not docs:
+                    raise
             if docs:
                 await db.products.insert_many(docs)
                 added += len(docs)
@@ -2590,23 +2580,25 @@ async def _refresh_ah_prices(mults: dict) -> int:
 
 
 async def _refresh_jumbo_prices(mults: dict) -> int:
-    prods = await db.products.find({"jumbo_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(20000)
+    # Jumbo heeft geen losse productopvraag meer: dezelfde zoektermen opnieuw doorlopen
+    prods = {str(p["jumbo_id"]): p for p in await db.products.find({"jumbo_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(30000)}
     if not prods:
         return 0
-    updated = 0
+    done: set = set()
     async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
-        for p in prods:
+        for term in DIRK_ALL_TERMS:
             try:
-                r = await c.get(f"{JUMBO_API}/products/{p['jumbo_id']}")
-                data = ((r.json() or {}).get("product") or {}).get("data") or {}
-            except Exception:
-                continue
-            n = _jumbo_normalize(data) if data else None
-            if not n or not n["price"]:
-                continue
-            await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n["price"], n["aisle"], mults, n.get("image"))})
-            updated += 1
-    return updated
+                async for page in _jumbo_sweep(c, term):
+                    for raw in page:
+                        n = _jumbo_normalize(raw)
+                        if not n or not n["price"] or n["jumbo_id"] in done or n["jumbo_id"] not in prods:
+                            continue
+                        done.add(n["jumbo_id"])
+                        p = prods[n["jumbo_id"]]
+                        await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n["price"], n["aisle"], mults, n.get("image"))})
+            except Exception as e:
+                logger.warning("Jumbo-prijzen %s mislukt: %s", term, e)
+    return len(done)
 
 
 async def _refresh_dirk_prices_all() -> dict:
@@ -3453,7 +3445,6 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
-    asyncio.create_task(_probe_jumbo())
 
 
 async def _daily_refresh_loop():
