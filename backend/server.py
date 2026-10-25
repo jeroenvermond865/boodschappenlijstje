@@ -6047,7 +6047,7 @@ async def _mark_assortment(seen: list, missing: list) -> None:
 
 
 async def _refresh_dirk_prices(mults: dict) -> int:
-    prods = await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(None)
+    prods = await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0, "product_id": 1, "dirk_id": 1, "ah_id": 1, "jumbo_id": 1, "aisle": 1}).to_list(None)
     if not prods:
         return 0
     # dirk_id staat als tekst opgeslagen; Dirk wil getallen
@@ -6089,7 +6089,7 @@ async def _refresh_dirk_prices(mults: dict) -> int:
 
 
 async def _refresh_ah_prices(mults: dict) -> int:
-    prods = await db.products.find({"ah_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(None)
+    prods = await db.products.find({"ah_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0, "product_id": 1, "dirk_id": 1, "ah_id": 1, "jumbo_id": 1, "aisle": 1}).to_list(None)
     if not prods:
         return 0
     updated = 0
@@ -6125,7 +6125,7 @@ async def _refresh_ah_prices(mults: dict) -> int:
 
 async def _refresh_jumbo_prices(mults: dict) -> int:
     # Jumbo heeft geen losse productopvraag meer: dezelfde zoektermen opnieuw doorlopen
-    prods = {str(p["jumbo_id"]): p for p in await db.products.find({"jumbo_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(None)}
+    prods = {str(p["jumbo_id"]): p for p in await db.products.find({"jumbo_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0, "product_id": 1, "dirk_id": 1, "ah_id": 1, "jumbo_id": 1, "aisle": 1}).to_list(None)}
     if not prods:
         return 0
     done: set = set()
@@ -6160,7 +6160,6 @@ async def _refresh_dirk_prices_all() -> dict:
             updated += await fn(mults)
         except Exception as e:
             logger.warning("Refresh %s failed: %s", fn.__name__, e)
-        _invalidate_products()
         if fn is _refresh_jumbo_prices:
             asyncio.create_task(_load_folders())  # Jumbo-acties komen mee met de producten
     await db.settings.update_one({"key": "app"}, {"$set": {"dirk_refreshed_at": now_utc()}}, upsert=True)
@@ -7132,6 +7131,7 @@ async def _import_jumbo_catalog(mults: dict) -> int:
 
 
 _catalog_busy = False
+_heavy_lock = asyncio.Lock()  # prijzen verversen en de catalogus nooit tegelijk: scheelt geheugen en blokkades
 
 
 async def _catalog_loop():
@@ -7148,20 +7148,21 @@ async def _catalog_loop():
             last = await db.meta.find_one({"key": "catalog_import"}) or {}
             at = last.get("done_at")
             if not at or (datetime.now(timezone.utc) - ensure_aware(at)).total_seconds() > 7 * 86400:
-                mults = await _store_mults()
                 ok = True
-                if not last.get("ah_done_at") or (at and ensure_aware(last["ah_done_at"]) <= ensure_aware(at)):
+                async with _heavy_lock:
+                    mults = await _store_mults()
+                    if not last.get("ah_done_at") or (at and ensure_aware(last["ah_done_at"]) <= ensure_aware(at)):
+                        try:
+                            await _import_ah_catalog(mults)
+                            await db.meta.update_one({"key": "catalog_import"}, {"$set": {"key": "catalog_import", "ah_done_at": now_utc()}}, upsert=True)
+                        except Exception as e:
+                            ok = False
+                            logger.warning("AH-catalogus mislukt: %r", e)
                     try:
-                        await _import_ah_catalog(mults)
-                        await db.meta.update_one({"key": "catalog_import"}, {"$set": {"key": "catalog_import", "ah_done_at": now_utc()}}, upsert=True)
+                        await _import_jumbo_catalog(mults)
                     except Exception as e:
                         ok = False
-                        logger.warning("AH-catalogus mislukt: %r", e)
-                try:
-                    await _import_jumbo_catalog(mults)
-                except Exception as e:
-                    ok = False
-                    logger.warning("Jumbo-catalogus niet af: %r", e)
+                        logger.warning("Jumbo-catalogus niet af: %r", e)
                 if ok:
                     await db.meta.update_one({"key": "catalog_import"}, {"$set": {"done_at": now_utc()}})
                 else:
@@ -7174,17 +7175,22 @@ async def _catalog_loop():
 
 
 async def _daily_refresh_loop():
-    # Run shortly after boot, then every 24h
+    # Eens per dag alle prijzen bijwerken. Niet bij elke herstart opnieuw: dat kost veel geheugen en verzoeken,
+    # dus we kijken wanneer de laatste ronde was.
     await asyncio.sleep(60)
     while True:
         try:
-            res = await _refresh_dirk_prices_all()
-            logger.info("Daily Dirk refresh: %s", res)
-            _invalidate_products()
-            await _purge_expired_trash()
+            doc = await db.settings.find_one({"key": "app"}, {"_id": 0, "dirk_refreshed_at": 1}) or {}
+            last = doc.get("dirk_refreshed_at")
+            if not last or (datetime.now(timezone.utc) - ensure_aware(last)).total_seconds() > 22 * 3600:
+                async with _heavy_lock:
+                    res = await _refresh_dirk_prices_all()
+                logger.info("Daily Dirk refresh: %s", res)
+                _invalidate_products()
+                await _purge_expired_trash()
         except Exception as e:
             logger.warning("Daily Dirk refresh error: %s", e)
-        await asyncio.sleep(24 * 60 * 60)
+        await asyncio.sleep(3600)
 
 
 # ---------------------------------------------------------------------------
