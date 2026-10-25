@@ -4015,20 +4015,6 @@ async def remove_recipe_favorite(id: str, user: dict = Depends(get_current_user)
     return {"ok": True}
 
 
-async def _selftest3() -> None:
-    # Tijdelijk: controle Dirk-bladerfolders en kruiden bij AH
-    await asyncio.sleep(70)
-    try:
-        ex = await _dirk_extra_folders()
-        logger.info("Stest10 %s", [(x["key"], x["start"], x["end"], len(x["pages"]), x["pages"][:1]) for x in ex])
-        if ex and ex[0]["pages"]:
-            async with httpx.AsyncClient(timeout=20) as c:
-                rr = await c.get(ex[0]["pages"][0])
-                logger.info("Stest10 img %s %s %d", rr.status_code, rr.headers.get("content-type"), len(rr.content))
-    except Exception as e:
-        logger.warning("Stest10: %r", e)
-
-
 async def _import_extra_terms() -> None:
     # Eenmalig de nieuwe zoektermen bij AH ophalen (de volledige import doet ze daarna vanzelf mee)
     await asyncio.sleep(90)
@@ -6171,7 +6157,6 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
-    asyncio.create_task(_selftest3())
     asyncio.create_task(_import_extra_terms())
 
 
