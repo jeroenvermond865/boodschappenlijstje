@@ -1632,6 +1632,8 @@ def _invalidate_products() -> None:
 def _prep_product(d: dict, known_brands: list) -> None:
     d["_norm"] = _norm_text(d["name"])
     d["_src"] = product_source(d)
+    extra = _norm_text(" ".join(x for x in (d.get("brand"), d.get("subcategory")) if x))
+    d["_hay"] = f"{d['_norm']} {extra}" if extra else d["_norm"]
     if not (d.get("brand") or "").strip():
         # Geen merk van de winkel: merk afleiden uit het begin van de naam ("AH Halfvolle melk" -> AH)
         for b, nb in known_brands:
@@ -1645,7 +1647,9 @@ def _prep_product(d: dict, known_brands: list) -> None:
 
 async def _load_products() -> None:
     try:
-        docs = await db.products.find({"deleted_at": None, "is_global": True}, {"_id": 0}).to_list(None)
+        cutoff = now_utc() - timedelta(days=ASSORTMENT_GRACE_DAYS)
+        docs = await db.products.find({"deleted_at": None, "is_global": True,
+                                       "$or": [{"missing_since": None}, {"missing_since": {"$gt": cutoff}}]}, {"_id": 0}).to_list(None)
         counts: Dict[str, int] = {}
         for d in docs:
             b = (d.get("brand") or "").strip()
@@ -1740,12 +1744,15 @@ def _search_products(docs: list, q: str) -> list:
     scored = []
     for d in docs:
         name = d["_norm"]
-        if not all(t in name for t in terms):
+        # Ook zoeken in merk en soort: "heel brood" vindt zo "Bakker van der Akker Rond wit heel" (soort: Brood)
+        hay = d.get("_hay") or name
+        if not all(t in hay for t in terms):
             continue
         words = name.split()
         total = 0
         for t in terms:
-            total += _term_score(name, words, t)
+            sc = _term_score(name, words, t)
+            total += sc if sc >= 0 else 7
         scored.append((total, len(name), name, d))
     scored.sort(key=lambda x: (x[0], x[1], x[2]))
     return [x[3] for x in scored]
@@ -2900,42 +2907,15 @@ def _promo_public(doc: dict, price: float) -> tuple:
     return now_p, next_p
 
 
-async def _probe_dirk_brood() -> None:
-    # Tijdelijk: waarom ontbreekt Dirk-brood?
-    import json as _json
-    await asyncio.sleep(30)
-    try:
-        async with httpx.AsyncClient(timeout=30, headers=DIRK_HEADERS, follow_redirects=True) as c:
-            for term in ("brood", "heel brood", "volkoren brood", "wit brood", "bruin brood"):
-                ids = await _dirk_search_ids(c, term, limit=None)
-                have = {str(p["dirk_id"]) async for p in db.products.find({"dirk_id": {"$in": [str(i) for i in ids]}}, {"_id": 0, "dirk_id": 1})}
-                prods = await _dirk_fetch_products(c, ids[:25])
-                logger.info("Dirkbrood %s: %d gevonden, %d in app; eerste: %s", term, len(ids), len(have),
-                            [((p.get("productInformation") or {}).get("headerText"), p.get("normalPrice"), str(p.get("productId")) in have) for p in prods[:12]])
-            for url in ("https://www.dirk.nl/boodschappen/brood-beleg-koek/brood", "https://www.dirk.nl/boodschappen/brood-beleg-koek"):
-                r = await c.get(url, headers=_PAGE_HEADERS)
-                d = _nuxt_data(r.text)
-                pids = set()
-                def walk(x, depth=0):
-                    if depth > 40:
-                        return
-                    if isinstance(x, dict):
-                        if isinstance(x.get("productId"), int):
-                            pids.add(x["productId"])
-                        for v in x.values():
-                            walk(v, depth + 1)
-                    elif isinstance(x, list):
-                        for v in x:
-                            walk(v, depth + 1)
-                walk(d)
-                have = {str(p["dirk_id"]) async for p in db.products.find({"dirk_id": {"$in": [str(i) for i in pids]}}, {"_id": 0, "dirk_id": 1})}
-                links = sorted(set(re.findall(r'href="(/boodschappen/[a-z0-9\-]+/[a-z0-9\-]+)"', r.text)))
-                logger.info("Dirkbrood pagina %s %s: %d producten, %d in app, %d sublinks %s", url, r.status_code, len(pids), len(have), len(links), links[:40])
-            n = await db.products.count_documents({"dirk_id": {"$exists": True}, "deleted_at": None, "name": {"$regex": "brood", "$options": "i"}})
-            ex = await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "name": {"$regex": "brood", "$options": "i"}}, {"_id": 0, "name": 1}).to_list(30)
-            logger.info("Dirkbrood in app: %d, bv %s", n, [e["name"] for e in ex])
-    except Exception as e:
-        logger.warning("Dirkbrood mislukt: %r", e)
+async def _full_import_once() -> None:
+    # Eenmalig op verzoek: alle winkels opnieuw doorlopen en ontbrekende producten toevoegen
+    await asyncio.sleep(90)
+    if await db.settings.find_one({"key": "full_import_2026_10_25"}):
+        return
+    await db.settings.update_one({"key": "full_import_2026_10_25"}, {"$set": {"started_at": now_utc()}}, upsert=True)
+    logger.info("Volledige import gestart (eenmalig)")
+    await _import_all_dirk(with_others=True)
+    logger.info("Volledige import klaar")
 
 
 async def _dirk_post(client, query, variables):
@@ -3381,6 +3361,45 @@ async def _import_all_jumbo(mults: dict) -> int:
     return added
 
 
+async def _dirk_category_ids() -> list:
+    # Alle productnummers van de categoriepagina's van dirk.nl; vangt wat zoektermen missen
+    found: list = []
+    seen: set = set()
+
+    def collect(x, depth=0):
+        if depth > 40:
+            return
+        if isinstance(x, dict):
+            if isinstance(x.get("productId"), int) and x["productId"] not in seen:
+                seen.add(x["productId"])
+                found.append(x["productId"])
+            for v in x.values():
+                collect(v, depth + 1)
+        elif isinstance(x, list):
+            for v in x:
+                collect(v, depth + 1)
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+        r = await c.get("https://www.dirk.nl/boodschappen", headers=_PAGE_HEADERS)
+        depts = sorted(set(re.findall(r'href="(/boodschappen/[a-z0-9\-]+)"', r.text)))
+        subs: set = set()
+        for d in depts:
+            try:
+                r = await c.get("https://www.dirk.nl" + d, headers=_PAGE_HEADERS)
+            except Exception:
+                continue
+            subs.update(re.findall(r'href="(%s/[a-z0-9\-]+)"' % re.escape(d), r.text))
+            collect(_nuxt_data(r.text))
+        for sub in sorted(subs):
+            try:
+                r = await c.get("https://www.dirk.nl" + sub, headers=_PAGE_HEADERS)
+                collect(_nuxt_data(r.text))
+            except Exception:
+                continue
+            await asyncio.sleep(0.2)
+    logger.info("Dirk-categorieën: %d afdelingen, %d subcategorieën, %d producten", len(depts), len(subs), len(found))
+    return found
+
+
 async def _import_all_dirk(with_others: bool = True) -> None:
     global _dirk_import_running
     _dirk_import_running = True
@@ -3400,6 +3419,14 @@ async def _import_all_dirk(with_others: bool = True) -> None:
                     logger.warning("Dirk zoekterm %s mislukt: %s", term, e)
                 if n % 10 == 0:
                     await _set_import_status(found=len(ids))
+            try:
+                for pid in await _dirk_category_ids():
+                    if pid not in seen:
+                        seen.add(pid)
+                        ids.append(pid)
+            except Exception as e:
+                logger.warning("Dirk-categorieën doorlopen mislukt: %s", e)
+            await _set_import_status(found=len(ids))
             existing = {str(p["dirk_id"]) async for p in db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None}, {"_id": 0, "dirk_id": 1})}
             todo = [pid for pid in ids if str(pid) not in existing]
             await _set_import_status(status="Dirk importeren", found=len(ids), todo=len(todo))
@@ -3660,13 +3687,29 @@ def _apply_refresh(p: dict, store: str, n: dict, mults: dict) -> dict:
     return out
 
 
+ASSORTMENT_GRACE_DAYS = 2
+
+
+async def _mark_assortment(seen: list, missing: list) -> None:
+    # Producten die de winkel niet meer kent krijgen een datum; na een paar dagen verdwijnen ze uit de app.
+    # Komt een product terug, dan staat het er gewoon weer.
+    if seen:
+        for i in range(0, len(seen), 500):
+            await db.products.update_many({"product_id": {"$in": seen[i:i + 500]}, "missing_since": {"$ne": None}}, {"$unset": {"missing_since": ""}})
+    if missing:
+        for i in range(0, len(missing), 500):
+            await db.products.update_many({"product_id": {"$in": missing[i:i + 500]}, "missing_since": None}, {"$set": {"missing_since": now_utc()}})
+        logger.info("Niet meer in assortiment (voorlopig): %d producten", len(missing))
+
+
 async def _refresh_dirk_prices(mults: dict) -> int:
-    prods = await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(10000)
+    prods = await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(None)
     if not prods:
         return 0
     # dirk_id staat als tekst opgeslagen; Dirk wil getallen
     ids = [int(p["dirk_id"]) for p in prods if str(p["dirk_id"]).isdigit()]
     fetched = {}
+    gone: set = set()
     async with httpx.AsyncClient(timeout=30, headers=DIRK_HEADERS) as c:
         for i in range(0, len(ids), 25):
             try:
@@ -3678,41 +3721,67 @@ async def _refresh_dirk_prices(mults: dict) -> int:
                 n = _dirk_normalize(p)
                 if n:
                     fetched[str(n["dirk_id"])] = n
+            if batch:
+                # Ontbreekt er een product, dan los nakijken voordat we het als verdwenen zien
+                for pid in ids[i:i + 25]:
+                    if str(pid) not in fetched:
+                        one = await _dirk_fetch_single(c, pid)
+                        n = _dirk_normalize(one) if one else None
+                        if n:
+                            fetched[str(pid)] = n
+                        else:
+                            gone.add(str(pid))
     updated = 0
+    seen = []
     for p in prods:
         n = fetched.get(str(p["dirk_id"]))
         if not n or not n["price"]:
             continue
         await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Dirk", n, mults)})
+        seen.append(p["product_id"])
         updated += 1
+    await _mark_assortment(seen, [p["product_id"] for p in prods if str(p["dirk_id"]) in gone])
     return updated
 
 
 async def _refresh_ah_prices(mults: dict) -> int:
-    prods = await db.products.find({"ah_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(10000)
+    prods = await db.products.find({"ah_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(None)
     if not prods:
         return 0
     updated = 0
+    seen, gone = [], []
     async with httpx.AsyncClient(timeout=30, headers=AH_HEADERS) as c:
         tok = await _ah_token(c)
         H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
         for p in prods:
             try:
                 r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{p['ah_id']}", headers=H)
+                if r.status_code == 401:
+                    tok = await _ah_token(c)
+                    H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
+                    r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{p['ah_id']}", headers=H)
+                if r.status_code == 404:
+                    gone.append(p["product_id"])
+                    continue
                 card = (r.json() or {}).get("productCard") or {}
             except Exception:
                 continue
             n = _ah_normalize(card)
+            if card and card.get("orderAvailabilityStatus") in ("OUT_OF_ASSORTMENT", "DELISTED"):
+                gone.append(p["product_id"])
+                continue
             if not n or not n["price"]:
                 continue
             await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Albert Heijn", n, mults)})
+            seen.append(p["product_id"])
             updated += 1
+    await _mark_assortment(seen, gone)
     return updated
 
 
 async def _refresh_jumbo_prices(mults: dict) -> int:
     # Jumbo heeft geen losse productopvraag meer: dezelfde zoektermen opnieuw doorlopen
-    prods = {str(p["jumbo_id"]): p for p in await db.products.find({"jumbo_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(30000)}
+    prods = {str(p["jumbo_id"]): p for p in await db.products.find({"jumbo_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0}).to_list(None)}
     if not prods:
         return 0
     done: set = set()
@@ -3729,6 +3798,13 @@ async def _refresh_jumbo_prices(mults: dict) -> int:
                         await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n, mults)})
             except Exception as e:
                 logger.warning("Jumbo-prijzen %s mislukt: %s", term, e)
+    # Jumbo zoeken we via zoektermen; alleen als bijna alles gevonden is, mag de rest als verdwenen gelden
+    seen = [prods[j]["product_id"] for j in done]
+    if len(done) >= 0.85 * len(prods):
+        await _mark_assortment(seen, [p["product_id"] for j, p in prods.items() if j not in done])
+    else:
+        await _mark_assortment(seen, [])
+        logger.info("Jumbo: %d van %d gevonden, assortiment niet bijgewerkt", len(done), len(prods))
     return len(done)
 
 
@@ -4598,7 +4674,7 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
-    asyncio.create_task(_probe_dirk_brood())
+    asyncio.create_task(_full_import_once())
 
 
 async def _daily_refresh_loop():
