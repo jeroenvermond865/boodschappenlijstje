@@ -1247,15 +1247,20 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
                 p = prods.get(it.get("product_id") or "")
                 price = resolve_price(p.get("prices", {}), b["store"], p.get("unavailable", [])) if p else 0
                 if price > 0:
-                    packs = max(1, math.ceil(round(it["qty"] * _pack_share(it["unit"], p.get("unit") or ""), 3)))
+                    plan = _pack_plan(p, it["qty"], it["unit"], b["store"]) or {}
+                    packs = plan.get("packs") or 1
                     it.update({"packs": packs, "pack_unit": p.get("unit") or "", "price": round(packs * price, 2), "pack_price": price,
-                               "product": p.get("name")})
+                               "product": p.get("name"), "better": plan.get("better")})
                     total += packs * price
             b["total"] = round(total, 2)
-    priced(by_store)
-    priced(general)
-    for d in per_day:
-        priced(d["by_store"])
+    await _global_products()  # voor voorstellen van een grotere verpakking
+
+    def price_all():
+        priced(by_store)
+        priced(general)
+        for d in per_day:
+            priced(d["by_store"])
+    await asyncio.to_thread(price_all)
     return {
         "by_store": by_store,
         "general": general,
@@ -1745,6 +1750,7 @@ async def _load_products() -> None:
             if i % 2000 == 0:
                 await asyncio.sleep(0)  # andere aanvragen niet blokkeren
         _product_cache["docs"] = docs
+        _product_cache["by_pid"] = {d["product_id"]: d for d in docs}
         _product_cache["by_sid"] = {(d["_src"], str(d.get("dirk_id") or d.get("ah_id") or d.get("jumbo_id"))): d
                                     for d in docs if d.get("_src")}
         _product_cache["at"] = datetime.now(timezone.utc)
@@ -1982,6 +1988,33 @@ async def search_products(
     }
 
 
+class PackPlanItem(BaseModel):
+    product_id: str
+    qty: float
+    unit: str = ""
+
+
+class PackPlanInput(BaseModel):
+    items: List[PackPlanItem]
+
+
+@api_router.post("/packs/plan")
+async def pack_plans(body: PackPlanInput, user: dict = Depends(get_current_user)):
+    # Voor recepten met meer personen: hoeveel verpakkingen, en een voorstel voor een grotere verpakking
+    await _global_products()
+    by_pid = _product_cache.get("by_pid") or {}
+    missing = [i.product_id for i in body.items if i.product_id not in by_pid]
+    extra = {d["product_id"]: d for d in await db.products.find({"product_id": {"$in": missing}}, {"_id": 0}).to_list(200)} if missing else {}
+
+    def run():
+        out = []
+        for i in body.items[:80]:
+            p = by_pid.get(i.product_id) or extra.get(i.product_id)
+            out.append(_pack_plan(p, i.qty, i.unit) if p else None)
+        return out
+    return {"plans": await asyncio.to_thread(run)}
+
+
 @api_router.get("/folders")
 async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_current_user)):
     f = await _folders_fresh()
@@ -2074,6 +2107,71 @@ _MEASURE = {"gram": 1, "g": 1, "kg": 1000, "ml": 1, "cl": 10, "dl": 100, "liter"
 _PART_OF_PACK = {"teen": 0.1, "takje": 0.1, "handje": 0.25, "plak": 0.1}
 
 
+def _pack_count(pack: str) -> Optional[int]:
+    # "6 stuks", "2 st", "4-pack": zoveel stuks zitten er in de verpakking
+    m = re.search(r"(\d+)\s*(?:stuks|stuk|st|-pack|pack)\b", (pack or "").lower())
+    return int(m.group(1)) if m and 0 < int(m.group(1)) <= 100 else None
+
+
+def _pack_size(pack: str) -> Optional[float]:
+    # Inhoud van een verpakking in gram of milliliter
+    m = _UNIT_RE.search((pack or "").lower())
+    if not m:
+        return None
+    amount = float(m.group(2).replace(",", ".")) * int(m.group(1) or 1)
+    return amount * {"kg": 1000, "kilo": 1000, "kilogram": 1000, "liter": 1000, "ltr": 1000, "l": 1000, "cl": 10}.get(m.group(3), 1) or None
+
+
+_size_alts: dict = {}
+
+
+def _bigger_pack(p: dict, need: float, unit: str, store: str, packs: int, cost: float) -> Optional[dict]:
+    # Heb je veel nodig, dan is een grotere verpakking vaak goedkoper: 3 zakken van 2 kilo of 1 zak van 5 kilo
+    u = (unit or "").lower().strip()
+    by_weight = u in _MEASURE
+    if packs < 2 or not (by_weight or u in ("", "stuks", "stuk", "st")):
+        return None
+    alts = _size_alts.get((p["product_id"], store))
+    if alts is None:
+        pool = [d for d in _product_cache.get("docs") or [] if d.get("_src") == store and d.get("is_global")]
+        hits = _best_matches(pool, _alt_terms(p["name"], p) or p["name"], 12)
+        sub = p.get("subcategory")
+        alts = [d for d in hits if d["product_id"] != p["product_id"] and (not sub or d.get("subcategory") == sub)]
+        if len(_size_alts) > 3000:
+            _size_alts.clear()
+        _size_alts[(p["product_id"], store)] = alts
+    best = None
+    for d in alts:
+        price = resolve_price(d.get("prices") or {}, store, d.get("unavailable") or [])
+        size = _pack_size(d.get("unit") or "") if by_weight else (_pack_count(d.get("unit") or "") or 1)
+        if not price or not size:
+            continue
+        n = max(1, math.ceil(round(need / size, 3)))
+        if n * price < cost * 0.95 - 0.05 and (not best or n * price < best["cost"]):
+            best = {"product_id": d["product_id"], "name": d["name"], "image": d.get("image"), "pack_unit": d.get("unit") or "",
+                    "packs": n, "pack_price": round(price, 2), "cost": round(n * price, 2), "saving": round(cost - n * price, 2)}
+    return best
+
+
+def _pack_plan(p: dict, qty: float, unit: str, store: Optional[str] = None) -> Optional[dict]:
+    # Hoeveel verpakkingen heb je nodig, wat kost dat, en is een andere verpakking voordeliger?
+    store = store or p.get("_src") or product_source(p)
+    price = resolve_price(p.get("prices") or {}, store, p.get("unavailable") or [])
+    if not price or not qty:
+        return None
+    share = _pack_share(unit, p.get("unit") or "")
+    packs = max(1, math.ceil(round(qty * share, 3)))
+    cost = packs * price
+    u = (unit or "").lower().strip()
+    need = qty * _MEASURE[u] if u in _MEASURE else qty
+    better = None
+    try:
+        better = _bigger_pack(p, need, unit, store, packs, cost)
+    except Exception as e:
+        logger.warning("Grotere verpakking %s: %r", p.get("name"), e)
+    return {"packs": packs, "pack_unit": p.get("unit") or "", "pack_price": round(price, 2), "cost": round(cost, 2), "better": better}
+
+
 def _pack_share(item_unit: str, pack: str) -> float:
     # Welk deel van één verpakking is één eenheid van het ingrediënt?
     u = (item_unit or "").lower().strip()
@@ -2085,6 +2183,9 @@ def _pack_share(item_unit: str, pack: str) -> float:
             if amount * base > 0:
                 return _MEASURE[u] / (amount * base)
         return _MEASURE[u] / 500  # onbekende verpakking: reken met een gewoon pak van 500 gram
+    if u in ("", "stuks", "stuk", "st"):
+        n = _pack_count(pack)
+        return 1 / n if n else 1.0
     if u in _PART_OF_PACK:
         if u == "plak":
             m = re.search(r"(\d+)\s*(plakken|plakjes|st)", (pack or "").lower())
@@ -3630,6 +3731,9 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     rests = [w if not related(w) else w.replace(words[-1], " ") for w in nw]
     if any(processed(r, x) and not any(x in q for q in qstems) for rest in rests for r in rest.split() for x in _PROCESSED):
         pen += 5
+    # Soort van de winkel: "Verkade Nizza kaneel" staat bij de theebiscuits, dat is geen kaneel
+    elif any(w.endswith((x, x + "s", x + "en", x + "jes")) and not any(x in q for q in qstems) for w in subw for x in _PROCESSED if len(x) > 3):
+        pen += 3
     if nonfood:
         pen += 30
     # "witte wijn" is geen rode wijn
@@ -3768,8 +3872,15 @@ async def _selftest3() -> None:
     try:
         docs = await _global_products()
         for st in COMPARE_STORES:
-            for w in ("kaneel", "kerrie", "nizza"):
-                logger.info("Stest4 %s %s: %s", st, w, [(d["name"], d.get("aisle"), d.get("subcategory"), d.get("is_global")) for d in docs if d.get("_src") == st and w in d["_norm"]][:25])
+            for w in ("kaneel", "kerrie"):
+                logger.info("Stest4 %s %s: %s", st, w, [(d["name"], d.get("subcategory")) for d in docs if d.get("_src") == st and w in d["_norm"] and d.get("aisle") == "Voorraadkast"][:25])
+            pool = [d for d in docs if d.get("_src") == st and d.get("is_global")]
+            for q in ("kaneelpoeder", "kerriepoeder", "kip", "kaas", "volkoren brood", "aardappelen"):
+                logger.info("Stest3 %s %s -> %s", st, q, [d["name"] for d in _best_matches(pool, q, 3)])
+            for name in ("aardappelen", "uien", "winterpeen", "rookworst"):
+                d = (_best_matches(pool, name, 1) or [None])[0]
+                if d:
+                    logger.info("Stest5 %s %s: %s", st, d["name"], _pack_plan(d, 5500 if name != "rookworst" else 11, "gram" if name != "rookworst" else "stuks", st))
     except Exception as e:
         logger.warning("Stest3: %r", e)
 

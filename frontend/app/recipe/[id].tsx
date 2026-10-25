@@ -13,6 +13,7 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { euro } from "@/src/search";
 import { STORE_LABEL } from "@/src/OnlineRecipes";
 import type { Product } from "@/app/(tabs)/products";
+import { BetterPack, PackPlan, packText } from "@/src/packs";
 
 type Recipe = {
   id: string;
@@ -73,6 +74,19 @@ export default function RecipeScreen() {
   const amount = (i: Recipe["ingredients"][number]) =>
     n !== base && i.qty != null ? `${formatQty(scale(i.qty)!)} ${i.unit === "stuks" ? "" : i.unit + " "}${i.name}` : i.text;
   const [include, setInclude] = useState<number[]>([]);
+  // Verpakkingen voor het gekozen aantal personen: de zak wordt niet groter, je hebt er meer van nodig (of een grotere)
+  const planItems = (r?.ingredients ?? []).map((i) => (i.product && i.qty != null ? { product_id: i.product.id, qty: scale(i.qty)!, unit: i.unit } : null));
+  const plans = useQuery({
+    queryKey: ["packs", id, n],
+    enabled: planItems.some(Boolean),
+    staleTime: 10 * 60 * 1000,
+    queryFn: async () => {
+      const items = planItems.filter((x): x is NonNullable<typeof x> => !!x);
+      const res = await api<{ plans: (PackPlan | null)[] }>("/packs/plan", { method: "POST", body: { items } });
+      let k = 0;
+      return planItems.map((x) => (x ? res.plans[k++] ?? null : null));
+    },
+  });
 
   const fav = useMutation({
     mutationFn: (on: boolean) =>
@@ -157,7 +171,7 @@ export default function RecipeScreen() {
               {n !== base ? <Text style={styles.muted}>Omgerekend van {base} naar {n === 1 ? "1 persoon" : `${n} personen`}.</Text> : null}
               <View style={styles.card}>
                 {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => !x.i.pantry).map(({ i, idx }, k) => (
-                  <IngRow key={idx} i={i} first={k === 0} label={amount(i)} />
+                  <IngRow key={idx} i={i} first={k === 0} label={amount(i)} plan={plans.data?.[idx]} />
                 ))}
               </View>
 
@@ -172,6 +186,7 @@ export default function RecipeScreen() {
                         i={i}
                         first={k === 0}
                         label={amount(i)}
+                        plan={plans.data?.[idx]}
                         toggle={{ on: include.includes(idx), onPress: () => setInclude((x) => (x.includes(idx) ? x.filter((v) => v !== idx) : [...x, idx])) }}
                       />
                     ))}
@@ -389,10 +404,12 @@ function IngRow({
   first,
   label,
   toggle,
+  plan,
 }: {
   i: Recipe["ingredients"][number];
   first: boolean;
   label: string;
+  plan?: PackPlan | null;
   toggle?: { on: boolean; onPress: () => void };
 }) {
   const styles = useStyles();
@@ -421,6 +438,12 @@ function IngRow({
               {i.product.name} · {euro(i.product.promo?.price ?? i.product.price)}
             </Text>
           ) : null}
+          {i.product && plan && (plan.packs > 1 || plan.better) && (!toggle || toggle.on) ? (
+            <Text style={styles.ingProd} numberOfLines={1}>
+              {packText(plan.packs, plan.pack_unit)} · {euro(plan.cost)}
+            </Text>
+          ) : null}
+          {!toggle || toggle.on ? <BetterPack better={plan?.better} /> : null}
         </View>
       </Pressable>
       {toggle ? (

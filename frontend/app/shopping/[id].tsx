@@ -9,13 +9,14 @@ import * as Sharing from "expo-sharing";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { BetterPack, PackBetter, packText } from "@/src/packs";
 import { AISLE_ICONS, formatQty } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string };
+type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; better?: PackBetter | null };
 type Grouped = { aisle: string; items: Item[] };
 type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number };
 
@@ -316,9 +317,10 @@ function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boole
         <Text style={[styles.itemName, checked && styles.itemNameChecked]}>{item.name}</Text>
         {item.packs ? (
           <Text style={styles.itemPack} numberOfLines={1}>
-            {item.packs}× {item.pack_unit ? `${item.pack_unit} ` : ""}nodig
+            {packText(item.packs, item.pack_unit)}
           </Text>
         ) : null}
+        <BetterPack better={item.better} />
       </View>
       <View style={{ alignItems: "flex-end" }}>
         <Text style={[styles.itemQty, checked && styles.itemQtyChecked]}>
