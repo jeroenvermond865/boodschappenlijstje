@@ -159,6 +159,16 @@ async def get_active_stores() -> list:
     return list(dict.fromkeys(d["name"] for d in docs))
 
 
+async def default_role(exclude: Optional[str] = None) -> str:
+    # Standaardrol voor nieuwe gebruikers; bestaat die niet meer, dan de rol met de minste rechten
+    if DEFAULT_ROLE != exclude and await db.roles.find_one({"name": DEFAULT_ROLE}):
+        return DEFAULT_ROLE
+    docs = [d for d in await db.roles.find({"name": {"$nin": ["beheerder", exclude]}}, {"_id": 0}).to_list(1000)]
+    if not docs:
+        return DEFAULT_ROLE
+    return min(docs, key=lambda d: len(d.get("permissions") or []))["name"]
+
+
 async def role_permissions(role_name: str) -> list:
     r = await db.roles.find_one({"name": role_name}, {"_id": 0})
     return r.get("permissions", []) if r else []
@@ -428,7 +438,7 @@ async def register(data: RegisterInput):
         "password_hash": hash_password(data.password),
         "picture": None,
         "auth_provider": "password",
-        "role": "beheerder" if is_admin else DEFAULT_ROLE,
+        "role": "beheerder" if is_admin else await default_role(),
         "created_at": now_utc(),
     }
     await db.users.insert_one(doc)
@@ -671,7 +681,7 @@ async def auth_session(data: SessionInput):
             "picture": picture,
             "password_hash": None,
             "auth_provider": "google",
-            "role": "beheerder" if email in ADMIN_SEED_EMAILS else DEFAULT_ROLE,
+            "role": "beheerder" if email in ADMIN_SEED_EMAILS else await default_role(),
             "created_at": now_utc(),
         }
         await db.users.insert_one(user)
@@ -1329,7 +1339,7 @@ def role_public(doc: dict) -> dict:
         "name": doc["name"],
         "label": doc.get("label", doc["name"]),
         "permissions": doc.get("permissions", []),
-        "is_system": doc.get("is_system", False),
+        "is_system": doc["name"] == "beheerder",
     }
 
 
@@ -1378,9 +1388,10 @@ async def delete_role(name: str, user: dict = Depends(get_current_user)):
     doc = await db.roles.find_one({"name": name})
     if not doc:
         raise HTTPException(status_code=404, detail="Rol niet gevonden")
-    if doc.get("is_system"):
-        raise HTTPException(status_code=400, detail="Systeemrollen kunnen niet worden verwijderd")
-    await db.users.update_many({"role": name}, {"$set": {"role": DEFAULT_ROLE}})
+    if name == "beheerder":
+        raise HTTPException(status_code=400, detail="De Beheerder-rol kan niet worden verwijderd")
+    fallback = await default_role(exclude=name)
+    await db.users.update_many({"role": name}, {"$set": {"role": fallback}})
     await db.roles.delete_one({"name": name})
     return {"ok": True}
 
@@ -3644,11 +3655,14 @@ async def _refresh_jumbo_prices(mults: dict) -> int:
 async def _refresh_dirk_prices_all() -> dict:
     mults = await _store_mults()
     updated = 0
-    for fn in (_refresh_dirk_prices, _refresh_ah_prices, _refresh_jumbo_prices):
+    for fn in (_refresh_dirk_prices, _refresh_jumbo_prices, _refresh_ah_prices):
         try:
             updated += await fn(mults)
         except Exception as e:
             logger.warning("Refresh %s failed: %s", fn.__name__, e)
+        _invalidate_products()
+        if fn is _refresh_jumbo_prices:
+            asyncio.create_task(_load_folders())  # Jumbo-acties komen mee met de producten
     await db.settings.update_one({"key": "app"}, {"$set": {"dirk_refreshed_at": now_utc()}}, upsert=True)
     return {"updated": updated}
 
@@ -4373,13 +4387,29 @@ async def startup():
     await db.google_logins.create_index("expires_at", expireAfterSeconds=0)
     await db.password_resets.create_index("expires_at", expireAfterSeconds=0)
 
-    # Seed roles
-    for r in DEFAULT_ROLES:
-        await db.roles.update_one(
-            {"name": r["name"]},
-            {"$setOnInsert": r},
-            upsert=True,
-        )
+    # Rollen: dubbele opruimen (ontstonden doordat twee servers tegelijk opstartten)
+    seen_names, seen_labels = {}, {}
+    for r in await db.roles.find({}).sort("_id", 1).to_list(1000):
+        label_key = _norm_text(r.get("label") or r["name"])
+        keep = seen_names.get(r["name"]) or seen_labels.get(label_key)
+        if keep:
+            if keep["name"] != r["name"]:
+                await db.users.update_many({"role": r["name"]}, {"$set": {"role": keep["name"]}})
+            await db.roles.delete_one({"_id": r["_id"]})
+            logger.info("Dubbele rol verwijderd: %s (%s), blijft: %s", r["name"], r.get("label"), keep["name"])
+            continue
+        seen_names[r["name"]] = r
+        seen_labels[label_key] = r
+    try:
+        await db.roles.create_index("name", unique=True)
+    except Exception as e:
+        logger.warning("Index op rollen mislukt: %s", e)
+    # Standaardrollen alleen de allereerste keer; daarna mag de beheerder ze aanpassen of verwijderen
+    if not await db.settings.find_one({"key": "roles_seeded"}):
+        for r in DEFAULT_ROLES:
+            await db.roles.update_one({"name": r["name"]}, {"$setOnInsert": r}, upsert=True)
+        await db.settings.update_one({"key": "roles_seeded"}, {"$set": {"value": True}}, upsert=True)
+    await db.roles.update_one({"name": "beheerder"}, {"$setOnInsert": DEFAULT_ROLES[0]}, upsert=True)
     # Ensure beheerder keeps all permissions
     await db.roles.update_one({"name": "beheerder"}, {"$set": {"permissions": list(ALL_PERMISSIONS), "is_system": True}})
     # Backfill role on existing users, and seed the admin account

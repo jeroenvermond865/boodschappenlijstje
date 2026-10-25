@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Platform, Pressable, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -56,6 +56,18 @@ export default function AdminRolesScreen() {
     onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
   });
 
+  const askRemove = (role: Role) => {
+    const msg = `Rol "${role.label}" verwijderen? Wie deze rol heeft, krijgt de standaardrol.`;
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) remove.mutate(role.name);
+    } else {
+      Alert.alert("Rol verwijderen", msg, [
+        { text: "Annuleren", style: "cancel" },
+        { text: "Verwijderen", style: "destructive", onPress: () => remove.mutate(role.name) },
+      ]);
+    }
+  };
+
   const remove = useMutation({
     mutationFn: (name: string) => api(`/admin/roles/${name}`, { method: "DELETE" }),
     onSuccess: () => {
@@ -99,10 +111,10 @@ export default function AdminRolesScreen() {
                 <View style={styles.roleHead}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.roleLabel}>{role.label}</Text>
-                    <Text style={styles.roleMeta}>{role.is_system ? "Systeemrol" : "Eigen rol"}</Text>
+                    <Text style={styles.roleMeta}>{locked ? "Vaste rol" : `${role.name}`}</Text>
                   </View>
-                  {!role.is_system ? (
-                    <Pressable testID={`delete-role-${role.name}`} onPress={() => remove.mutate(role.name)} hitSlop={8}>
+                  {!locked ? (
+                    <Pressable testID={`delete-role-${role.name}`} onPress={() => askRemove(role)} hitSlop={8}>
                       <Icon name="trash-can-outline" size={20} color={colors.muted} />
                     </Pressable>
                   ) : null}
