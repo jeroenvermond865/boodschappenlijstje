@@ -4010,10 +4010,20 @@ async def _selftest3() -> None:
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
             r = await c.get("https://www.dirk.nl/folder/volgende-week", headers=_PAGE_HEADERS)
-            for m in re.findall(r'src="(/_nuxt/[^"]+\.js)"', r.text)[:60]:
-                js = (await c.get("https://www.dirk.nl" + m, headers=_PAGE_HEADERS)).text
-                for k in list(re.finditer(r"fileName", js))[:3]:
-                    logger.info("Stest9 js %s: %s", m, js[max(0, k.start() - 250): k.start() + 150])
+            seen_js, queue = set(), sorted(set(re.findall(r'/_nuxt/[A-Za-z0-9_.-]+\.js', r.text)))
+            while queue and len(seen_js) < 150:
+                m = queue.pop(0)
+                if m in seen_js:
+                    continue
+                seen_js.add(m)
+                try:
+                    js = (await c.get("https://www.dirk.nl" + m, headers=_PAGE_HEADERS)).text
+                except Exception:
+                    continue
+                queue += [("/_nuxt/" + x.lstrip("./")) for x in re.findall(r'["\'`](\./[A-Za-z0-9_.-]+\.js)', js) if "/_nuxt/" + x.lstrip("./") not in seen_js]
+                for k in list(re.finditer(r"\.fileName\b|fileName\}|pageNumber\}", js))[:3]:
+                    logger.info("Stest9 js %s: %s", m, js[max(0, k.start() - 300): k.start() + 120])
+            logger.info("Stest9 js scanned %d", len(seen_js))
             q = '{__schema{queryType{fields{name args{name type{name kind ofType{name}}} type{name kind ofType{name}}}}}}'
             rr = await c.post(DIRK_GQL, json={"query": q}, headers=DIRK_HEADERS)
             fields = ((((rr.json().get("data") or {}).get("__schema") or {}).get("queryType") or {}).get("fields")) or []
