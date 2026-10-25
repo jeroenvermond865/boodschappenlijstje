@@ -794,8 +794,11 @@ def _vega_options(ing: dict, docs: list, limit: int = 5) -> list:
                 continue
             seen.add(d["product_id"])
             out.append(d)
-        if len(out) >= limit:
+        if len(out) >= limit * 2:
             break
+    # Wat op het vlees lijkt eerst: bij rookworst een vega rookworst, bij zalm een vega zalm
+    keys = [w for w in core.split() if len(w) > 2] + [w for q in queries[2:4] for w in q.split() if not _VEGA_RE.search(w)]
+    out.sort(key=lambda d: 0 if any(k[:5] in d["_norm"] for k in keys) else 1)
     return out[:limit]
 
 
@@ -4007,41 +4010,17 @@ async def _selftest3() -> None:
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
             r = await c.get("https://www.dirk.nl/folder/volgende-week", headers=_PAGE_HEADERS)
-            logger.info("Stest9 refs %s", sorted(set(re.findall(r"fileserver[^\"' )]{0,90}", r.text)))[:30])
-            pub, fn = None, None
-            for m in re.finditer(r'"publicationId":"([0-9a-f-]{36})"', r.text):
-                pub = m.group(1)
-            data = _nuxt_data(r.text)
-            hits = []
-
-            def walk(x, d=0):
-                if d > 30:
-                    return
-                if isinstance(x, dict):
-                    if x.get("publicationId") and x.get("pages"):
-                        hits.append(x)
-                    for v in x.values():
-                        walk(v, d + 1)
-                elif isinstance(x, list):
-                    for v in x:
-                        walk(v, d + 1)
-            walk(data)
-            if hits:
-                pub, fn = hits[0]["publicationId"], hits[0]["pages"][0]["fileName"]
-                for u in (f"https://web-fileserver.dirk.nl/publications/{pub}/{fn}", f"https://web-fileserver.dirk.nl/publications/{pub}/pages/{fn}",
-                          f"https://web-fileserver.dirk.nl/{fn}", f"https://web-fileserver.dirk.nl/publication/{pub}/{fn}",
-                          f"https://web-fileserver.dirk.nl/publications/{fn}", f"https://web-fileserver.dirk.nl/folders/{pub}/{fn}",
-                          f"https://web-fileserver.dirk.nl/publications/{pub}/images/{fn}"):
-                    try:
-                        rr = await c.get(u, headers=_PAGE_HEADERS)
-                        logger.info("Stest9 %s %s %s %d", u, rr.status_code, rr.headers.get("content-type"), len(rr.content))
-                    except Exception as e:
-                        logger.info("Stest9 %s %r", u, e)
-            for m in re.findall(r'src="(/_nuxt/[^"]+\.js)"', r.text)[:40]:
+            for m in re.findall(r'src="(/_nuxt/[^"]+\.js)"', r.text)[:60]:
                 js = (await c.get("https://www.dirk.nl" + m, headers=_PAGE_HEADERS)).text
-                for k in re.finditer(r"publication", js):
-                    logger.info("Stest9 js %s: %s", m, js[max(0, k.start() - 150): k.start() + 150])
-                    break
+                for k in list(re.finditer(r"fileName", js))[:3]:
+                    logger.info("Stest9 js %s: %s", m, js[max(0, k.start() - 250): k.start() + 150])
+            q = '{__schema{queryType{fields{name args{name type{name kind ofType{name}}} type{name kind ofType{name}}}}}}'
+            rr = await c.post(DIRK_GQL, json={"query": q}, headers=DIRK_HEADERS)
+            fields = ((((rr.json().get("data") or {}).get("__schema") or {}).get("queryType") or {}).get("fields")) or []
+            logger.info("Stest9 gql %s %s", rr.status_code, [f for f in fields if "ublic" in f["name"]] or rr.text[:300])
+            for tn in ("Publication", "PublicationPage", "PublicationDto", "Publication_Dto", "PublicationPage_Dto"):
+                rr = await c.post(DIRK_GQL, json={"query": '{__type(name:"%s"){fields{name type{name kind ofType{name}}}}}' % tn}, headers=DIRK_HEADERS)
+                logger.info("Stest9 type %s %s", tn, rr.text[:600])
             r = await c.get("https://www.dirk.nl/meer/over-dirk/super-dirck-3", headers=_PAGE_HEADERS)
             data = _nuxt_data(r.text)
             logger.info("Stest7 dirck3 %s %s", r.status_code, json.dumps(data, default=str)[:3000])
