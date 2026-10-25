@@ -6825,6 +6825,7 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
+    asyncio.create_task(_stest17())
     asyncio.create_task(_log_product_counts())
 
 
@@ -6832,6 +6833,38 @@ async def _log_product_counts():
     await asyncio.sleep(15)
     counts = {st: await db.products.count_documents({_id_field(st): {"$exists": True}, "deleted_at": None}) for st in COUPLED_STORES}
     logger.info("Producten per winkel: %s", counts)
+
+
+async def _stest17():
+    # Tijdelijk: kunnen we de hele catalogus van AH en Jumbo doorlopen?
+    await asyncio.sleep(25)
+    try:
+        async with httpx.AsyncClient(timeout=30, headers=AH_HEADERS) as c:
+            tok = await _ah_token(c)
+            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
+            r = await c.get("https://api.ah.nl/mobile-services/v1/product-shelves/categories", headers=H)
+            logger.info("Stest17 ah cats %s %s", r.status_code, r.text[:600])
+            cats = r.json() if r.status_code == 200 else []
+            if isinstance(cats, list) and cats:
+                cid = cats[0].get("id")
+                for params in ({"taxonomyId": cid, "size": 1000, "page": 0}, {"taxonomyId": cid, "size": 100, "page": 0}):
+                    r2 = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params=params, headers=H)
+                    j = r2.json() if r2.status_code == 200 else {}
+                    logger.info("Stest17 ah tax %s %s n=%d page=%s", params, r2.status_code, len(j.get("products") or []), j.get("page"))
+            r3 = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"size": 100, "page": 0}, headers=H)
+            j = r3.json() if r3.status_code == 200 else {}
+            logger.info("Stest17 ah all %s n=%d page=%s", r3.status_code, len(j.get("products") or []), j.get("page"))
+        async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
+            for term in ("", "*"):
+                try:
+                    prods, total = await _jumbo_search_page(c, term, 0)
+                    logger.info("Stest17 jumbo term=%r n=%d total=%d", term, len(prods), total)
+                    prods2, _ = await _jumbo_search_page(c, term, 5000)
+                    logger.info("Stest17 jumbo term=%r offset5000 n=%d first=%s", term, len(prods2), (prods2[0].get("title") if prods2 else None))
+                except Exception as e:
+                    logger.info("Stest17 jumbo term=%r fout %r", term, e)
+    except Exception as e:
+        logger.warning("Stest17: %r", e)
 
 
 async def _daily_refresh_loop():
