@@ -3288,7 +3288,7 @@ async def _recipe_detail(rid: str) -> dict:
             seen.add(desc)
             qty, unit, name = _parse_amount(desc)
             p = prods.get(str(i.get("productNumber"))) or {}
-            ings.append({"text": desc, "name": name, "qty": qty, "unit": unit,
+            ings.append({"text": desc, "name": name, "qty": qty, "unit": unit, "site_linked": bool(i.get("productNumber")),
                          "product": {"store": "Dirk", "sid": str(p["productId"])} if p.get("productId") else None})
         steps = []
         for s in r.get("steps") or []:
@@ -3335,8 +3335,31 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
             continue
         hits = _search_products(pool, t)
         if hits:
-            return hits[:limit]
+            return _rank_food(hits[:80], t.split())[:limit]
     return []
+
+
+_NONFOOD = {"Huishoud & huisdieren", "Kind & drogisterij", "Non food"}
+_CANDY_RE = re.compile(r"\b(snoep|drop|winegum|spekjes|chips|koek|koekjes|chocolade|lolly|kauwgom)\b")
+
+
+def _rank_food(hits: list, words: list) -> list:
+    # Een recept vraagt om eten: "citroen" is geen afwasmiddel, "aardbeien" geen snoep, "ui" liever uien dan gehakt met ui
+    def penalty(rank_d):
+        rank, d = rank_d
+        name = d["_norm"]
+        brand = _norm_text(d.get("brand") or "")
+        nw = name.split()
+        if brand and name.startswith(brand + " "):
+            nw = nw[len(brand.split()):]
+        pos = next((k for k, w in enumerate(nw) if any(w.startswith(q) for q in words)), 6)
+        pen = rank * 0.4 + pos * 2 + len(nw) * 0.3
+        if d.get("aisle") in _NONFOOD:
+            pen += 30
+        if d.get("aisle") == "Snacks & snoep" and not any(_CANDY_RE.search(q) for q in words):
+            pen += 8
+        return pen
+    return [d for _, d in sorted(enumerate(hits), key=penalty)]
 
 
 def _store_matches(names: list, docs: list, store: str) -> dict:
@@ -3369,7 +3392,7 @@ def _recipe_with_products(rec: dict, user: dict, matches: Optional[dict] = None)
     ings = []
     for i in rec["ingredients"]:
         p = i.get("product")
-        site_linked = bool(p)
+        site_linked = bool(p) or bool(i.get("site_linked"))
         doc = by_sid.get((p["store"], p["sid"])) if p else None
         if doc is None and (matches or {}).get(i["name"]) is not None:
             doc = matches[i["name"]]
@@ -3440,13 +3463,18 @@ async def _selftest2() -> None:
         await _folders_fresh()
         aard = next((d for d in docs if d.get("_src") == "Dirk" and "aardappelen kruimig" in d["_norm"]), None)
         if aard:
-            logger.info("Stest aardappel %s %s promo=%s", aard["name"], aard.get("prices"), _promo_public(aard, _doc_price(aard)))
+            logger.info("Stest aardappel %s id=%s %s on_offer=%s promo=%s", aard["name"], aard.get("dirk_id"), aard.get("prices"), aard.get("on_offer"),
+                        _promo_public(aard, _doc_price(aard)))
+        for per in (_folders.get("data") or {}).get("Dirk") or []:
+            for it in per["items"]:
+                if "aardappel" in (it["title"] or "").lower():
+                    logger.info("Stest folder Dirk %s ids=%s price=%s regular=%s prices=%s", it["title"], it["ids"], it.get("price"), it.get("regular"), it.get("prices"))
         base = next((d for d in docs if d.get("_src") == "Jumbo" and "olijfolie" in d["_norm"]), None)
         if base:
             res = _alternatives(docs, base["name"], base)
             logger.info("Stest alt %s terms=%r %s", base["name"], res["terms"],
                         {k: [(d["name"], _doc_price(d), _alt_note(d, res["base_up"], res["base_price"])) for d in v[:3]] for k, v in res["by_store"].items()})
-        for rid in ("ah-1302917", "jumbo-kabeljauw-met-pompoenpuree-en-gnocchi--1001249", "dirk-aardbeien-caprese"):
+        for rid in ("ah-1302917", "dirk-aardbeien-caprese", "dirk-aspergesoep"):
             rec = await _recipe_products(await _recipe_detail(rid), {"user_id": "x"})
             logger.info("Stest recept %s: %s", rid, [(i["name"], i["pantry"], (i["product"] or {}).get("name")) for i in rec["ingredients"]])
     except Exception as e:
