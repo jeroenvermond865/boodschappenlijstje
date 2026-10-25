@@ -3768,9 +3768,8 @@ async def _selftest3() -> None:
     try:
         docs = await _global_products()
         for st in COMPARE_STORES:
-            pool = [d for d in docs if d.get("_src") == st and d.get("is_global")]
-            for q in ("kaneelpoeder", "kaneel poeder", "paprikapoeder", "tomatenpuree", "aardbeienjam", "kerriepoeder"):
-                logger.info("Stest3 %s %s -> %s", st, q, [d["name"] for d in _best_matches(pool, q, 3)])
+            for w in ("kaneel", "kerrie", "nizza"):
+                logger.info("Stest4 %s %s: %s", st, w, [(d["name"], d.get("aisle"), d.get("subcategory"), d.get("is_global")) for d in docs if d.get("_src") == st and w in d["_norm"]][:25])
     except Exception as e:
         logger.warning("Stest3: %r", e)
 
