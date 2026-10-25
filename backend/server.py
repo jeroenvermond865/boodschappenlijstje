@@ -1485,6 +1485,8 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
                 it["product_id"] = swaps[it["product_id"]]
     pids = {it.get("product_id") for b in by_store + general + [x for d in per_day for x in d["by_store"]] for it in b["flat"] if it.get("product_id")}
     prods = {p["product_id"]: p for p in await db.products.find({"product_id": {"$in": list(pids)}}, {"_id": 0}).to_list(5000)} if pids else {}
+    piece_ids = {it.get("product_id") for b in by_store + general for it in b["flat"] if (it.get("unit") or "").lower().strip() in ("", "stuks", "stuk", "st")}
+    await _learn_pack_counts([prods[x] for x in piece_ids if x in prods], 4)
 
     def priced(blocks: list) -> None:
         for b in blocks:
@@ -1568,7 +1570,7 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
         pid = swaps.get(pid, pid)
         p = products_by_id.get(pid) if pid else None
         price = resolve_price(p.get("prices", {}), store, p.get("unavailable", [])) if p else (item.get("price", 0) or 0)
-        return price * _pack_share(item.get("unit") or "stuks", (p or {}).get("unit") or "", (p or {}).get("name") or item.get("name") or "")
+        return price * _pack_share(item.get("unit") or "stuks", (p or {}).get("unit") or "", (p or {}).get("name") or item.get("name") or "", (p or {}).get("pack_count"))
 
     total_cost = 0.0
     total_person_days = 0
@@ -2318,6 +2320,8 @@ async def pack_plans(body: PackPlanInput, user: dict = Depends(get_current_user)
     by_pid = _product_cache.get("by_pid") or {}
     missing = [i.product_id for i in body.items if i.product_id not in by_pid]
     extra = {d["product_id"]: d for d in await db.products.find({"product_id": {"$in": missing}}, {"_id": 0}).to_list(200)} if missing else {}
+    pieces = [by_pid.get(i.product_id) or extra.get(i.product_id) for i in body.items if (i.unit or "").lower().strip() in ("", "stuks", "stuk", "st") and not i.packs]
+    await _learn_pack_counts([p for p in pieces if p])
 
     def run():
         out = []
@@ -2461,10 +2465,10 @@ def _bigger_pack(p: dict, need: float, unit: str, store: str, packs: int, cost: 
             _size_alts.clear()
         _size_alts[(p["product_id"], store)] = alts
     best = None
-    own = _pack_size(p.get("unit") or "") if by_weight else (_pack_count(p.get("unit") or "") or 1)
+    own = _pack_size(p.get("unit") or "") if by_weight else (_pack_count(p.get("unit") or "") or p.get("pack_count") or 1)
     for d in alts:
         price = resolve_price(d.get("prices") or {}, store, d.get("unavailable") or [])
-        size = _pack_size(d.get("unit") or "") if by_weight else (_pack_count(d.get("unit") or "") or 1)
+        size = _pack_size(d.get("unit") or "") if by_weight else (_pack_count(d.get("unit") or "") or d.get("pack_count") or 1)
         if not price or not size or (own and size <= own):
             continue  # alleen een grotere verpakking voorstellen
         n = max(1, math.ceil(round(need / size, 3)))
@@ -2480,7 +2484,7 @@ def _pack_plan(p: dict, qty: float, unit: str, store: Optional[str] = None, site
     price = resolve_price(p.get("prices") or {}, store, p.get("unavailable") or [])
     if not price or not qty:
         return None
-    share = _pack_share(unit, p.get("unit") or "", p.get("name") or "")
+    share = _pack_share(unit, p.get("unit") or "", p.get("name") or "", p.get("pack_count"))
     packs = max(1, math.ceil(round(site_packs if site_packs else qty * share, 3)))
     cost = packs * price
     u = (unit or "").lower().strip()
@@ -2507,7 +2511,7 @@ def _piece_grams(name: str) -> Optional[float]:
     return None
 
 
-def _pack_share(item_unit: str, pack: str, name: str = "") -> float:
+def _pack_share(item_unit: str, pack: str, name: str = "", count: Optional[int] = None) -> float:
     # Welk deel van één verpakking is één eenheid van het ingrediënt?
     u = (item_unit or "").lower().strip()
     if u in _MEASURE:
@@ -2519,7 +2523,7 @@ def _pack_share(item_unit: str, pack: str, name: str = "") -> float:
                 return _MEASURE[u] / (amount * base)
         return _MEASURE[u] / 500  # onbekende verpakking: reken met een gewoon pak van 500 gram
     if u in ("", "stuks", "stuk", "st"):
-        n = _pack_count(pack) or _pack_count(re.sub(r"(?i)\b(blaadjes|blaadje|bladen)\b", "stuks", pack or ""))
+        n = _pack_count(pack) or count or _count_in_text(pack) or _count_in_text(name)
         if n:
             return 1 / n
         m = _UNIT_RE.search((pack or "").lower())
@@ -2537,6 +2541,108 @@ def _pack_share(item_unit: str, pack: str, name: str = "") -> float:
                 return 1 / int(m.group(1))
         return _PART_OF_PACK[u]
     return 1.0
+
+
+# --- Aantal stuks in een verpakking, uit de productgegevens zelf: naam, verpakking, productinformatie,
+# hetzelfde product (barcode) bij een andere winkel, en als laatste de foto van de verpakking ---
+_COUNT_WORDS = (r"stuks|stuk|st|blaadjes|blaadje|bladen|vellen|plakjes|plakken|zakjes|zakje|sachets|builtjes|theezakjes|tabletten|"
+                r"capsules|rollen|eieren|bollen|bolletjes|repen|wraps|tortilla'?s|broodjes|pads|cups|porties|knoflookbollen|-pack|pack")
+_COUNT_RE = re.compile(r"(\d+)\s*(?:" + _COUNT_WORDS + r")\b|(\d+)\s*x\s*\d")
+
+
+def _count_in_text(text: str) -> Optional[int]:
+    for m in _COUNT_RE.finditer((text or "").lower()):
+        n = int(m.group(1) or m.group(2))
+        if 1 < n <= 200:
+            return n
+    return None
+
+
+_count_running: set = set()
+PACK_COUNT_RECHECK_DAYS = 30
+
+
+def _needs_count(p: dict) -> bool:
+    if not p or p.get("pack_count") or _pack_count(p.get("unit") or "") or _count_in_text(p.get("unit") or "") or _count_in_text(p.get("name") or ""):
+        return False
+    checked = p.get("pack_count_checked")
+    return not checked or checked < (datetime.now(timezone.utc) - timedelta(days=PACK_COUNT_RECHECK_DAYS)).isoformat()
+
+
+async def _ai_pack_count(p: dict) -> Optional[int]:
+    if not os.environ.get("ANTHROPIC_API_KEY") or not p.get("image"):
+        return None
+    from anthropic import AsyncAnthropic
+    msg = await AsyncAnthropic().beta.messages.create(
+        model=DIRK_AI_MODEL, max_tokens=300, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+        output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
+            "type": "object", "additionalProperties": False, "required": ["count"],
+            "properties": {"count": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}},
+        messages=[{"role": "user", "content": [
+            {"type": "image", "source": {"type": "url", "url": p["image"]}},
+            {"type": "text", "text": (f"Product: {p.get('name')} ({p.get('unit') or 'geen verpakking bekend'}). Hoeveel losse stuks "
+                                      "(blaadjes, plakjes, zakjes, eieren, bollen enz.) zitten er in deze verpakking? Geef alleen een "
+                                      "getal als het op de verpakking staat of duidelijk te tellen is, anders null.")}]}])
+    text = next((b.text for b in msg.content if b.type == "text"), "")
+    n = (json.loads(text) if text and msg.stop_reason not in ("refusal", "max_tokens") else {}).get("count")
+    return n if isinstance(n, int) and 1 < n <= 200 else None
+
+
+async def _learn_pack_count(p: dict) -> Optional[int]:
+    pid = p["product_id"]
+    if pid in _count_running:
+        return None
+    _count_running.add(pid)
+    n, how = None, None
+    try:
+        # 1. Hetzelfde product bij een andere winkel (zelfde barcode) noemt het aantal soms wel
+        if p.get("barcode"):
+            async for o in db.products.find({"barcode": p["barcode"], "product_id": {"$ne": pid}, "deleted_at": None},
+                                            {"_id": 0, "unit": 1, "name": 1, "pack_count": 1}).limit(10):
+                n = o.get("pack_count") or _pack_count(o.get("unit") or "") or _count_in_text(o.get("unit") or "") or _count_in_text(o.get("name") or "")
+                if n:
+                    how = "barcode"
+                    break
+        # 2. De productinformatie van de winkel (omschrijving, gebruik, inhoud)
+        src = product_source(p)
+        fn = {"Dirk": _dirk_details, "Albert Heijn": _ah_details, "Jumbo": _jumbo_details}.get(src)
+        if not n and fn:
+            try:
+                d = await asyncio.wait_for(fn(p), 15)
+                texts = [d.get("description"), d.get("usage"), d.get("storage")] + [f"{e.get('label')}: {e.get('value')}" for e in d.get("extra") or []]
+                n = next((c for c in (_count_in_text(t or "") for t in texts) if c), None)
+                how = "productinfo" if n else None
+            except Exception as e:
+                logger.info("Aantal per pak %s: productinfo %r", p.get("name"), e)
+        # 3. De foto van de verpakking laten lezen
+        if not n:
+            try:
+                n = await _ai_pack_count(p)
+                how = "foto" if n else None
+            except Exception as e:
+                logger.warning("Aantal per pak %s: foto lezen %r", p.get("name"), e)
+        now = datetime.now(timezone.utc).isoformat()
+        await db.products.update_one({"product_id": pid}, {"$set": {"pack_count": n, "pack_count_from": how, "pack_count_checked": now}})
+        for c in ((_product_cache.get("by_pid") or {}).get(pid), p):
+            if c is not None:
+                c.update({"pack_count": n, "pack_count_from": how, "pack_count_checked": now})
+        if n:
+            logger.info("Aantal per pak: %s = %s stuks (%s)", p.get("name"), n, how)
+        return n
+    finally:
+        _count_running.discard(pid)
+
+
+async def _learn_pack_counts(products: list, wait: float = 8) -> None:
+    # Ontbreekt het aantal stuks, zoek het op; even wachten zodat de eerste berekening al klopt, de rest loopt door
+    todo = [p for p in products if _needs_count(p)][:12]
+    if not todo:
+        return
+    tasks = [asyncio.create_task(_learn_pack_count(p)) for p in todo]
+    try:
+        await asyncio.wait(tasks, timeout=wait)
+    except Exception:
+        pass
 
 
 def _unit_value(price: float, qty: str) -> Optional[tuple]:
@@ -3934,6 +4040,100 @@ async def _dirk_recipes(q: str, filters: dict, page: int, size: int) -> dict:
 
 _RECIPE_SOURCES = {"ah": _ah_recipes, "jumbo": _jumbo_recipes, "dirk": _dirk_recipes}
 
+# --- Vegetarisch en veganistisch volgens de ingrediënten, ook bij AH en Jumbo ---
+_DIET_LABELS = ("Vegetarisch", "Veganistisch")
+_diet_vals: dict = {}
+_diet_running: set = set()
+
+
+async def _scan_diets(recipes: list, wait: float = 0) -> dict:
+    # Per recept één keer de ingrediënten bekijken en onthouden; met wait > 0 wachten we even op de uitkomst
+    ids = [r["id"] for r in recipes]
+    known = {d["id"]: d async for d in db.recipe_diet.find({"id": {"$in": ids}}, {"_id": 0})}
+    todo = [r for r in recipes if r["id"] not in known and r["id"] not in _diet_running]
+    sem = asyncio.Semaphore(6)
+
+    async def one(r):
+        _diet_running.add(r["id"])
+        try:
+            async with sem:
+                d = await _recipe_detail(r["id"])
+            names = [i.get("name") or i.get("text") or "" for i in d.get("ingredients") or []]
+            if not names:
+                return
+            veg, vegan = _diet_of(names)
+            await db.recipe_diet.update_one({"id": r["id"]}, {"$set": {"id": r["id"], "veg": veg, "vegan": vegan}}, upsert=True)
+            known[r["id"]] = {"id": r["id"], "veg": veg, "vegan": vegan}
+        except Exception as e:
+            logger.info("Dieet recept %s: %r", r["id"], e)
+        finally:
+            _diet_running.discard(r["id"])
+    if todo:
+        tasks = [asyncio.create_task(one(r)) for r in todo]
+        if wait:
+            await asyncio.wait(tasks, timeout=wait)
+    return known
+
+
+async def _store_diet_values(store: str, facets: Optional[list] = None) -> dict:
+    # Welke filterwaarde de winkel zelf gebruikt voor vegetarisch en veganistisch
+    if store not in _diet_vals:
+        if facets is None:
+            facets = (await _store_recipes(store, "", {}, 0, 1))["facets"]
+        found: dict = {}
+        for f in facets:
+            for v in f["values"]:
+                n = _norm_text(str(v.get("value") or "") + " " + str(v.get("label") or ""))
+                if "vegan" in n:
+                    found.setdefault("vegan", (f["key"], v["value"], v.get("count")))
+                elif "vegetar" in n or "vega" in n.split():
+                    found.setdefault("veg", (f["key"], v["value"], v.get("count")))
+        if found:
+            _diet_vals[store] = found
+        return found
+    return _diet_vals[store]
+
+
+async def _diet_recipes(store: str, q: str, flt: dict, page: int, size: int) -> dict:
+    want = [v for v in flt.get("dieet") or [] if v in _DIET_LABELS]
+    sf = {k: list(v) for k, v in flt.items()}
+    if "dieet" in sf:
+        sf["dieet"] = [v for v in sf["dieet"] if v not in _DIET_LABELS]
+        if not sf["dieet"]:
+            sf.pop("dieet")
+    dv = await _store_diet_values(store)
+    vegan = "Veganistisch" in want
+    if want:
+        # De winkel filtert eerst op zijn eigen vinkje; daarna kijken we zelf naar de ingrediënten
+        k, v, _ = dv.get("vegan") if vegan and dv.get("vegan") else dv.get("veg") or (None, None, None)
+        if k:
+            sf[k] = [v] if store == "jumbo" else list(dict.fromkeys((sf.get(k) or []) + [v]))
+    res = dict(await _store_recipes(store, q, sf, page, size))
+    known = await _scan_diets(res["recipes"], wait=10 if want else 0)
+    recipes = []
+    for r in res["recipes"]:
+        d = known.get(r["id"])
+        r = {**r, "veg": d.get("veg") if d else None, "vegan": d.get("vegan") if d else None}
+        if d and want and (not d.get("veg") or (vegan and not d.get("vegan"))):
+            continue
+        recipes.append(r)
+    # Filters: de eigen vinkjes van de winkel worden onze vaste keuze Vegetarisch / Veganistisch
+    own = {(x[0], x[1]) for x in dv.values()}
+    facets = []
+    for f in res["facets"]:
+        vals = [v for v in f["values"] if (f["key"], v["value"]) not in own]
+        if vals or f["key"] == "dieet":
+            facets.append({**f, "values": vals})
+    diet = {"key": "dieet", "label": "Dieet", "multi": False,
+            "values": [{"value": "Vegetarisch", "label": "Vegetarisch", "count": (dv.get("veg") or (0, 0, None))[2]},
+                       {"value": "Veganistisch", "label": "Veganistisch", "count": (dv.get("vegan") or (0, 0, None))[2]}]}
+    f = next((f for f in facets if f["key"] == "dieet"), None)
+    if f:
+        f["values"] = diet["values"] + f["values"]
+    else:
+        facets.append(diet)
+    return {**res, "recipes": recipes, "facets": facets}
+
 
 async def _store_recipes(store: str, q: str, filters: dict, page: int, size: int) -> dict:
     import json as _json
@@ -4002,6 +4202,8 @@ async def _search_recipes(q: str, store: str, page: int, filters: str, size: int
     page = max(0, min(page, 200))
     if store in _RECIPE_SOURCES:
         try:
+            if store in ("ah", "jumbo"):
+                return await _diet_recipes(store, q, flt, page, size)
             return await _store_recipes(store, q, flt, page, size)
         except Exception as e:
             logger.warning("Recepten %s: %r", store, e)
