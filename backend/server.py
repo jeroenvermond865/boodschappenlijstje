@@ -1987,29 +1987,28 @@ def _dirk_aisle(department: str, webgroup: str, name: str = "") -> str:
 
 
 async def _probe_barcodes() -> None:
-    # Tijdelijk: uitzoeken waar Dirk, AH en Jumbo de barcode (EAN) meegeven
+    # Tijdelijk: waar geven Dirk en AH de barcode (EAN) mee?
     try:
         async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
-            for f in ["ean", "eanCode", "eans", "barcode", "gtin", "gtins", "articleNumber"]:
+            for f in ["eanCodes", "barcodes", "gtinCode", "productEan", "eanNumber", "ean13"]:
                 r = await c.post(DIRK_GQL, json={"query": "query{products(productIds:[101229],storeId:66){productId productInformation{headerText %s}}}" % f})
-                logger.info("Barcode probe Dirk %s -> %s", f, r.text[:250])
-            for f in ["ean", "eanCode", "barcode", "gtin"]:
-                r = await c.post(DIRK_GQL, json={"query": "query{products(productIds:[101229],storeId:66){productId %s}}" % f})
-                logger.info("Barcode probe Dirk top %s -> %s", f, r.text[:250])
+                logger.info("Barcode probe2 Dirk %s -> %s", f, r.text[:160])
+            ids = await _dirk_search_ids(c, "8712800147008", limit=5)
+            logger.info("Barcode probe2 Dirk zoeken op EAN -> %s", ids)
         ah = await db.products.find_one({"ah_id": {"$exists": True}}, {"_id": 0, "ah_id": 1})
-        if ah:
-            async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
-                tok = await _ah_token(c)
-                r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{ah['ah_id']}", headers={"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"})
+        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
+            tok = await _ah_token(c)
+            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
+            if ah:
+                r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{ah['ah_id']}", headers=H)
                 body = r.json() or {}
-                logger.info("Barcode probe AH keys %s", list(body.keys()))
-                logger.info("Barcode probe AH tradeItem %s", str(body.get("tradeItem"))[:600])
+                logger.info("Barcode probe2 AH properties %s", str(body.get("properties"))[:700])
+                logger.info("Barcode probe2 AH productCard keys %s", list((body.get("productCard") or {}).keys()))
+            r = await c.get("https://api.ah.nl/mobile-services/product/search/v1/gtin/8712800147008", headers=H)
+            logger.info("Barcode probe2 AH gtin-zoek -> %s %s", r.status_code, r.text[:400])
         async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
-            for f in ["ean", "eans", "gtin", "barcode", "sku"]:
-                q = "query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { products { id %s } } }" % f
-                v = {"input": {"searchType": "keyword", "searchTerms": "melk", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=melk", "previousUrl": "", "bloomreachCookieId": ""}}
-                r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": q, "variables": v})
-                logger.info("Barcode probe Jumbo %s -> %s", f, r.text[:300])
+            prods, _ = await _jumbo_search_page(c, "8712800147008", 0)
+            logger.info("Barcode probe2 Jumbo zoeken op EAN -> %s", [(p.get("id"), p.get("ean")) for p in prods[:3]])
     except Exception as e:
         logger.warning("Barcode probe mislukt: %s", e)
 
@@ -2172,7 +2171,7 @@ JUMBO_HEADERS = {
     "Origin": "https://www.jumbo.com",
 }
 JUMBO_SEARCH_QUERY = """query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) {
-  count products { id title brand category image packSizeDisplay prices: price { price promoPrice } } } }"""
+  count products { id ean title brand category image packSizeDisplay prices: price { price promoPrice } } } }"""
 
 
 def _jumbo_normalize(p: dict) -> Optional[dict]:
@@ -2186,6 +2185,7 @@ def _jumbo_normalize(p: dict) -> Optional[dict]:
     return {
         "image": p.get("image") or None,
         "jumbo_id": str(p.get("id")),
+        "barcode": (p.get("ean") or None),
         "name": name[:80],
         "brand": p.get("brand") or None,
         "quantity": p.get("packSizeDisplay") or None,
@@ -2363,7 +2363,7 @@ def _new_store_product(idf: str, nrm: dict, store: str, mults: dict) -> dict:
         "aisle": nrm["aisle"],
         "unit": (nrm.get("quantity") or "stuks").strip()[:24] or "stuks",
         "brand": nrm.get("brand"),
-        "barcode": None,
+        "barcode": nrm.get("barcode"),
         "prices": _prices_from(nrm["price"], store, mults),
         "image": nrm.get("image"),
         "unavailable": [],
@@ -2552,10 +2552,12 @@ async def import_all_dirk_status(user: dict = Depends(get_current_user)):
     return {**doc, "running": _dirk_import_running}
 
 
-def _apply_refresh(p: dict, store: str, price: float, aisle: str, mults: dict, image: Optional[str] = None) -> dict:
+def _apply_refresh(p: dict, store: str, price: float, aisle: str, mults: dict, image: Optional[str] = None, barcode: Optional[str] = None) -> dict:
     out = {"prices": {store: price}, "aisle": aisle if aisle in AISLES else p.get("aisle", "Overig")}
     if image:
         out["image"] = image
+    if barcode:
+        out["barcode"] = barcode
     return out
 
 
@@ -2625,7 +2627,7 @@ async def _refresh_jumbo_prices(mults: dict) -> int:
                             continue
                         done.add(n["jumbo_id"])
                         p = prods[n["jumbo_id"]]
-                        await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n["price"], n["aisle"], mults, n.get("image"))})
+                        await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n["price"], n["aisle"], mults, n.get("image"), n.get("barcode"))})
             except Exception as e:
                 logger.warning("Jumbo-prijzen %s mislukt: %s", term, e)
     return len(done)
