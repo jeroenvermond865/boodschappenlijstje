@@ -91,7 +91,7 @@ export default function FoldersScreen() {
 
       <View style={{ paddingHorizontal: 16, paddingTop: 12, gap: 10 }}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-          {(data?.stores ?? ["Albert Heijn", "Dirk", "Jumbo"]).map((s) => (
+          {[...(data?.stores ?? ["Albert Heijn", "Dirk", "Jumbo"])].sort((a, b) => a.localeCompare(b, "nl")).map((s) => (
             <Pressable
               key={s}
               testID={`folder-store-${s}`}
