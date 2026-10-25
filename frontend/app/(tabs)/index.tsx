@@ -79,8 +79,8 @@ export default function HomeScreen() {
   const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
   const actions = [
     { icon: "tent", label: `${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`, onPress: () => router.push("/camp/new") },
+    { icon: "silverware-fork-knife", label: "Gerechten", onPress: () => router.push("/dishes") },
     { icon: "magnify", label: "Product zoeken", onPress: () => router.push("/products") },
-    { icon: "silverware-fork-knife", label: "Gerecht maken", onPress: () => router.push("/dish/edit") },
     { icon: "newspaper-variant-outline", label: "Folders", onPress: () => router.push("/folders") },
   ];
   const compare = (data?.compare ?? []).filter((c) => c.found > 0);
