@@ -3507,6 +3507,12 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
     last = core[-1]
     for k in range(3, len(last) - 2):
         levels.append((core[:-1] + [last[:k], last[k:]], 0.5))
+    # Vorm van het product zegt weinig: "kaneelpoeder" of "kaneel poeder" heet in de winkel vaak gewoon "kaneel" (gemalen)
+    if len(core) > 1 and core[-1] in _FORMS:
+        levels.append((core[:-1], 0.6))
+    for f in _FORMS:
+        if last.endswith(f) and len(last) - len(f) >= 3:
+            levels.append((core[:-1] + [last[: -len(f)]], 0.6))
     # "parmezaanse kaas": liever parmezaan dan zomaar kaas
     for w in core[:-1]:
         for suf in ("sche", "se"):
@@ -3533,6 +3539,7 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
     return [d for _, d in sorted(best.values(), key=lambda x: x[0])][:limit]
 
 
+_FORMS = ("poeder", "korrels", "vlokken", "stokjes", "stokje", "snippers", "blaadjes", "zaadjes", "gemalen")
 _NONFOOD = {"Huishoud & huisdieren", "Kind & drogisterij", "Non food"}
 _NONFOOD_RE = re.compile(r"drogist|huishoud|huisdier|baby|verzorging|cosmetica|non food|shampoo|douche|zeep|tandpasta|wasmiddel|afwas|"
                          r"deodorant|bodylotion|conditioner|wc |toilet|schoonmaak|kattenvoer|hondenvoer|luier|parfum|scheer|haar|navulling|douchegel|handzeep|"
@@ -3753,6 +3760,19 @@ async def add_recipe_favorite(data: RecipeFav, user: dict = Depends(get_current_
 async def remove_recipe_favorite(id: str, user: dict = Depends(get_current_user)):
     await db.users.update_one({"user_id": user["user_id"]}, {"$pull": {"recipe_favorites": {"id": id}}})
     return {"ok": True}
+
+
+async def _selftest3() -> None:
+    # Tijdelijk: controle matching vormwoorden
+    await asyncio.sleep(60)
+    try:
+        docs = await _global_products()
+        for st in COMPARE_STORES:
+            pool = [d for d in docs if d.get("_src") == st and d.get("is_global")]
+            for q in ("kaneelpoeder", "kaneel poeder", "paprikapoeder", "tomatenpuree", "aardbeienjam", "kerriepoeder"):
+                logger.info("Stest3 %s %s -> %s", st, q, [d["name"] for d in _best_matches(pool, q, 3)])
+    except Exception as e:
+        logger.warning("Stest3: %r", e)
 
 
 class RecipeImport(BaseModel):
@@ -5876,6 +5896,7 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
+    asyncio.create_task(_selftest3())
 
 
 async def _daily_refresh_loop():
