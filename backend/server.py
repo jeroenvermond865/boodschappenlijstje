@@ -7118,7 +7118,7 @@ async def _catalog_loop():
     await asyncio.sleep(120)
     while True:
         last = await db.meta.find_one({"key": "catalog_import"}) or {}
-        at = last.get("at")
+        at = last.get("done_at")  # pas als de hele ronde klaar is; een herstart halverwege begint gewoon opnieuw
         if not at or (datetime.now(timezone.utc) - ensure_aware(at)).total_seconds() > 7 * 86400:
             await db.meta.update_one({"key": "catalog_import"}, {"$set": {"key": "catalog_import", "at": now_utc()}}, upsert=True)
             mults = await _store_mults()
@@ -7127,6 +7127,7 @@ async def _catalog_loop():
                     await fn(mults)
                 except Exception as e:
                     logger.warning("Catalogus %s mislukt: %r", fn.__name__, e)
+            await db.meta.update_one({"key": "catalog_import"}, {"$set": {"done_at": now_utc()}})
             await _log_product_counts(0)
         await asyncio.sleep(6 * 3600)
 
