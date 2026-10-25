@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -60,6 +60,9 @@ function greeting() {
 }
 
 export default function HomeScreen() {
+  const { width } = useWindowDimensions();
+  // Op een breed scherm (laptop) staan de aanbiedingen in een raster i.p.v. één schuifrij.
+  const wide = width >= 700;
   const styles = useStyles();
   const T = useTerms();
   const { colors } = useTheme();
@@ -191,8 +194,13 @@ export default function HomeScreen() {
       {data?.promos.length ? (
         <View style={{ gap: 10 }}>
           <SectionHead title="Nu in de aanbieding" link="Alle folders" onPress={() => router.push("/folders")} />
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.hRow}>
-            {data.promos.map((p, i) => (
+          <ScrollView
+            horizontal={!wide}
+            scrollEnabled={!wide}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={wide ? styles.promoGrid : styles.hRow}
+          >
+            {(wide ? data.promos : data.promos.slice(0, 12)).map((p, i) => (
               <Pressable
                 key={i}
                 onPress={() =>
@@ -383,6 +391,7 @@ const useStyles = makeStyles((colors) => ({
   todoBadge: { minWidth: 26, height: 26, borderRadius: 13, backgroundColor: colors.warning, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 },
   todoBadgeText: { fontSize: 13, fontFamily: fonts.bold, color: colors.onWarning },
   hRow: { gap: 10, paddingHorizontal: 16 },
+  promoGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, paddingHorizontal: 16 },
   promo: { width: 150, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 10, gap: 6 },
   promoImgBox: { height: 110, borderRadius: 10, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   promoImg: { width: "90%", height: "90%" },

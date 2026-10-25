@@ -4688,7 +4688,7 @@ async def _track_interest(user_id: str, doc: dict) -> None:
         await db.user_interest.update_one({"user_id": user_id}, {"$inc": inc, "$set": {"at": now_utc()}}, upsert=True)
 
 
-def _pick_promos(cands: list, interest: dict, fav_store: str, fav_ids: set, used_ids: set, used_stores: dict, n: int = 12) -> list:
+def _pick_promos(cands: list, interest: dict, fav_store: str, fav_ids: set, used_ids: set, used_stores: dict, n: int = 24) -> list:
     import random
     stores = dict(interest.get("stores") or {})
     for st, c in used_stores.items():
@@ -4716,17 +4716,19 @@ def _pick_promos(cands: list, interest: dict, fav_store: str, fav_ids: set, used
             + 1.0 * max([aisles.get(_ikey(a), 0) for a in c.get("_aisles") or []], default=0)
         scored.append((sw(c["store"]) * (1 + personal) * random.uniform(0.75, 1.25), personal, c))
     scored.sort(key=lambda x: -x[0])
-    out, others = [], 0
+    out, others, rest = [], 0, []
     for score, personal, c in scored:
         if c["store"] != fav_store and sw(c["store"]) < 0.3:
             # Een winkel die je bijna niet gebruikt: heel af en toe, en alleen als het echt iets voor jou lijkt
-            if others >= 2 or personal < 1.5:
+            if others >= max(2, n // 8) or personal < 1.5:
+                rest.append(c)
                 continue
             others += 1
-        out.append({k: v for k, v in c.items() if not k.startswith("_")})
+        out.append(c)
         if len(out) >= n:
             break
-    return out
+    out += rest[:max(0, n - len(out))]  # te weinig van je eigen winkel (bijv. folder nog niet geladen): aanvullen
+    return [{k: v for k, v in c.items() if not k.startswith("_")} for c in out]
 
 
 async def _home_inspiration() -> tuple:
@@ -4770,7 +4772,7 @@ async def _home_inspiration() -> tuple:
         random.shuffle(recipes)
     except Exception as e:
         logger.warning("Home recepten: %r", e)
-    return promos[:12], recipes
+    return promos, recipes
 
 
 @api_router.get("/home")
@@ -4869,7 +4871,7 @@ async def home(user: dict = Depends(get_current_user)):
         promos = _pick_promos(promos, interest, user.get("store") or DEFAULT_STORE, set(user.get("favorite_products") or []), used_ids, used_stores)
     except Exception as e:
         logger.warning("Persoonlijke acties: %r", e)
-        promos = [{k: v for k, v in c.items() if not k.startswith("_")} for c in promos[:12]]
+        promos = [{k: v for k, v in c.items() if not k.startswith("_")} for c in promos[:24]]
     return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "compare_pending": compare_pending, "promos": promos,
             "recipes": recipes, "todo": todo, "own_dishes": own_dishes}
 
