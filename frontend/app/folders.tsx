@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, Image, Linking, Modal, Pressable, ScrollView, SectionList, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -41,7 +41,7 @@ type FolderPeriod = {
 type FoldersResponse = { store: string; stores: string[]; periods: FolderPeriod[]; loading: boolean };
 
 export default function FoldersScreen() {
-  const params = useLocalSearchParams<{ store?: string }>();
+  const params = useLocalSearchParams<{ store?: string; promo?: string }>();
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -57,6 +57,24 @@ export default function FoldersScreen() {
     staleTime: 10 * 60 * 1000,
   });
   const periods = data?.periods ?? [];
+  // Vanaf Home: meteen naar die winkel en die actie
+  const shown = useRef<string | null>(null);
+  useEffect(() => {
+    if (params.store) setStore(params.store);
+  }, [params.store]);
+  useEffect(() => {
+    if (!params.promo || shown.current === params.promo || data?.store !== (params.store || store)) return;
+    for (const per of periods) {
+      const it = per.items.find((x) => x.id === params.promo);
+      if (it) {
+        shown.current = params.promo;
+        setPeriodKey(per.key);
+        setCat(null);
+        setOpen(it);
+        return;
+      }
+    }
+  }, [params.promo, params.store, data]);
   const period = periods.find((p) => p.key === periodKey) ?? periods[0];
   // Per categorie, twee kaarten naast elkaar
   const sections = useMemo(() => {

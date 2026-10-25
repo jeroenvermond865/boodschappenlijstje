@@ -3408,8 +3408,48 @@ async def _dirk_ai_period(extra: list) -> Optional[dict]:
     return None
 
 
+JUMBO_PROMO_QUERY = """query($id: String!) { promotionTab(id: $id) { runtimes { id start { iso } title sections { promotions { ...P }
+  categories { promotions { ...P } } } } } }
+fragment P on Promotion { id title subtitle start { iso } end { iso } tags { text } isKiesAndMix image products { id } }"""
+
+
 async def _jumbo_folder() -> list:
-    # Jumbo: acties komen mee met de producten (bij import en de dagelijkse update)
+    # Jumbo: de aanbiedingenpagina van jumbo.com, met deze week en (vanaf zondag) volgende week als losse acties
+    try:
+        async with httpx.AsyncClient(timeout=30, headers={**JUMBO_HEADERS, "Accept": "*/*"}) as c:
+            r = await c.post(JUMBO_GQL, json={"query": JUMBO_PROMO_QUERY, "variables": {"id": "actieprijs"}})
+        runtimes = (((r.json() or {}).get("data") or {}).get("promotionTab") or {}).get("runtimes") or []
+        out = []
+        for rt in runtimes:
+            items: dict = {}
+            for sc in rt.get("sections") or []:
+                for pr in (sc.get("promotions") or []) + [x for cat in sc.get("categories") or [] for x in cat.get("promotions") or []]:
+                    if not pr.get("id") or pr["id"] in items:
+                        continue
+                    ids = [x["id"] for x in pr.get("products") or [] if x.get("id")]
+                    tags = [t.get("text") for t in pr.get("tags") or [] if t.get("text")]
+                    title = pr.get("title") or ""
+                    if pr.get("subtitle"):
+                        title = f"{title} ({pr['subtitle']})"
+                    items[pr["id"]] = _promo_item("Jumbo", pr["id"], title, tags[0] if tags else "Actie", (pr.get("start") or {}).get("iso"),
+                                                  (pr.get("end") or {}).get("iso"), pr.get("image"), ids=ids,
+                                                  combinable=bool(pr.get("isKiesAndMix")) or len(ids) > 1)
+            its = list(items.values())
+            if its:
+                ends = sorted(i["end"] or "" for i in its)
+                start = _iso_day((rt.get("start") or {}).get("iso")) or min(i["start"] or "" for i in its)
+                nxt = "woensdag" in (rt.get("title") or "").lower() or "volgende" in (rt.get("title") or "").lower()
+                out.append({"start": start, "end": ends[len(ends) // 2],
+                            "folder_url": "https://www.jumbo.com/aanbiedingen/" + ("volgende-week" if nxt else "nu"), "items": its})
+        if out:
+            return out
+    except Exception as e:
+        logger.warning("Jumbo aanbiedingenpagina mislukt: %r", e)
+    return await _jumbo_folder_products()
+
+
+async def _jumbo_folder_products() -> list:
+    # Reserve: acties die meekomen met de producten (bij import en de dagelijkse update)
     docs = await db.products.find({"jumbo_id": {"$exists": True}, "promo": {"$ne": None}, "deleted_at": None, "is_global": True},
                                   {"_id": 0, "jumbo_id": 1, "promo": 1, "promos": 1, "image": 1, "name": 1, "prices": 1}).to_list(None)
     items: dict = {}
@@ -4354,7 +4394,7 @@ async def _home_inspiration() -> tuple:
                     img = it.get("image") or (docs[0].get("image") if docs else None)
                     if not img or not docs:
                         continue
-                    items.append({"store": s, "title": it["title"], "label": it["label"], "image": img,
+                    items.append({"store": s, "id": it["id"], "title": it["title"], "label": it["label"], "image": img,
                                   "price": it.get("price"), "regular": it.get("regular"),
                                   "product_ids": [d["product_id"] for d in docs], "end": it.get("end")})
             import random
@@ -6361,31 +6401,7 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
-    asyncio.create_task(_stest13())
 
-
-async def _stest13():
-    # Tijdelijk: welke tabbladen en weken heeft jumbo.com, en hoe zien de producten eruit
-    await asyncio.sleep(20)
-    try:
-        async with httpx.AsyncClient(timeout=30, headers={**JUMBO_HEADERS, "Accept": "*/*"}) as c:
-            async def run(q, v=None):
-                r = await c.post(JUMBO_GQL, json={"query": q, "variables": v or {}})
-                return r.status_code, r.json()
-            for q in ("{ promotionTabs { id shortTitle } }", "{ promotionTabs(storeId: null) { id shortTitle } }", "{ promotionOverview { tabs { id shortTitle } } }"):
-                st, j = await run(q)
-                logger.info("Stest13 tabs %s %s", st, str(j)[:800])
-            for tab in ("actieprijs", "alle", "alle-aanbiedingen", "volgende-week", "deze-week"):
-                st, j = await run("query($id: String!) { promotionTab(id: $id) { id shortTitle runtimes { id start { iso } active title shortTitle sections { id title "
-                                  "promotions { id title subtitle start { iso } end { iso } tags { text } isKiesAndMix image products { id title link } } } } } }", {"id": tab})
-                rt = (((j.get("data") or {}).get("promotionTab") or {}).get("runtimes")) or []
-                logger.info("Stest13 tab %s %s err=%s runtimes=%s", tab, st, str(j.get("errors"))[:300],
-                            [(x.get("id"), x.get("title"), (x.get("start") or {}).get("iso"), x.get("active"), sum(len(sc.get("promotions") or []) for sc in x.get("sections") or [])) for x in rt])
-                for x in rt:
-                    for sc in (x.get("sections") or [])[:1]:
-                        logger.info("Stest13 ex %s %s", x.get("title"), str((sc.get("promotions") or [])[:2])[:1200])
-    except Exception as e:
-        logger.warning("Stest13: %r", e)
 
 async def _daily_refresh_loop():
     # Run shortly after boot, then every 24h

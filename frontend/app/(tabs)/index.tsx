@@ -29,6 +29,7 @@ type Home = {
   compare: CompareStore[] | null;
   compare_pending?: boolean;
   promos: {
+    id?: string;
     store: string;
     title: string;
     label: string;
@@ -197,7 +198,7 @@ export default function HomeScreen() {
                 onPress={() =>
                   p.product_ids.length === 1
                     ? router.push(`/product/${p.product_ids[0]}`)
-                    : router.push({ pathname: "/folders", params: { store: p.store } })
+                    : router.push({ pathname: "/folders", params: { store: p.store, promo: p.id } })
                 }
                 style={styles.promo}
               >
