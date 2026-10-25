@@ -1535,7 +1535,7 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
         pid = item.get("product_id")
         p = products_by_id.get(pid) if pid else None
         price = resolve_price(p.get("prices", {}), store, p.get("unavailable", [])) if p else (item.get("price", 0) or 0)
-        return price * _pack_share(item.get("unit") or "stuks", (p or {}).get("unit") or "")
+        return price * _pack_share(item.get("unit") or "stuks", (p or {}).get("unit") or "", (p or {}).get("name") or item.get("name") or "")
 
     total_cost = 0.0
     total_person_days = 0
@@ -2263,6 +2263,7 @@ class PackPlanItem(BaseModel):
     product_id: str
     qty: float
     unit: str = ""
+    packs: Optional[float] = None  # zoveel verpakkingen zet de site zelf in het mandje (al omgerekend)
 
 
 class PackPlanInput(BaseModel):
@@ -2281,7 +2282,7 @@ async def pack_plans(body: PackPlanInput, user: dict = Depends(get_current_user)
         out = []
         for i in body.items[:80]:
             p = by_pid.get(i.product_id) or extra.get(i.product_id)
-            out.append(_pack_plan(p, i.qty, i.unit) if p else None)
+            out.append(_pack_plan(p, i.qty, i.unit, site_packs=i.packs) if p else None)
         return out
     return {"plans": await asyncio.to_thread(run)}
 
@@ -2430,14 +2431,14 @@ def _bigger_pack(p: dict, need: float, unit: str, store: str, packs: int, cost: 
     return best
 
 
-def _pack_plan(p: dict, qty: float, unit: str, store: Optional[str] = None) -> Optional[dict]:
+def _pack_plan(p: dict, qty: float, unit: str, store: Optional[str] = None, site_packs: Optional[float] = None) -> Optional[dict]:
     # Hoeveel verpakkingen heb je nodig, wat kost dat, en is een andere verpakking voordeliger?
     store = store or p.get("_src") or product_source(p)
     price = resolve_price(p.get("prices") or {}, store, p.get("unavailable") or [])
     if not price or not qty:
         return None
-    share = _pack_share(unit, p.get("unit") or "")
-    packs = max(1, math.ceil(round(qty * share, 3)))
+    share = _pack_share(unit, p.get("unit") or "", p.get("name") or "")
+    packs = max(1, math.ceil(round(site_packs if site_packs else qty * share, 3)))
     cost = packs * price
     u = (unit or "").lower().strip()
     need = qty * _MEASURE[u] if u in _MEASURE else qty
@@ -2449,7 +2450,21 @@ def _pack_plan(p: dict, qty: float, unit: str, store: Optional[str] = None) -> O
     return {"packs": packs, "pack_unit": p.get("unit") or "", "pack_price": round(price, 2), "cost": round(cost, 2), "better": better}
 
 
-def _pack_share(item_unit: str, pack: str) -> float:
+# Gewicht van één stuk, voor producten die per gewicht verkocht worden: 6 blaadjes gelatine passen in één pakje van 23 gram
+_PIECE_GRAMS = [("gelatine", 1.65), ("knoflook", 50), ("sjalot", 30), ("ui", 100), ("uien", 100), ("aardappel", 150), ("wortel", 80),
+                ("paprika", 150), ("tomaat", 100), ("tomaten", 100), ("appel", 150), ("peer", 150), ("citroen", 100), ("limoen", 70),
+                ("banaan", 120), ("bananen", 120), ("sinaasappel", 200), ("mandarijn", 80), ("champignon", 20), ("ei", 60), ("eieren", 60)]
+
+
+def _piece_grams(name: str) -> Optional[float]:
+    words = set(re.findall(r"[a-z]+", _norm_text(name or "")))
+    for w, g in _PIECE_GRAMS:
+        if w in words:
+            return g
+    return None
+
+
+def _pack_share(item_unit: str, pack: str, name: str = "") -> float:
     # Welk deel van één verpakking is één eenheid van het ingrediënt?
     u = (item_unit or "").lower().strip()
     if u in _MEASURE:
@@ -2461,8 +2476,17 @@ def _pack_share(item_unit: str, pack: str) -> float:
                 return _MEASURE[u] / (amount * base)
         return _MEASURE[u] / 500  # onbekende verpakking: reken met een gewoon pak van 500 gram
     if u in ("", "stuks", "stuk", "st"):
-        n = _pack_count(pack)
-        return 1 / n if n else 1.0
+        n = _pack_count(pack) or _pack_count(re.sub(r"(?i)\b(blaadjes|blaadje|bladen)\b", "stuks", pack or ""))
+        if n:
+            return 1 / n
+        m = _UNIT_RE.search((pack or "").lower())
+        piece = _piece_grams(name)
+        if m and piece and m.group(3) not in ("ml", "cl", "l", "liter", "ltr"):
+            amount = float(m.group(2).replace(",", ".")) * int(m.group(1) or 1)
+            grams = amount * {"kg": 1000, "kilo": 1000, "kilogram": 1000}.get(m.group(3), 1)
+            if grams > piece:
+                return piece / grams
+        return 1.0
     if u in _PART_OF_PACK:
         if u == "plak":
             m = re.search(r"(\d+)\s*(plakken|plakjes|st)", (pack or "").lower())
@@ -3772,6 +3796,13 @@ async def _dirk_all_recipes() -> list:
                     "servings": None, "course": (names("courses") or [None])[0], "rating": None,
                     "_courses": names("courses"), "_kitchens": names("kitchens"), "_tags": names("tags"),
                     "_veg": bool(x.get("vegetarian")), "_desc": x.get("metaDescription") or ""})
+    diets = {d["id"]: d async for d in db.recipe_diet.find({}, {"_id": 0})}
+    for r in out:
+        d = diets.get(r["id"]) or {}
+        r["_veg"] = r["_veg"] or bool(d.get("veg"))
+        r["_vegan"] = bool(d.get("vegan"))
+    if any(r["id"] not in diets for r in out):
+        asyncio.create_task(_dirk_diet_scan(out))
     out.sort(key=lambda r: r["title"].lower())
     logger.info("Dirk: %d recepten", len(out))
     if out:
@@ -3779,16 +3810,54 @@ async def _dirk_all_recipes() -> list:
     return out
 
 
+_DAIRY_RE = re.compile(r"melk|boter|kaas|room|yoghurt|kwark|\bei\b|eieren|eidooier|eiwit|honing|mascarpone|ricotta|feta|mozzarella|"
+                       r"parmez|parmigiano|creme fraiche|vla\b|karnemelk|chocolade|mayonaise|ghee")
+_VEGAN_OK_RE = re.compile(r"plantaardig|vegan|kokos|amandel|haver|soja|pindakaas|notenboter|cacaoboter|pindaboter|pure chocolade")
+
+
+def _diet_of(names: list) -> tuple:
+    # (vegetarisch, veganistisch) volgens de ingrediënten: geen vlees of vis, en voor vegan ook geen zuivel, ei of honing
+    ns = [_norm_text(n) for n in names]
+    meat = any((_MEAT_RE.search(n) or "gelatine" in n) and not _VEGA_RE.search(n) and not re.search(r"vleestomaat|speculaas|groentebouillon", n) for n in ns)
+    vegan = not meat and not any(_DAIRY_RE.search(n) and not _VEGAN_OK_RE.search(n) for n in ns)
+    return not meat, vegan
+
+
+async def _dirk_diet_scan(recipes: list) -> None:
+    # Eén keer per recept de ingrediënten bekijken; Dirk zet niet bij elk vegetarisch recept het vinkje
+    known = {d["id"] async for d in db.recipe_diet.find({}, {"_id": 0, "id": 1})}
+    todo = [r for r in recipes if r["id"] not in known]
+    if not todo:
+        return
+    sem = asyncio.Semaphore(3)
+
+    async def one(r):
+        async with sem:
+            try:
+                d = await _recipe_detail(r["id"])
+            except Exception:
+                return
+        veg, vegan = _diet_of([i.get("name") or i.get("text") or "" for i in d.get("ingredients") or []])
+        await db.recipe_diet.update_one({"id": r["id"]}, {"$set": {"id": r["id"], "veg": veg, "vegan": vegan}}, upsert=True)
+        r["_veg"] = r["_veg"] or veg
+        r["_vegan"] = vegan
+    await asyncio.gather(*(one(r) for r in todo))
+    logger.info("Dirk-recepten: dieet bepaald voor %d recepten", len(todo))
+    for k in [k for k in _recipe_cache if isinstance(k, tuple) and k[:2] == ("search", "dirk")]:
+        _recipe_cache.pop(k, None)
+
+
 def _dirk_matches(r: dict, filters: dict, skip: Optional[str] = None) -> bool:
+    # Meerdere keuzes: het recept moet bij allemaal horen
     for k, vals in filters.items():
         if k == skip or not vals:
             continue
         have = {"gang": r["_courses"], "keuken": r["_kitchens"], "tag": r["_tags"],
-                "dieet": ["Vegetarisch"] if r["_veg"] else []}.get(k)
+                "dieet": (["Vegetarisch"] if r["_veg"] else []) + (["Veganistisch"] if r.get("_vegan") else [])}.get(k)
         if k == "tijd":
             if not r["time"] or r["time"] > max(int(v) for v in vals):
                 return False
-        elif have is not None and not any(v in have for v in vals):
+        elif have is not None and not all(v in have for v in vals):
             return False
     return True
 
@@ -3802,7 +3871,7 @@ async def _dirk_recipes(q: str, filters: dict, page: int, size: int) -> dict:
     for key, label, field in (("gang", "Gang", "_courses"), ("keuken", "Keuken", "_kitchens"), ("tag", "Soort & smaak", "_tags")):
         counts: dict = {}
         for r in base:
-            if _dirk_matches(r, filters, skip=key):
+            if _dirk_matches(r, filters):  # zoveel blijven er over als je deze er ook bij kiest
                 for v in r[field]:
                     counts[v] = counts.get(v, 0) + 1
         for v in filters.get(key) or []:
@@ -3811,7 +3880,9 @@ async def _dirk_recipes(q: str, filters: dict, page: int, size: int) -> dict:
             facets.append({"key": key, "label": label, "multi": True,
                            "values": [{"value": v, "label": v, "count": n} for v, n in sorted(counts.items(), key=lambda kv: -kv[1])]})
     nveg = sum(1 for r in base if r["_veg"] and _dirk_matches(r, filters, skip="dieet"))
-    facets.append({"key": "dieet", "label": "Dieet", "multi": False, "values": [{"value": "Vegetarisch", "label": "Vegetarisch", "count": nveg}]})
+    nvegan = sum(1 for r in base if r.get("_vegan") and _dirk_matches(r, filters, skip="dieet"))
+    facets.append({"key": "dieet", "label": "Dieet", "multi": False, "values": [{"value": "Vegetarisch", "label": "Vegetarisch", "count": nveg}]
+                   + ([{"value": "Veganistisch", "label": "Veganistisch", "count": nvegan}] if nvegan else [])})
     facets.append({"key": "tijd", "label": "Bereidingstijd", "multi": False, "values": [{"value": v, "label": l, "count": None} for v, l in COMMON_TIMES]})
     chunk = hits[page * size:(page + 1) * size]
     return {"recipes": [{k: v for k, v in r.items() if not k.startswith("_")} for r in chunk], "total": len(hits),
@@ -3981,7 +4052,14 @@ async def _recipe_detail(rid: str) -> dict:
             qty, unit, name = _parse_amount(desc)
             p = prods.get(str(i.get("productNumber"))) or {}
             ings.append({"text": desc, "name": name, "qty": qty, "unit": unit, "site_linked": bool(i.get("productNumber")),
+                         "site_packs": i.get("quantity") if isinstance(i.get("quantity"), (int, float)) and i.get("quantity") > 0 else None,
                          "product": {"store": "Dirk", "sid": str(p["productId"])} if p.get("productId") else None})
+        # "Wij gaan er vanuit dat je dit in huis hebt"
+        in_stock = []
+        for x in r.get("ingredientsInStock") or []:
+            t = x if isinstance(x, str) else (x.get("description") or x.get("name") or "") if isinstance(x, dict) else ""
+            if t.strip():
+                in_stock.append(t.strip())
         steps = []
         for s in r.get("steps") or []:
             steps.append(s if isinstance(s, str) else (s.get("description") or s.get("text") or "") if isinstance(s, dict) else "")
@@ -3990,7 +4068,7 @@ async def _recipe_detail(rid: str) -> dict:
         out = {"id": rid, "store": "dirk", "title": r["title"].strip(), "description": r.get("metaDescription"),
                "image": (DIRK_IMAGE_BASE + img.lstrip("/")) if img else None, "time": _iso_minutes(r.get("preparationTime")),
                "servings": r.get("persons"), "tags": names("courses") + names("kitchens") + names("tags") + (["Vegetarisch"] if r.get("vegetarian") else []),
-               "kcal": None, "ingredients": ings, "steps": [s for s in steps if s], "tip": r.get("tip"),
+               "kcal": None, "ingredients": ings, "steps": [s for s in steps if s], "tip": r.get("tip"), "in_stock": in_stock,
                "url": f"https://www.dirk.nl/meer/recepten/recept/{key}"}
     else:
         raise HTTPException(status_code=404, detail="Recept niet gevonden")
@@ -4269,7 +4347,38 @@ async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
     return await _recipe_products(rec, user)
 
 
+async def _import_linked(rec: dict) -> None:
+    # Producten die de site bij het recept koppelt maar die nog niet in de app staan: meteen inladen
+    by_sid = _product_cache.get("by_sid") or {}
+    todo = [int(i["product"]["sid"]) for i in rec["ingredients"] if i.get("product") and i["product"]["store"] == "Dirk"
+            and ("Dirk", i["product"]["sid"]) not in by_sid and str(i["product"]["sid"]).isdigit()]
+    if not todo:
+        return
+    have = {str(p["dirk_id"]) async for p in db.products.find({"dirk_id": {"$in": todo + [str(t) for t in todo]}}, {"_id": 0, "dirk_id": 1})}
+    todo = [t for t in todo if str(t) not in have]
+    if not todo:
+        return
+    try:
+        mults = await _store_mults()
+        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
+            prods = await _dirk_fetch_products(c, todo[:25])
+        docs = []
+        for p in prods:
+            nrm = _dirk_normalize(p)
+            if nrm:
+                nrm["source_id"] = nrm["dirk_id"]
+                docs.append(_new_store_product("dirk_id", nrm, "Dirk", mults))
+        if docs:
+            await db.products.insert_many(docs)
+            _invalidate_products()
+            logger.info("Recept %s: %d producten van Dirk ingeladen", rec["id"], len(docs))
+    except Exception as e:
+        logger.warning("Receptproducten inladen mislukt: %r", e)
+
+
 async def _recipe_products(rec: dict, user: dict) -> dict:
+    await _global_products()
+    await _import_linked(rec)
     docs = await _global_products()
     matches = _rc_get(("match", rec["id"]), 6 * 3600)
     if matches is None:
@@ -6511,30 +6620,6 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
-    asyncio.create_task(_stest16())
-
-
-async def _stest16():
-    # Tijdelijk: hoe ziet een Dirk-recept er van binnen uit (in huis, prijs per persoon, gekoppelde producten)
-    await asyncio.sleep(25)
-    try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
-            resp = await c.get("https://www.dirk.nl/meer/recepten/recept/oreo-cheesecake", headers=_PAGE_HEADERS)
-        data = (_nuxt_data(resp.text) or {}).get("data") or {}
-        logger.info("Stest16 data keys %s", list(data.keys())[:20])
-        r = _find_dict(data, "steps") or {}
-        logger.info("Stest16 recipe keys %s", {k: (str(v)[:150] if not isinstance(v, list) else f"list{len(v)}") for k, v in r.items()})
-        for i in (r.get("ingredients") or [])[:12]:
-            logger.info("Stest16 ing %s", str(i)[:400])
-        for k, v in data.items():
-            if str(k).startswith("products-") and isinstance(v, dict):
-                logger.info("Stest16 prods %s %s", k, [(pk, (pv or {}).get("productId"), ((pv or {}).get("productInformation") or {}).get("headerText")) for pk, pv in list(v.items())[:15]])
-        for kw in ("inHuis", "inHouse", "pantry", "basic", "price", "Price", "prijs"):
-            for k in r:
-                if kw.lower() in k.lower():
-                    logger.info("Stest16 field %s = %s", k, str(r[k])[:600])
-    except Exception as e:
-        logger.warning("Stest16: %r", e)
 
 
 async def _daily_refresh_loop():

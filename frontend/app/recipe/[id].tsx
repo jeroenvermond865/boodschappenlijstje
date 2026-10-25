@@ -29,7 +29,8 @@ type Recipe = {
   url: string;
   is_favorite?: boolean;
   steps: string[];
-  ingredients: { text: string; name: string; qty: number | null; unit: string; pantry?: boolean; product: Product | null }[];
+  ingredients: { text: string; name: string; qty: number | null; unit: string; pantry?: boolean; site_packs?: number | null; product: Product | null }[];
+  in_stock?: string[];
 };
 
 const SITE: Record<string, string> = { ah: "Allerhande", jumbo: "jumbo.com", dirk: "dirk.nl" };
@@ -75,7 +76,11 @@ export default function RecipeScreen() {
     n !== base && i.qty != null ? `${formatQty(scale(i.qty)!)} ${i.unit === "stuks" ? "" : i.unit + " "}${i.name}` : i.text;
   const [include, setInclude] = useState<number[]>([]);
   // Verpakkingen voor het gekozen aantal personen: de zak wordt niet groter, je hebt er meer van nodig (of een grotere)
-  const planItems = (r?.ingredients ?? []).map((i) => (i.product && i.qty != null ? { product_id: i.product.id, qty: scale(i.qty)!, unit: i.unit } : null));
+  const planItems = (r?.ingredients ?? []).map((i) =>
+    i.product && (i.qty != null || i.site_packs)
+      ? { product_id: i.product.id, qty: scale(i.qty ?? 1)!, unit: i.unit, packs: i.site_packs ? (i.site_packs * n) / base : undefined }
+      : null,
+  );
   const plans = useQuery({
     queryKey: ["packs", id, n],
     enabled: planItems.some(Boolean),
@@ -87,6 +92,13 @@ export default function RecipeScreen() {
       return planItems.map((x) => (x ? res.plans[k++] ?? null : null));
     },
   });
+
+  // Wat kost het gerecht: alles wat op je lijst komt (dus niet wat je al in huis hebt, tenzij je het aanzet)
+  const total = (r?.ingredients ?? []).reduce((sum, i, idx) => {
+    if (i.pantry && !include.includes(idx)) return sum;
+    const plan = plans.data?.[idx];
+    return sum + (plan?.cost ?? (i.product && i.qty == null && !i.site_packs ? i.product.price ?? 0 : 0));
+  }, 0);
 
   const fav = useMutation({
     mutationFn: (on: boolean) =>
@@ -169,6 +181,12 @@ export default function RecipeScreen() {
                 </Pressable>
               </View>
               {n !== base ? <Text style={styles.muted}>Omgerekend van {base} naar {n === 1 ? "1 persoon" : `${n} personen`}.</Text> : null}
+              {total > 0 ? (
+                <View style={styles.costRow}>
+                  <Text style={styles.costMain}>Totaal {euro(total)}</Text>
+                  <Text style={styles.costSub}>{euro(total / n)} per persoon</Text>
+                </View>
+              ) : null}
               <View style={styles.card}>
                 {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => !x.i.pantry).map(({ i, idx }, k) => (
                   <IngRow key={idx} i={i} first={k === 0} label={amount(i)} plan={plans.data?.[idx]} />
@@ -191,6 +209,13 @@ export default function RecipeScreen() {
                       />
                     ))}
                   </View>
+                </>
+              ) : null}
+
+              {r.in_stock?.length ? (
+                <>
+                  <Text style={styles.section}>Volgens de site heb je dit al in huis</Text>
+                  <Text style={styles.muted}>{r.in_stock.join(" · ")}</Text>
                 </>
               ) : null}
 
@@ -476,6 +501,9 @@ const useStyles = makeStyles((colors) => ({
   headerTitle: { flex: 1, textAlign: "center", fontSize: 16, fontFamily: fonts.semibold, color: colors.onSurface },
   center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 24 },
   muted: { fontSize: 14, fontFamily: fonts.regular, color: colors.muted },
+  costRow: { flexDirection: "row", alignItems: "baseline", gap: 10, paddingVertical: 4 },
+  costMain: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },
+  costSub: { fontSize: 14, fontFamily: fonts.medium, color: colors.brandPrimary },
   link: { fontSize: 15, fontFamily: fonts.semibold, color: colors.brandPrimary },
   hero: { width: "100%", aspectRatio: 16 / 10, backgroundColor: colors.surfaceTertiary },
   title: { fontSize: 24, fontFamily: fonts.bold, color: colors.onSurface },

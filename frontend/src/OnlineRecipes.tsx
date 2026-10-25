@@ -68,11 +68,13 @@ export function OnlineRecipes({
     return () => clearTimeout(t);
   }, [input]);
 
-  // Andere winkel, andere filters
+  // Andere winkel: elke winkel heeft eigen filters. Neem de gekozen filters mee naar de filters met dezelfde naam bij de nieuwe winkel
   const [firstStore, setFirstStore] = useState(true);
+  const [carry, setCarry] = useState<Filters | null>(null);
   useEffect(() => {
     if (firstStore) return setFirstStore(false);
-    setFilters(store === "all" && initialFilters ? initialFilters : {});
+    if (Object.keys(filters).length) setCarry(filters);
+    setFilters({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store]);
 
@@ -98,6 +100,26 @@ export function OnlineRecipes({
   const first = query.data?.pages[0];
   const facets = first?.facets ?? [];
   const active = Object.values(filters).reduce((n, v) => n + v.length, 0);
+  useEffect(() => {
+    if (!carry || !first || query.isFetching) return;
+    const norm = (x: string) => x.toLowerCase().replace(/[^a-z]/g, "");
+    const alias: Record<string, string[]> = { hoofdgerecht: ["avondeten", "hoofdgerecht"], avondeten: ["hoofdgerecht", "avondeten"], dessert: ["toetjes", "nagerecht", "dessert"], toetjes: ["dessert", "nagerecht"] };
+    const out: Filters = {};
+    for (const [key, vals] of Object.entries(carry)) {
+      for (const v of vals) {
+        const want = [norm(v), ...(alias[norm(v)] ?? [])];
+        for (const f of first.facets) {
+          const hit = f.values.find((x) => want.includes(norm(x.value)) || want.includes(norm(x.label)));
+          if (hit && (f.key === key || !out[f.key]?.length || f.multi)) {
+            out[f.key] = f.multi ? [...new Set([...(out[f.key] ?? []), hit.value])] : [hit.value];
+            break;
+          }
+        }
+      }
+    }
+    setCarry(null);
+    if (Object.keys(out).length) setFilters(out);
+  }, [carry, first, query.isFetching]);
 
   const toggle = (f: RecipeFacet, value: string) =>
     setFilters((x) => {
