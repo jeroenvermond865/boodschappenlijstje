@@ -1,4 +1,5 @@
-import { Text } from "react-native";
+import { Pressable, Text } from "react-native";
+import { useRouter } from "expo-router";
 
 import { euro } from "@/src/search";
 import { fonts, makeStyles } from "@/src/theme";
@@ -13,12 +14,16 @@ export function packText(packs: number, unit?: string) {
 
 export function BetterPack({ better }: { better?: PackBetter | null }) {
   const styles = useStyles();
+  const router = useRouter();
   if (!better) return null;
+  // Tik erop om het voordeligere product te bekijken
   return (
-    <Text style={styles.better} numberOfLines={2}>
-      Voordeliger: {better.packs}× {better.name}
-      {better.pack_unit ? ` (${better.pack_unit})` : ""} · {euro(better.cost)}, {euro(better.saving)} minder
-    </Text>
+    <Pressable onPress={(e) => { e.stopPropagation?.(); router.push(`/product/${better.product_id}`); }} hitSlop={4}>
+      <Text style={styles.better} numberOfLines={2}>
+        Voordeliger: {better.packs}× {better.name}
+        {better.pack_unit ? ` (${better.pack_unit})` : ""} · {euro(better.cost)}, {euro(better.saving)} minder ›
+      </Text>
+    </Pressable>
   );
 }
 

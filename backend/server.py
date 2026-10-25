@@ -2412,7 +2412,7 @@ def _bigger_pack(p: dict, need: float, unit: str, store: str, packs: int, cost: 
         pool = [d for d in _product_cache.get("docs") or [] if d.get("_src") == store and d.get("is_global")]
         hits = _best_matches(pool, _alt_terms(p["name"], p) or p["name"], 20)
         sub = p.get("subcategory")
-        alts = [d for d in hits if d["product_id"] != p["product_id"] and (not sub or d.get("subcategory") in (sub, None))]
+        alts = [d for d in hits if d["product_id"] != p["product_id"] and (not sub or d.get("subcategory") in (sub, None)) and _same_kind(p, d)]
         if len(_size_alts) > 3000:
             _size_alts.clear()
         _size_alts[(p["product_id"], store)] = alts
@@ -4640,9 +4640,11 @@ def _same_kind(base: dict, cand: dict) -> bool:
     def same(c, b):
         # "melk" = "melk", "halfvol" = "halfvolle", maar "chocolademelk" is iets anders dan "melk"
         c = stem(c)
-        return c == b or (c.startswith(b) and len(c) - len(b) <= 3) or (b.startswith(c) and len(b) - len(c) <= 3)
-    bw = [stem(w) for w in _alt_terms(base["name"], base).split()]
-    cw = _alt_terms(cand["name"], cand).split()
+        if c == b or (c.startswith(b) and len(c) - len(b) <= 3) or (b.startswith(c) and len(b) - len(c) <= 3):
+            return True
+        return any(c == q + b for q in ("scharrel", "bio", "vrijeuitloop", "uitloop"))  # "scharreleieren" zijn eieren
+    bw = [stem(w) for w in re.findall(r"[a-z]{3,}", _alt_terms(base["name"], base))]
+    cw = re.findall(r"[a-z]{3,}", _alt_terms(cand["name"], cand))
     if not bw or not cw:
         return False
     if not any(same(c, bw[-1]) for c in cw):
@@ -5339,14 +5341,34 @@ async def _dirk_ids_for_ean(client, ean: str) -> list:
         return []
 
 
+_ah_ean_stats: dict = {}
+
+
 async def _ah_ids_for_ean(client, headers: dict, ean: str) -> list:
-    try:
-        r = await client.get(f"https://api.ah.nl/mobile-services/product/search/v1/gtin/{ean}", headers=headers)
+    # Bij een lange ronde verloopt de AH-sleutel of remt AH af: dan een nieuwe sleutel halen of even wachten
+    for attempt in range(3):
+        try:
+            r = await client.get(f"https://api.ah.nl/mobile-services/product/search/v1/gtin/{ean}", headers=headers)
+        except Exception:
+            await asyncio.sleep(2)
+            continue
+        _ah_ean_stats[r.status_code] = _ah_ean_stats.get(r.status_code, 0) + 1
+        if r.status_code == 401:
+            try:
+                headers["Authorization"] = f"Bearer {await _ah_token(client)}"
+            except Exception:
+                pass
+            continue
+        if r.status_code == 429 or r.status_code >= 500:
+            await asyncio.sleep(3 * (attempt + 1))
+            continue
         if r.status_code != 200 or not r.text.strip():
             return []
-        return [str(i) for i in _find_key(r.json(), "webshopId")][:3]
-    except Exception:
-        return []
+        try:
+            return [str(i) for i in _find_key(r.json(), "webshopId")][:3]
+        except Exception:
+            return []
+    return []
 
 
 async def _set_barcode_status(**fields) -> None:
@@ -5372,6 +5394,7 @@ async def _import_barcodes(which: str = "all") -> None:
         ah_ids = {str(p["ah_id"]) for p in await db.products.find({"ah_id": {"$exists": True}, "deleted_at": None, "barcode": {"$in": [None, ""]}}, {"_id": 0, "ah_id": 1}).to_list(50000)}
         await _set_barcode_status(status="Dirk en AH koppelen", total=len(eans))
         found_dirk = found_ah = 0
+        _ah_ean_stats.clear()
         sem = asyncio.Semaphore(5)
         async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as dc, httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as ac:
             tok = await _ah_token(ac)
@@ -5397,7 +5420,7 @@ async def _import_barcodes(which: str = "all") -> None:
                 await _set_barcode_status(done=min(i + 100, len(eans)), dirk=found_dirk, ah=found_ah)
         _invalidate_products()
         total = await db.products.count_documents({"barcode": {"$nin": [None, ""]}, "deleted_at": None})
-        logger.info("Barcodes klaar: %d Dirk, %d AH gekoppeld, %d producten met barcode", found_dirk, found_ah, total)
+        logger.info("Barcodes klaar: %d Dirk, %d AH gekoppeld, %d producten met barcode (AH-antwoorden %s)", found_dirk, found_ah, total, _ah_ean_stats)
         await _set_barcode_status(status="klaar", with_barcode=total, finished_at=now_utc())
     except Exception as e:
         logger.warning("Barcodes ophalen mislukt: %s", e)
@@ -6488,27 +6511,7 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
-    asyncio.create_task(_stest15())
 
-
-async def _stest15():
-    # Tijdelijk: AH barcodes
-    await asyncio.sleep(25)
-    try:
-        n_ah = await db.products.count_documents({"ah_id": {"$exists": True}, "deleted_at": None})
-        n_bc = await db.products.count_documents({"ah_id": {"$exists": True}, "deleted_at": None, "barcode": {"$nin": [None, ""]}})
-        logger.info("Stest15 AH producten %d, met barcode %d", n_ah, n_bc)
-        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as ac:
-            tok = await _ah_token(ac)
-            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-            for ean in ("8710552323619", "8711327338326"):
-                r = await ac.get(f"https://api.ah.nl/mobile-services/product/search/v1/gtin/{ean}", headers=H)
-                logger.info("Stest15 gtin %s %s", ean, json.dumps(r.json())[:1500] if r.status_code == 200 else r.status_code)
-                ids = await _ah_ids_for_ean(ac, H, ean)
-                have = await db.products.find({"ah_id": {"$in": ids}}, {"_id": 0, "ah_id": 1, "name": 1, "barcode": 1}).to_list(5) if ids else []
-                logger.info("Stest15 ids %s in db %s", ids, have)
-    except Exception as e:
-        logger.warning("Stest15: %r", e)
 
 async def _daily_refresh_loop():
     # Run shortly after boot, then every 24h
