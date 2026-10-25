@@ -114,6 +114,7 @@ export function ProductBrowser({
 
   const filtered = useMemo(() => (data?.pages ?? []).flatMap((pg) => pg.products), [data]);
   const aisleCounts = data?.pages[0]?.aisle_counts ?? {};
+  const aisleImages: Record<string, string> = data?.pages[0]?.aisle_images ?? {};
   const browsing = !debouncedSearch.trim() && !onlyFavorites && !filters.brand.length && !filters.offer && !filters.bio;
   const mode: "cats" | "subs" | "list" = !browsing ? "list" : aisle === "all" ? "cats" : !filters.sub.length && !allInAisle ? "subs" : "list";
   const subOptions = (data?.pages[0]?.facets ?? []).find((f) => f.key === "sub")?.options ?? [];
@@ -282,9 +283,13 @@ export function ProductBrowser({
           contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomPadding, gap: 10 }}
           renderItem={({ item: a }) => (
             <Pressable testID={`cat-${a}`} onPress={() => goAisle(a)} style={({ pressed }) => [styles.tile, pressed && { opacity: 0.85 }]}>
-              <View style={styles.tileIcon}>
-                <Icon name={(AISLE_ICONS[a] ?? "cart-outline") as any} size={26} color={colors.brandPrimary} />
-              </View>
+              {aisleImages[a] ? (
+                <Image source={{ uri: aisleImages[a] }} style={styles.tileImage} resizeMode="contain" />
+              ) : (
+                <View style={styles.tileIcon}>
+                  <Icon name={(AISLE_ICONS[a] ?? "cart-outline") as any} size={26} color={colors.brandPrimary} />
+                </View>
+              )}
               <Text style={styles.tileTitle} numberOfLines={2}>{a}</Text>
               <Text style={styles.tileCount}>{aisleCounts[a]} producten</Text>
             </Pressable>

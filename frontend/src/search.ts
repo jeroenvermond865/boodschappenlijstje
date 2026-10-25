@@ -21,6 +21,7 @@ export type ProductPage = {
   total: number;
   next_offset: number | null;
   aisle_counts: Record<string, number>;
+  aisle_images?: Record<string, string> | null;
   facets?: Facet[];
 };
 

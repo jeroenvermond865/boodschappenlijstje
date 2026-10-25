@@ -2203,8 +2203,37 @@ async def search_products(
         "total": len(docs),
         "next_offset": offset + limit if offset + limit < len(docs) else None,
         "aisle_counts": aisle_counts,
+        "aisle_images": await asyncio.to_thread(_aisle_images, await _global_products()) if offset == 0 else None,
         "facets": facets,
     }
+
+
+# Een herkenbaar plaatje per hoofdafdeling, zoals ijsblokjes bij diepvries
+AISLE_PICTURE_TERMS = {
+    "Aardappelen, groente & fruit": "bananen", "Vlees & vis": "kipfilet", "Brood, beleg & koek": "volkoren brood",
+    "Zuivel & kaas": "halfvolle melk", "Dranken, sap, koffie & thee": "sinaasappelsap", "Voorraadkast": "spaghetti",
+    "Maaltijden, salades & tapas": "hummus", "Diepvries": "ijsblokjes", "Huishoud & huisdieren": "afwasmiddel",
+    "Kind & drogisterij": "tandpasta", "Non food": "batterijen", "Snacks & snoep": "chips naturel",
+}
+_aisle_pictures: dict = {"docs": None, "map": {}}
+
+
+def _aisle_images(docs: list) -> dict:
+    if _aisle_pictures["docs"] is docs:
+        return _aisle_pictures["map"]
+    out = {}
+    for a, term in AISLE_PICTURE_TERMS.items():
+        for store in ("Albert Heijn", "Jumbo", "Dirk"):
+            pool = [d for d in docs if d.get("is_global") and d.get("_src") == store and d.get("aisle") == a and d.get("image")]
+            hit = (_best_matches(pool, term, 1) or [None])[0] if pool else None
+            if hit:
+                out[a] = hit["image"]
+                names = _aisle_pictures.setdefault("names", {})
+                names[a] = hit["name"]
+                break
+    logger.info("Afdelingsplaatjes: %s", _aisle_pictures.get("names"))
+    _aisle_pictures.update(docs=docs, map=out)
+    return out
 
 
 class PackPlanItem(BaseModel):
