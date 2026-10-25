@@ -1986,54 +1986,134 @@ def _dirk_aisle(department: str, webgroup: str, name: str = "") -> str:
     return "Overig"
 
 
-async def _probe_details() -> None:
-    # Tijdelijk: welke productinformatie en filters geven Dirk, AH en Jumbo?
-    def snip(html: str, words: list) -> str:
-        out = []
-        for w in words:
-            i = html.find(w)
-            if i >= 0:
-                out.append(f"[{w}] " + html[max(0, i - 200):i + 600].replace("\n", " "))
-        return " ||| ".join(out)[:3000]
+_NUXT_RE = re.compile(r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>', re.S)
+_NUXT_WRAPPERS = {"Reactive", "ShallowReactive", "Ref", "ShallowRef", "EmptyRef", "EmptyShallowRef", "NuxtError", "Island"}
+
+
+def _nuxt_data(html: str):
+    # Nuxt-sites (Dirk, Jumbo) zetten alle paginadata als "devalue"-lijst in de pagina:
+    # getallen in objecten en lijsten verwijzen naar een plek in die lijst.
+    import json as _json
+    m = _NUXT_RE.search(html or "")
+    if not m:
+        return None
     try:
-        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS, follow_redirects=True) as c:
-            for f in ["nutritionalValues", "nutritionalInformation", "nutrition", "ingredients", "allergens", "description", "pricePerUnit", "unitPrice", "logos", "properties", "usage", "storage"]:
-                r = await c.post(DIRK_GQL, json={"query": "query{products(productIds:[101229],storeId:66){productId productInformation{headerText %s}}}" % f})
-                logger.info("Detail probe Dirk %s -> %s", f, r.text[:220])
-            r = await c.get("https://www.dirk.nl/boodschappen/zuivel-kaas/melk/halfvolle-melk/101229", headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0"})
-            logger.info("Detail probe Dirk pagina %s %s %s", r.status_code, str(r.url), snip(r.text, ["Energie", "Ingredi", "Allergie", "per liter", "per kilo", "Voedingswaarde"]))
-        ah = await db.products.find_one({"ah_id": {"$exists": True}, "name": {"$regex": "melk", "$options": "i"}}, {"_id": 0, "ah_id": 1})
+        arr = _json.loads(m.group(1))
+    except Exception:
+        return None
+    memo: dict = {}
+
+    def rev(i, depth=0):
+        if not isinstance(i, int) or i < 0 or i >= len(arr) or depth > 200:
+            return None
+        if i in memo:
+            return memo[i]
+        v = arr[i]
+        if isinstance(v, list):
+            if v and isinstance(v[0], str) and v[0] in _NUXT_WRAPPERS:
+                out = rev(v[1], depth + 1) if len(v) > 1 else None
+            elif v and v[0] in ("Set",):
+                out = [rev(x, depth + 1) for x in v[1:]]
+            elif v and v[0] in ("Map", "null"):
+                out = {}
+                rest = v[1:]
+                for k in range(0, len(rest) - 1, 2):
+                    out[str(rev(rest[k], depth + 1))] = rev(rest[k + 1], depth + 1)
+            elif v and v[0] == "Date":
+                out = v[1] if len(v) > 1 else None
+            else:
+                out = []
+                memo[i] = out
+                out.extend(rev(x, depth + 1) for x in v)
+                return out
+        elif isinstance(v, dict):
+            out = {}
+            memo[i] = out
+            for k, x in v.items():
+                out[k] = rev(x, depth + 1)
+            return out
+        else:
+            out = v
+        memo[i] = out
+        return out
+
+    return rev(0)
+
+
+def _find_dict(obj, key: str, seen=None):
+    # Eerste object (diep zoeken) dat dit veld heeft
+    seen = seen if seen is not None else set()
+    if id(obj) in seen:
+        return None
+    seen.add(id(obj))
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj
+        vals = obj.values()
+    elif isinstance(obj, list):
+        vals = obj
+    else:
+        return None
+    for v in vals:
+        f = _find_dict(v, key, seen)
+        if f is not None:
+            return f
+    return None
+
+
+async def _probe_details() -> None:
+    # Tijdelijk: hoe zien de productdetails van Dirk, AH en Jumbo eruit?
+    import json as _json
+    def dump(x, n=3500):
+        try:
+            return _json.dumps(x, ensure_ascii=False, default=str)[:n]
+        except Exception as e:
+            return f"<{e}>"
+    UA = {"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
+    await asyncio.sleep(20)
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            r = await c.get("https://www.dirk.nl/boodschappen/x/x/x/101229", headers=UA)
+            d = _nuxt_data(r.text)
+            logger.info("Detail probe2 Dirk pagina %s %s nuxt=%s", r.status_code, str(r.url), d is not None)
+            nv = _find_dict(d, "nutritionalValues")
+            pi = _find_dict(d, "productInformation") or _find_dict(d, "headerText")
+            logger.info("Detail probe2 Dirk nv %s", dump(nv, 1500))
+            logger.info("Detail probe2 Dirk product %s", dump(pi, 3500))
+            for k in ["ingredients", "allergens", "allergyInfo", "declarations", "logos", "unitPrice", "pricePerUnit", "storage", "usage", "origin"]:
+                f = _find_dict(d, k)
+                if f is not None:
+                    logger.info("Detail probe2 Dirk veld %s -> %s", k, dump(f.get(k), 600))
+            r = await c.get("https://www.jumbo.com/producten/x-293407STK", headers=UA)
+            d = _nuxt_data(r.text)
+            logger.info("Detail probe2 Jumbo pagina %s %s nuxt=%s", r.status_code, str(r.url), d is not None)
+            pr = _find_dict(d, "customerAllergies")
+            logger.info("Detail probe2 Jumbo keys %s", list(pr.keys()) if isinstance(pr, dict) else None)
+            for k in ["nutritionalInformation", "nutritions", "nutrition", "nutritionalValues", "allergyText", "allergens", "ingredients", "characteristics", "prices", "price", "storage", "usage", "preparation", "origin", "customerAllergies", "brand", "category", "categories", "regulatedTitle", "packaging", "quantityDetails"]:
+                f = _find_dict(d, k)
+                if f is not None:
+                    logger.info("Detail probe2 Jumbo veld %s -> %s", k, dump(f.get(k), 900))
         async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS, follow_redirects=True) as c:
             tok = await _ah_token(c)
             H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-            if ah:
-                r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{ah['ah_id']}", headers=H)
-                card = (r.json() or {}).get("productCard") or {}
-                logger.info("Detail probe AH card %s", str({k: card.get(k) for k in ["descriptionFull", "properties", "propertyIcons", "extraDescriptions", "descriptionHighlights", "salesUnitSize", "unitPriceDescription"]})[:2500])
-                r = await c.get(f"https://www.ah.nl/producten/product/wi{ah['ah_id']}", headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36"})
-                logger.info("Detail probe AH pagina %s %s", r.status_code, snip(r.text, ["Energie", "Ingredi", "Allergie", "prijs per", "Voedingswaarden"]))
-            r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"query": "melk", "size": 3}, headers=H)
+            r = await c.get("https://api.ah.nl/mobile-services/product/detail/v4/fir/441199", headers=H)
             body = r.json() or {}
-            logger.info("Detail probe AH zoek keys %s", list(body.keys()))
-            logger.info("Detail probe AH filters %s", str(body.get("aggregation") or body.get("filters") or body.get("facets"))[:2500])
-            logger.info("Detail probe AH product %s", str((body.get("products") or [{}])[0])[:1500])
-        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS, follow_redirects=True) as c:
-            v = {"input": {"searchType": "keyword", "searchTerms": "melk", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=melk", "previousUrl": "", "bloomreachCookieId": ""}}
-            for extra in ["facets { key displayName values { key displayName count } }", "filters", "facets", "categoryTiles", "sortOptions"]:
-                q = "query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { count %s } }" % extra
-                r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": q, "variables": v})
-                logger.info("Detail probe Jumbo zoek %s -> %s", extra.split()[0], r.text[:1500])
-            for f in ["subtitle", "nutritionalInformation", "nutritions", "ingredients", "allergens", "pricePerUnit", "prices: price { pricePerUnit { price unit } }", "description", "tags", "badges", "brandInfo", "surcharges", "primaryBadge", "characteristics", "categories"]:
-                q = "query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { products { id %s } } }" % f
-                r = await c.post(JUMBO_GQL, json={"operationName": "SearchProducts", "query": q, "variables": v})
-                logger.info("Detail probe Jumbo veld %s -> %s", f.split()[0], r.text[:400])
-            for q in ['query { product(sku: "293407STK") { id } }', 'query { productDetail(sku: "293407STK") { id } }']:
-                r = await c.post(JUMBO_GQL, json={"query": q})
-                logger.info("Detail probe Jumbo product -> %s", r.text[:400])
-            r = await c.get("https://www.jumbo.com/producten/campina-langlekker-halfvolle-melk-1-l-293407STK", headers={"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36"})
-            logger.info("Detail probe Jumbo pagina %s %s", r.status_code, snip(r.text, ["Energie", "Ingredi", "Allergie", "per liter", "Voedingswaarden"]))
+            logger.info("Detail probe2 AH keys %s card %s", list(body.keys()), list((body.get("productCard") or {}).keys()))
+            for k, v in body.items():
+                if k != "productCard":
+                    logger.info("Detail probe2 AH %s -> %s", k, dump(v, 3000))
+            r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"query": "melk", "size": 1}, headers=H)
+            b = r.json() or {}
+            logger.info("Detail probe2 AH filterlijst %s", dump([{"id": f.get("id"), "label": f.get("label"), "type": f.get("type"), "n": len(f.get("options") or []), "eerste": [o.get("label") for o in (f.get("options") or [])[:6]]} for f in (b.get("filters") or [])], 3500))
+            logger.info("Detail probe2 AH product rest %s", dump({k: v for k, v in ((b.get("products") or [{}])[0]).items() if k not in ("images",)}, 2500))
+        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
+            for q in ['query { __type(name: "Facet") { fields { name } } }', 'query { __type(name: "Product") { fields { name } } }',
+                      'query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { facets { key } } }']:
+                v = {"input": {"searchType": "keyword", "searchTerms": "melk", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=melk", "previousUrl": "", "bloomreachCookieId": ""}}
+                r = await c.post(JUMBO_GQL, json={"query": q, "variables": v} if "$input" in q else {"query": q})
+                logger.info("Detail probe2 Jumbo gql -> %s", r.text[:1500])
     except Exception as e:
-        logger.warning("Detail probe mislukt: %s", e)
+        logger.warning("Detail probe2 mislukt: %r", e)
 
 
 async def _dirk_post(client, query, variables):
