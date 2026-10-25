@@ -1975,20 +1975,23 @@ def _dirk_aisle(department: str, webgroup: str) -> str:
 
 
 async def _log_dirk_store_schema() -> None:
-    # Tijdelijk: uitzoeken hoe Dirk zijn winkels (filialen) aanbiedt, om Dirk Leiderdorp te vinden
+    # Tijdelijk: uitzoeken welk winkelnummer Dirk Leiderdorp heeft
     try:
-        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
-            r = await c.post(DIRK_GQL, json={"query": "{__schema{queryType{fields{name args{name type{name kind ofType{name}}} type{name kind ofType{name kind ofType{name}}}}}}}"})
-            body = r.json() or {}
-            fields = (((body.get("data") or {}).get("__schema") or {}).get("queryType") or {}).get("fields") or []
-            if not fields:
-                logger.info("Dirk schema: %s", str(body)[:500])
-            for f in fields:
-                if "store" in f["name"].lower() or "winkel" in f["name"].lower() or "shop" in f["name"].lower():
-                    logger.info("Dirk query %s args=%s type=%s", f["name"], [(a["name"], a["type"]) for a in f["args"]], f["type"])
-            logger.info("Dirk alle queries: %s", [f["name"] for f in fields])
+        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS, follow_redirects=True) as c:
+            for q in ["{stores{storeId}}", "{allStores{storeId}}", "{listStores{storeId}}", "{storeList{storeId}}",
+                      "{getStores{storeId}}", "{store(storeId:66){storeId}}", "{storeById(storeId:66){storeId}}"]:
+                r = await c.post(DIRK_GQL, json={"query": q})
+                logger.info("Dirk probe %s -> %s", q, r.text[:300])
+            for url in ["https://www.dirk.nl/winkels", "https://www.dirk.nl/winkels/leiderdorp"]:
+                r = await c.get(url, headers={"Accept": "text/html"})
+                html = r.text
+                logger.info("Dirk pagina %s -> %s, %d tekens", url, r.status_code, len(html))
+                for m in list(re.finditer(r"(?i)leiderdorp", html))[:4]:
+                    logger.info("Dirk pagina rond Leiderdorp: %s", html[max(0, m.start() - 300):m.start() + 300].replace("\n", " "))
+                for m in list(re.finditer(r"(?i)storeId", html))[:3]:
+                    logger.info("Dirk pagina storeId: %s", html[max(0, m.start() - 150):m.start() + 150].replace("\n", " "))
     except Exception as e:
-        logger.warning("Dirk schema mislukt: %s", e)
+        logger.warning("Dirk winkel-probe mislukt: %s", e)
 
 
 async def _log_category_sample() -> None:
