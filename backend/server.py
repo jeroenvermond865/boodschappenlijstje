@@ -4979,27 +4979,53 @@ COMPARE_STORES = ["Albert Heijn", "Jumbo", "Dirk"]
 _compare_running: set = set()
 
 
+def _compare_hit(st: str, cands: list, by_ean: dict, name: str, base: Optional[dict]) -> tuple:
+    # (product, vervangen?) voor één artikel in één winkel
+    if base and base.get("_src") == st:
+        return base, False
+    # 1. Precies hetzelfde product: zelfde barcode
+    if base and base.get("barcode"):
+        d = by_ean.get((st, base["barcode"]))
+        if d:
+            return d, False
+    terms = _alt_terms(name, base) or name
+    hits = _best_matches(cands, terms, 3)
+    if base:
+        # liever iets van dezelfde soort, en geen ander soort product (chocolademelk voor melk)
+        good = [d for d in hits if _same_kind(base, d, strict=False)]
+        same_aisle = [d for d in good if d.get("aisle") == base.get("aisle")]
+        hits = same_aisle or good
+    if hits:
+        return hits[0], True
+    # 2. Ruimer: op het hoofdwoord binnen dezelfde afdeling ("verse gnocchi" -> gnocchi)
+    words = sorted((w for w in _norm_text(terms).split() if len(w) >= 4), key=len, reverse=True)
+    pool = [d for d in cands if not base or d.get("aisle") == base.get("aisle")]
+    for w in words:
+        hits = [d for d in _best_matches(pool, w, 3) if not base or _same_kind(base, d, strict=False)]
+        if hits:
+            return hits[0], True
+    return None, False
+
+
 def _compare_stores(items: list, docs: list) -> list:
     # Per winkel: wat kost één verpakking van het best passende product per artikel op je lijst.
-    # Staat het product niet in die winkel, dan zoeken we daar een vergelijkbaar alternatief (zonder merknaam en verpakking),
-    # zodat elke winkel met zoveel mogelijk dezelfde lijst vergeleken wordt.
+    # Staat het product niet in die winkel, dan eerst hetzelfde product via de barcode, anders een vergelijkbaar
+    # alternatief. Wat een winkel echt niet heeft rekenen we mee met de prijs bij de andere winkels (geschat),
+    # anders lijkt een winkel goedkoper alleen omdat er minder op het lijstje staat.
     by_pid = {d["product_id"]: d for d in docs}
     by_store: dict = {s: [] for s in COMPARE_STORES}
+    by_ean: dict = {}
     for d in docs:
         if d.get("_src") in by_store and d.get("is_global"):
             by_store[d["_src"]].append(d)
+            if d.get("barcode"):
+                by_ean.setdefault((d["_src"], d["barcode"]), d)
     out = []
     for st, cands in by_store.items():
         total, found, lines = 0.0, 0, []
         for name, pid in items:
             base = by_pid.get(pid) if pid else None
-            hit, alt = None, False
-            if base and base.get("_src") == st:
-                hit = base
-            else:
-                terms = _alt_terms(name, base) or name
-                hits = _best_matches(cands, terms, 1)
-                hit, alt = (hits[0] if hits else None), True
+            hit, alt = _compare_hit(st, cands, by_ean, name, base)
             price = resolve_price(hit.get("prices") or {}, st, hit.get("unavailable") or []) if hit else 0
             if hit and price:
                 total += price
@@ -5008,6 +5034,17 @@ def _compare_stores(items: list, docs: list) -> list:
                           "image": hit.get("image") if hit and price else None, "price": round(price, 2) if hit and price else None,
                           "alternative": bool(hit and price and alt and not (base and _norm_text(base["name"]) == hit["_norm"]))})
         out.append({"store": st, "total": round(total, 2), "found": found, "count": len(items), "items": lines})
+    # Ontbrekende artikelen: reken met de gemiddelde prijs bij de winkels die het wel hebben
+    for k in range(len(items)):
+        known = [o["items"][k]["price"] for o in out if o["items"][k]["price"]]
+        guess = round(sum(known) / len(known), 2) if known else 0
+        for o in out:
+            if not o["items"][k]["price"] and guess:
+                o["items"][k]["estimate"] = guess
+    for o in out:
+        est = sum(i.get("estimate") or 0 for i in o["items"])
+        o["estimated"] = round(est, 2)
+        o["total_fair"] = round(o["total"] + est, 2)
     return out
 
 
@@ -5284,7 +5321,7 @@ async def product_alternatives(name: str = "", product_id: str = "", user: dict 
             "base": product_public(_clean(base), base["_src"], user["user_id"], favs) if base else None}
 
 
-def _same_kind(base: dict, cand: dict) -> bool:
+def _same_kind(base: dict, cand: dict, strict: bool = True) -> bool:
     # Is het andere product echt hetzelfde soort? "Jumbo Kaneel Gemalen" wel voor kaneelpoeder, "Appelmoes Kaneel" niet
     def stem(w):
         for f in _FORMS:
@@ -5303,6 +5340,8 @@ def _same_kind(base: dict, cand: dict) -> bool:
         return False
     if not any(same(c, bw[-1]) for c in cw):
         return False
+    if not strict:
+        return True  # vergelijken per winkel: "pasta gnocchi" mag voor gnocchi
     for c in cw:
         if c in _FORMS or any(same(c, b) for b in bw):
             continue

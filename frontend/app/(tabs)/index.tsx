@@ -47,9 +47,11 @@ type Home = {
 type CompareStore = {
   store: string;
   total: number;
+  total_fair?: number; // met een geschatte prijs voor wat deze winkel niet heeft
+  estimated?: number;
   found: number;
   count: number;
-  items?: { name: string; product: string | null; product_id: string | null; image?: string | null; price: number | null; alternative: boolean }[];
+  items?: { name: string; product: string | null; product_id: string | null; image?: string | null; price: number | null; alternative: boolean; estimate?: number }[];
 };
 
 const SHORT: Record<string, string> = { "Albert Heijn": "AH", Jumbo: "Jumbo", Dirk: "Dirk" };
@@ -86,11 +88,10 @@ export default function HomeScreen() {
     { icon: "newspaper-variant-outline", label: "Folders", onPress: () => router.push("/folders") },
   ];
   const compare = (data?.compare ?? []).filter((c) => c.found > 0);
-  // Alleen winkels waar (bijna) alles gevonden is tellen mee voor "goedkoopst"
-  const maxFound = Math.max(0, ...compare.map((c) => c.found));
-  const fair = compare.filter((c) => c.found >= maxFound * 0.8);
-  const best = fair.length > 1 ? fair.reduce((a, b) => (b.total < a.total ? b : a)) : null;
-  const maxTotal = Math.max(1, ...compare.map((c) => c.total));
+  // Vergelijk eerlijk: wat een winkel niet heeft telt mee met de prijs bij de andere winkels
+  const fairTotal = (c: CompareStore) => c.total_fair ?? c.total;
+  const best = compare.length > 1 ? compare.reduce((a, b) => (fairTotal(b) < fairTotal(a) ? b : a)) : null;
+  const maxTotal = Math.max(1, ...compare.map(fairTotal));
   const todo = data?.todo ?? {};
   const todoRows = [
     todo.dishes ? { n: todo.dishes, label: "gerechten wachten op goedkeuring", to: "/admin/submissions" } : null,
@@ -284,15 +285,16 @@ export default function HomeScreen() {
                     {c.store}
                     {c === best ? "  ·  goedkoopst" : ""}
                   </Text>
-                  <Text style={[styles.body, c === best && { fontFamily: fonts.bold, color: colors.success }]}>{euro(c.total)}</Text>
+                  <Text style={[styles.body, c === best && { fontFamily: fonts.bold, color: colors.success }]}>{euro(fairTotal(c))}</Text>
                 </View>
                 <View style={styles.barTrack}>
-                  <View style={[styles.bar, { width: `${(c.total / maxTotal) * 100}%` }, c === best && { backgroundColor: colors.success }]} />
+                  <View style={[styles.bar, { width: `${(fairTotal(c) / maxTotal) * 100}%` }, c === best && { backgroundColor: colors.success }]} />
                 </View>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                   <Text style={styles.small}>
                     {c.found} van {c.count} producten
                     {c.items?.some((i) => i.alternative) ? ` · ${c.items.filter((i) => i.alternative).length} vervangen door iets vergelijkbaars` : ""}
+                    {c.estimated ? ` · incl. ${euro(c.estimated)} geschat voor wat er niet is` : ""}
                   </Text>
                   <Icon name={openStore === c.store ? "chevron-up" : "chevron-down"} size={18} color={colors.muted} />
                 </View>
@@ -307,7 +309,7 @@ export default function HomeScreen() {
                         <View style={{ flex: 1 }}>
                           <Text style={styles.cmpName} numberOfLines={1}>{i.product ?? i.name}</Text>
                           <Text style={[styles.small, i.alternative && { color: colors.warning }]} numberOfLines={1}>
-                            {!i.product ? "Niet gevonden in deze winkel" : i.alternative ? `In plaats van ${i.name}` : "Zelfde product"}
+                            {!i.product ? (i.estimate ? `Niet gevonden, gerekend met ${euro(i.estimate)} (andere winkels)` : "Niet gevonden in deze winkel") : i.alternative ? `In plaats van ${i.name}` : "Zelfde product"}
                           </Text>
                         </View>
                         <Text style={styles.cmpPrice}>{i.price != null ? euro(i.price) : "—"}</Text>
