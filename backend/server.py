@@ -2279,8 +2279,8 @@ async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_curr
                         "folder_url": per.get("folder_url"), "categories": cats, "items": items})
     have = {p["key"] for p in periods}
     for ex in (f.get("extra") or {}).get(store) or []:
-        if not isinstance(ex, dict) or not ex.get("pages") or ex["key"] in have:
-            continue  # zodra de losse acties van volgende week er zijn, tonen we die
+        if not isinstance(ex, dict) or not ex.get("pages") or ex["key"] in have or ex["key"] == "next":
+            continue  # volgende week alleen als losse acties, niet als folderplaatjes
         periods.append({**ex, "period": f"{_nice_day(ex['start'])} t/m {_nice_day(ex['end'])}" if ex.get("start") and ex.get("end") else None,
                         "categories": [], "items": []})
     return {"store": store, "stores": list(COUPLED_STORES), "periods": periods, "loading": f["at"] is None,
