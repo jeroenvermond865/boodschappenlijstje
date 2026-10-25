@@ -5,6 +5,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import sys
 import logging
 import asyncio
 import functools
@@ -1991,7 +1992,16 @@ async def _load_products() -> None:
     try:
         cutoff = now_utc() - timedelta(days=ASSORTMENT_GRACE_DAYS)
         docs = await db.products.find({"deleted_at": None, "is_global": True,
-                                       "$or": [{"missing_since": None}, {"missing_since": {"$gt": cutoff}}]}, {"_id": 0}).to_list(None)
+                                       "$or": [{"missing_since": None}, {"missing_since": {"$gt": cutoff}}]},
+                                      {"_id": 0, "created_at": 0, "updated_at": 0, "missing_since": 0, "owner_id": 0, "deleted_at": 0}).to_list(None)
+        # Veel producten delen dezelfde afdeling, merk en verpakking: één keer in het geheugen is genoeg (scheelt bij 50.000+ producten)
+        for d in docs:
+            for k in ("aisle", "subcategory", "brand", "unit"):
+                v = d.get(k)
+                if isinstance(v, str):
+                    d[k] = sys.intern(v)
+            d["owner_id"] = None
+            d["deleted_at"] = None
         counts: Dict[str, int] = {}
         for d in docs:
             b = (d.get("brand") or "").strip()
@@ -2010,6 +2020,8 @@ async def _load_products() -> None:
                                     for d in docs if d.get("_src")}
         _product_cache["at"] = datetime.now(timezone.utc)
         _search_cache.clear()
+        import gc
+        gc.collect()  # de vorige lijst meteen opruimen, anders staan er twee in het geheugen
         missing: Dict[str, list] = {}
         for d in docs:
             if not d.get("brand"):
