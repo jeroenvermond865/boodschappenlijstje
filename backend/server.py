@@ -3944,18 +3944,65 @@ async def _store_recipes(store: str, q: str, filters: dict, page: int, size: int
     return _rc_set(key, await _RECIPE_SOURCES[store](q, filters, page, size))
 
 
+_RECIPE_STOP = {"met", "van", "en", "de", "het", "een", "uit", "voor", "op", "in", "of", "zonder", "recept", "lekker", "snelle", "makkelijke"}
+
+
+def _recipe_words(r: dict) -> list:
+    return [w for w in re.findall(r"[a-z]{4,}", _norm_text(r.get("title") or "")) if w not in _RECIPE_STOP]
+
+
+async def _track_recipe(user_id: str, rec: dict, weight: int = 1) -> None:
+    # Welke recepten iemand bekijkt en kiest: daarmee komen vergelijkbare recepten bovenaan
+    inc = {f"rwords.{_ikey(w)}": weight for w in _recipe_words(rec)}
+    for t in (rec.get("tags") or [])[:12] + ([rec["course"]] if rec.get("course") else []):
+        inc[f"rtags.{_ikey(_norm_text(str(t)))}"] = weight
+    if rec.get("store"):
+        inc[f"rstores.{_ikey(rec['store'])}"] = weight
+    if inc:
+        await db.user_interest.update_one({"user_id": user_id}, {"$inc": inc}, upsert=True)
+
+
+def _personal_recipes(recipes: list, interest: dict, seed: str) -> list:
+    # Zonder zoekterm: elke keer een andere volgorde, met wat op jouw smaak lijkt bovenaan
+    import random
+    rnd = random.Random(seed)
+    words, tags = interest.get("rwords") or {}, interest.get("rtags") or {}
+    top = max(list(words.values()) + list(tags.values()) + [1])
+
+    def score(r):
+        s = sum(words.get(_ikey(w), 0) for w in _recipe_words(r)) + sum(tags.get(_ikey(_norm_text(str(t))), 0) for t in ([r.get("course")] if r.get("course") else []))
+        return min(1.0, s / top) * 2 + rnd.random()
+    return sorted(recipes, key=lambda r: -score(r))
+
+
 @api_router.get("/recipes/search")
 async def search_recipes(q: str = "", store: str = "all", page: int = 0, filters: str = "{}", user: dict = Depends(get_current_user)):
+    q = (q or "").strip()[:80]
+    if q:
+        return await _search_recipes(q, store, page, filters)
+    interest = await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0, "rwords": 1, "rtags": 1}) or {}
+    now = datetime.now(timezone.utc)
+    seed = f"{user['user_id']}-{now.strftime('%Y%m%d%H')}{now.minute // 10}-{store}-{filters}"  # elke 10 minuten anders, gelijk tijdens het scrollen
+    if store == "dirk":
+        # Dirk hebben we helemaal: de hele lijst husselen, daarna pas in pagina's knippen
+        full = await _search_recipes("", "dirk", 0, filters, size=5000)
+        rs = _personal_recipes(full["recipes"], interest, seed)
+        page = max(0, min(page, 200))
+        return {**full, "recipes": rs[page * RECIPE_PAGE:(page + 1) * RECIPE_PAGE], "has_more": (page + 1) * RECIPE_PAGE < len(rs)}
+    res = await _search_recipes("", store, page, filters)
+    return {**res, "recipes": _personal_recipes(res["recipes"], interest, seed + str(page))}
+
+
+async def _search_recipes(q: str, store: str, page: int, filters: str, size: int = RECIPE_PAGE) -> dict:
     import json as _json
     try:
         flt = {str(k): [str(x) for x in v] for k, v in (_json.loads(filters or "{}") or {}).items() if isinstance(v, list) and v}
     except Exception:
         flt = {}
-    q = (q or "").strip()[:80]
     page = max(0, min(page, 200))
     if store in _RECIPE_SOURCES:
         try:
-            return await _store_recipes(store, q, flt, page, RECIPE_PAGE)
+            return await _store_recipes(store, q, flt, page, size)
         except Exception as e:
             logger.warning("Recepten %s: %r", store, e)
             raise HTTPException(status_code=502, detail=f"{STORE_LABELS.get(store, store)} is nu niet bereikbaar, probeer het zo nog eens")
@@ -4387,6 +4434,7 @@ async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.warning("Recept %s: %r", id, e)
         raise HTTPException(status_code=502, detail="Dit recept is nu niet op te halen, probeer het zo nog eens")
+    asyncio.create_task(_track_recipe(user["user_id"], rec, 1))
     return await _recipe_products(rec, user)
 
 
@@ -4553,7 +4601,9 @@ async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = Fal
 
 @api_router.post("/recipes/import")
 async def import_recipe(data: RecipeImport, user: dict = Depends(get_current_user)):
-    return dish_public(await _recipe_to_dish(data.id, data.category, user, reuse=data.reuse, include=data.include, swaps=data.swaps))
+    dish = await _recipe_to_dish(data.id, data.category, user, reuse=data.reuse, include=data.include, swaps=data.swaps)
+    asyncio.create_task(_track_recipe(user["user_id"], await _recipe_detail(data.id), 3))
+    return dish_public(dish)
 
 
 class RecipeToCamp(BaseModel):
@@ -4574,6 +4624,7 @@ async def recipe_to_camp(data: RecipeToCamp, user: dict = Depends(get_current_us
     if not 0 <= data.day_index < len(days):
         raise HTTPException(status_code=400, detail="Die dag bestaat niet in dit kamp")
     dish = await _recipe_to_dish(data.id, data.category, user, reuse=True, include=data.include, swaps=data.swaps)
+    asyncio.create_task(_track_recipe(user["user_id"], await _recipe_detail(data.id), 3))
     meals = days[data.day_index].setdefault("meals", {})
     lst = meals.setdefault(data.category, [])
     if dish["dish_id"] not in lst:
