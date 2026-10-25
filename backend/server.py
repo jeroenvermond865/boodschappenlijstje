@@ -1932,6 +1932,7 @@ _search_cache: dict = {}
 def _invalidate_products() -> None:
     _product_cache["stale"] = True
     _search_cache.clear()
+    _sub_images.clear()
     _own_cache.clear()
 
 
@@ -2088,17 +2089,39 @@ def _split_list(v: str) -> list:
     return [x for x in (v or "").split("|") if x]
 
 
+_sub_images: dict = {}
+
+
+def _sub_image(sub: str, docs: list) -> Optional[str]:
+    # Het product dat het best bij de soort past: bij "Kaas" een stuk kaas, geen kaasstengels
+    if sub in _sub_images:
+        return _sub_images[sub]
+    want = [w for w in re.split(r"[^a-z]+", _norm_text(sub)) if len(w) > 2 and w not in ("en", "met", "overig", "overige")]
+
+    def score(d):
+        words = _alt_terms(d["name"], d).split()
+        hit = sum(1 for w in want if w in words or (w.endswith("en") and w[:-2] in words) or w + "en" in words or w + "s" in words)
+        part = sum(1 for w in want if any(w in x for x in words))
+        return (-hit, -part, len(words), d["name"])
+    cands = [d for d in docs if d.get("image")]
+    best = min(cands, key=score) if cands else None
+    _sub_images[sub] = best["image"] if best else None
+    return _sub_images[sub]
+
+
 def _facet(docs: list, field: str, top: int = 60) -> list:
     counts: Dict[str, int] = {}
-    images: Dict[str, str] = {}  # een voorbeeldfoto per soort, voor de tegels op de Producten-pagina
+    members: Dict[str, list] = {}  # voor een voorbeeldfoto per soort, op de tegels van de Producten-pagina
     for d in docs:
         v = (d.get(field) or "").strip()
         if v:
             counts[v] = counts.get(v, 0) + 1
-            if v not in images and d.get("image"):
-                images[v] = d["image"]
+            if field == "subcategory" and v not in _sub_images:
+                members.setdefault(v, []).append(d)
     items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:top]
-    return [{"value": k, "count": n, "image": images.get(k)} for k, n in items]
+    if field != "subcategory":
+        return [{"value": k, "count": n, "image": None} for k, n in items]
+    return [{"value": k, "count": n, "image": _sub_image(k, members.get(k) or [])} for k, n in items]
 
 
 def _has_offer(d: dict) -> bool:
