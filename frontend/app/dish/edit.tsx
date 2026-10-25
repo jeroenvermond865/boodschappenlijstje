@@ -40,6 +40,14 @@ type Ing = {
 type AltProduct = Product & { note?: string | null; offer?: boolean };
 const STORE_SHORT: Record<string, string> = { "Albert Heijn": "AH", Jumbo: "Jumbo", Dirk: "Dirk" };
 
+// Vlees en vis zijn alleen voor de vleeseters (zelfde regel als op de server)
+const MEAT_RE = /kip|gehakt|worst|spek(?!ul)|\bham\b|bacon|biefstuk|varken|rund|kalkoen|kalfs|lams|burger|schnitzel|shoarma|gyros|saucijs|slavink|frikandel|salami|chorizo|pancetta|prosciutto|ossenhaas|entrecote|steak|stoofvlees|riblap|sukade|vlees|karbonade|\bvis\b|visstick|zalm|tonijn|kabeljauw|pangasius|koolvis|tilapia|garna|kibbeling|lekkerbek|makreel|haring|mosselen|inktvis|ansjovis|surimi/;
+const VEGA_RE = /vega|vegetari|plantaardig|vegan|veggie|garden gourmet|beyond|valess|like meat|vivera|quorn|tofu|tempeh|seitan|falafel|bouillon|fond\b|kruiden|saus|vleestomaat|smaak/;
+export function guessDiet(name: string): "all" | "meat" {
+  const n = name.toLowerCase();
+  return MEAT_RE.test(n) && !VEGA_RE.test(n) ? "meat" : "all";
+}
+
 const DIET_OPTS: { key: "all" | "vega" | "meat"; label: string; icon: string }[] = [
   { key: "all", label: "Iedereen", icon: "account-group-outline" },
   { key: "vega", label: "Vega", icon: "leaf" },
@@ -238,7 +246,7 @@ export default function DishEditScreen() {
   const addProductIngredient = (p: Product) => {
     setIngs((prev) => [
       ...prev,
-      { name: p.name, unit: p.unit, qtyAdult: "1", qtyChild: "1", aisle: p.aisle, price: "0", productId: p.id, store: p.source ?? null, diet: "all" },
+      { name: p.name, unit: p.unit, qtyAdult: "1", qtyChild: "1", aisle: p.aisle, price: "0", productId: p.id, store: p.source ?? null, diet: guessDiet(p.name) },
     ]);
   };
 

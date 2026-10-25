@@ -730,9 +730,18 @@ def _is_meat(ing: dict) -> bool:
     return bool(_MEAT_RE.search(name)) and not _VEGA_RE.search(name) and not re.search(r"bouillon|fond\b|kruiden|saus|vleestomaat|speculaas|eieren|\bei\b|jus\b|smaak", name)
 
 
+def _ing_diet(ing: dict) -> str:
+    # Vlees en vis zijn nooit voor iedereen: ook als het zo is opgeslagen, gaat het alleen naar de vleeseters
+    d = ing.get("diet") or "all"
+    return "meat" if d == "all" and _is_meat(ing) else d
+
+
 def _needs_vega(doc: dict) -> list:
-    # Vlees dat ook naar de vega-eters gaat: nog geen vega-vervanger gekozen
-    return [k for k, i in enumerate(doc.get("ingredients") or []) if (i.get("diet") or "all") == "all" and _is_meat(i)]
+    # Vlees of vis waar de vega-eters nog niets voor in de plaats hebben
+    ings = doc.get("ingredients") or []
+    if doc.get("vega_done") or any(_ing_diet(i) == "vega" for i in ings):
+        return []
+    return [k for k, i in enumerate(ings) if _ing_diet(i) == "meat" and _is_meat(i)]
 
 
 def dish_public(doc: dict) -> dict:
@@ -741,7 +750,7 @@ def dish_public(doc: dict) -> dict:
         "name": doc["name"],
         "category": doc["category"],
         "is_standard": doc.get("is_standard", False),
-        "ingredients": doc.get("ingredients", []),
+        "ingredients": [{**i, "diet": _ing_diet(i)} for i in doc.get("ingredients", [])],
         "source": doc.get("source"),
         "pantry": doc.get("pantry") or [],
         "needs_vega": bool(_needs_vega(doc)),
@@ -955,7 +964,7 @@ async def set_vega(dish_id: str, body: VegaInput, user: dict = Depends(get_curre
             extra.append({**meat, "name": p["name"], "product_id": p["product_id"], "aisle": p.get("aisle") or meat.get("aisle") or "Overig",
                           "diet": "vega", "store": meat.get("store") or product_source(p), "recipe_text": None,
                           "price": resolve_price(p.get("prices") or {}, meat.get("store") or product_source(p), p.get("unavailable") or [])})
-    await db.dishes.update_one({"dish_id": dish_id}, {"$set": {"ingredients": ings + extra}})
+    await db.dishes.update_one({"dish_id": dish_id}, {"$set": {"ingredients": ings + extra, "vega_done": True}})
     return dish_public(await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0}))
 
 
@@ -1321,7 +1330,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
                 if not dish:
                     continue
                 for ing in dish.get("ingredients", []):
-                    a, c = counts.get(ing.get("diet", "all"), counts["all"])
+                    a, c = counts.get(_ing_diet(ing), counts["all"])
                     qty = ing.get("qty_adult", 0) * a + ing.get("qty_child", 0) * c
                     store = store_of(ing)
                     for tgt in (total_store_map, day_store_map):
@@ -1472,7 +1481,7 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
                 if not dish:
                     continue
                 for ing in dish.get("ingredients", []):
-                    a, c = counts.get(ing.get("diet", "all"), counts["all"])
+                    a, c = counts.get(_ing_diet(ing), counts["all"])
                     qty = ing.get("qty_adult", 0) * a + ing.get("qty_child", 0) * c
                     store = store_of(ing)
                     cost = qty * unit_price(ing, store)
