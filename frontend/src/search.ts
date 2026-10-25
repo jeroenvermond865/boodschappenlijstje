@@ -36,7 +36,7 @@ export type ProductFilters = {
   brand: string[];
   offer: boolean;
   bio: boolean;
-  sort: "" | "price_asc" | "price_desc" | "unit_asc" | "name";
+  sort: "" | "price_asc" | "price_desc" | "unit_asc" | "unit_desc" | "name";
 };
 
 export const NO_FILTERS: ProductFilters = { sub: [], brand: [], offer: false, bio: false, sort: "" };

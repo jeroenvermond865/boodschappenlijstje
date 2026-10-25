@@ -54,7 +54,8 @@ const SORTS: { key: ProductFilters["sort"]; label: string }[] = [
   { key: "", label: "Beste treffers" },
   { key: "price_asc", label: "Prijs laag-hoog" },
   { key: "price_desc", label: "Prijs hoog-laag" },
-  { key: "unit_asc", label: "Prijs per kilo/liter" },
+  { key: "unit_asc", label: "Kilo/literprijs laag-hoog" },
+  { key: "unit_desc", label: "Kilo/literprijs hoog-laag" },
   { key: "name", label: "Naam A-Z" },
 ];
 

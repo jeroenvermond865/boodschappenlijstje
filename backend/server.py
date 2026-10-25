@@ -1838,10 +1838,10 @@ def _run_search(docs: list, q: str, source: str, aisle: str, favs: Optional[set]
         priced = [d for d in docs if price_of(d) is not None]
         rest = [d for d in docs if price_of(d) is None]
         docs = sorted(priced, key=price_of, reverse=(sort == "price_desc")) + rest
-    elif sort == "unit_asc":
+    elif sort in ("unit_asc", "unit_desc"):
         # Prijs per kilo of liter: zo vergelijk je verschillende verpakkingen; zonder kiloprijs achteraan
         with_up = [d for d in docs if d.get("_up")]
-        docs = sorted(with_up, key=lambda d: d["_up"][0]) + [d for d in docs if not d.get("_up")]
+        docs = sorted(with_up, key=lambda d: d["_up"][0], reverse=(sort == "unit_desc")) + [d for d in docs if not d.get("_up")]
     elif sort == "name":
         docs = sorted(docs, key=lambda d: d["_norm"])
     return docs, aisle_counts, facets
@@ -1910,17 +1910,29 @@ async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_curr
                 price = price or (first["promo"] or {}).get("price")
                 regular = regular or first["price"]
             deal = _promo_deal(it["label"], regular or (first or {}).get("price") or 0) if len(docs) <= 1 else None
-            items.append({**{k: v for k, v in it.items() if k != "ids"}, "price": price, "regular": regular, "deal": deal,
+            cat = it.get("category") or (docs[0].get("aisle") if docs else None) or "Overig"
+            items.append({**{k: v for k, v in it.items() if k not in ("ids", "prices")}, "category": cat, "price": price, "regular": regular, "deal": deal,
                           "image": it.get("image") or (first or {}).get("image"),
                           "product_ids": [d["product_id"] for d in docs], "count": len(docs) or len(it["ids"]),
                           "period": f"{_nice_day(it['start'])} t/m {_nice_day(it['end'])}" if it["start"] and it["end"] else None})
         if not items:
             continue
+        # Indeling zoals op de site: AH in de volgorde van de bonuspagina, anders per afdeling
+        def cat_rank(c):
+            return AISLES.index(c) if c in AISLES else 50
+        if store == "Albert Heijn":
+            items.sort(key=lambda x: x.get("order") or 0)
+        else:
+            items.sort(key=lambda x: (cat_rank(x["category"]), x["category"], 0 if x.get("image") else 1, x["title"].lower()))
+        counts: Dict[str, int] = {}
+        for x in items:
+            counts[x["category"]] = counts.get(x["category"], 0) + 1
+        cats = [{"name": k, "count": v} for k, v in counts.items()]
         is_next = (per.get("start") or "") > today
         periods.append({"key": "next" if is_next else "current", "title": "Volgende week" if is_next else "Deze week",
                         "start": per.get("start"), "end": per.get("end"),
                         "period": f"{_nice_day(per.get('start'))} t/m {_nice_day(per.get('end'))}" if per.get("start") and per.get("end") else None,
-                        "folder_url": per.get("folder_url"), "items": items})
+                        "folder_url": per.get("folder_url"), "categories": cats, "items": items})
     return {"store": store, "stores": list(COUPLED_STORES), "periods": periods, "loading": f["at"] is None,
             "updated_at": f["at"].isoformat() if f["at"] else None}
 
@@ -2689,7 +2701,8 @@ async def _ah_folder() -> list:
                     except Exception:
                         return {}
             items: dict = {}
-            for body in await asyncio.gather(*(get(u) for u in urls)):
+            for order, body in enumerate(await asyncio.gather(*(get(u) for u in urls))):
+                cat = body.get("sectionDescription") or "Overig"
                 for e in body.get("bonusGroupOrProducts") or []:
                     g, pr = e.get("bonusGroup"), e.get("product")
                     src = g or pr or {}
@@ -2705,6 +2718,7 @@ async def _ah_folder() -> list:
                         key = f"g{g.get('segmentId') or g.get('id')}"
                         items[key] = _promo_item("Albert Heijn", key, g.get("segmentDescription"), label, start, end,
                                                  imgs[0]["url"] if imgs else None, combinable=True, note=note)
+                        items[key].update({"category": cat, "order": order * 1000 + len(items)})
                     elif pr:
                         key = f"s{pr.get('segmentId')}" if pr.get("segmentId") else f"p{pr.get('webshopId')}"
                         cur, before = pr.get("currentPrice"), pr.get("priceBeforeBonus")
@@ -2713,6 +2727,27 @@ async def _ah_folder() -> list:
                             continue
                         items[key] = _promo_item("Albert Heijn", key, pr.get("title"), label, start, end, imgs[0]["url"] if imgs else None,
                                                  price=cur, regular=before, ids=[pr.get("webshopId")], note=note, quantity=pr.get("salesUnitSize"))
+                        items[key].update({"category": cat, "order": order * 1000 + len(items)})
+            # Welke producten vallen onder een groep ("Alle Hak")? Die vraagt AH per groep op.
+            async def expand(it):
+                async with sem:
+                    try:
+                        seg = it["id"][1:]
+                        body = (await c.get("https://api.ah.nl/mobile-services/bonuspage/v2/segment", headers=H,
+                                            params={"application": "AHWEBSHOP", "date": per.get("bonusStartDate"), "segmentId": seg})).json() or {}
+                    except Exception:
+                        return
+                    prices = {}
+                    for pr in body.get("products") or []:
+                        wid = pr.get("webshopId")
+                        if wid:
+                            it["ids"].append(str(wid))
+                            prices[str(wid)] = [pr.get("currentPrice"), pr.get("priceBeforeBonus")]
+                    it["prices"] = prices
+                    if not it.get("image"):
+                        imgs = sorted([i for i in body.get("images") or [] if i.get("url")], key=lambda i: abs((i.get("width") or 200) - 300))
+                        it["image"] = imgs[0]["url"] if imgs else None
+            await asyncio.gather(*(expand(it) for k, it in items.items() if k.startswith("g")))
             out.append({"start": per.get("bonusStartDate"), "end": per.get("bonusEndDate"),
                         "folder_url": (per.get("bonusFolderUrl") or "").replace("?publitas_embed=embedded", "") or None,
                         "items": list(items.values())})
@@ -2753,6 +2788,8 @@ async def _dirk_folder() -> list:
             img = DIRK_IMAGE_BASE + quote(img.lstrip("/"))
         it = _promo_item("Dirk", o["offerId"], o.get("headerText"), label, o.get("startDate"), o.get("endDate"), img or None,
                          price=o.get("offerPrice"), regular=o.get("normalPrice"), ids=ids, combinable=len(ids) > 1, quantity=o.get("packaging"))
+        info = next((p.get("productInformation") or {} for p in o.get("products") or [] if isinstance(p, dict) and p.get("productInformation")), {})
+        it["category"] = info.get("department") or None
         periods.setdefault((it["start"], it["end"]), []).append(it)
     # De meeste acties lopen een week (wo t/m di); dagacties vallen daarbinnen
     out = []
@@ -2844,12 +2881,17 @@ def _promo_public(doc: dict, price: float) -> tuple:
     for it in _promos_for(doc):
         if it["end"] and it["end"] < today:
             continue
-        regular = it.get("regular") if len(it["ids"]) <= 1 else None
+        own = (it.get("prices") or {}).get(str(sid)) if (sid := doc.get("dirk_id") or doc.get("ah_id") or doc.get("jumbo_id")) else None
+        if own:
+            promo_price, regular = own[0], own[1]
+        else:
+            promo_price = it.get("price") if len(it["ids"]) <= 1 else None
+            regular = it.get("regular") if len(it["ids"]) <= 1 else None
         base = regular or price
         deal = _promo_deal(it["label"], base or 0)
         p = {"label": it["label"], "title": it["title"], "start": it["start"], "end": it["end"],
              "period": f"{_nice_day(it['start'])} t/m {_nice_day(it['end'])}" if it["start"] and it["end"] else None,
-             "price": it.get("price") if len(it["ids"]) <= 1 else None, "regular": regular,
+             "price": promo_price, "regular": regular,
              "deal": deal, "combinable": it["combinable"], "note": it.get("note")}
         if (it["start"] or "") <= today:
             now_p = now_p or p
@@ -2858,36 +2900,42 @@ def _promo_public(doc: dict, price: float) -> tuple:
     return now_p, next_p
 
 
-async def _probe_ah_groups() -> None:
-    # Tijdelijk: welke producten vallen onder een AH-bonusgroep?
+async def _probe_dirk_brood() -> None:
+    # Tijdelijk: waarom ontbreekt Dirk-brood?
     import json as _json
     await asyncio.sleep(30)
     try:
-        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
-            tok = await _ah_token(c)
-            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-            r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"query": "hak", "size": 30}, headers=H)
-            prods = (r.json() or {}).get("products") or []
-            logger.info("AHgroep zoek hak: %s", _json.dumps([{k: p.get(k) for k in ("title", "isBonus", "bonusSegmentId", "segmentId", "bonusMechanism", "discountLabels", "currentPrice", "priceBeforeBonus", "bonusStartDate")} for p in prods[:6]], ensure_ascii=False)[:2500])
-            seg = 815167
-            for path, params in [(f"/mobile-services/bonuspage/v2/segment/{seg}", {"application": "AHWEBSHOP", "date": "2026-10-19"}),
-                                 ("/mobile-services/bonuspage/v2/segment", {"application": "AHWEBSHOP", "date": "2026-10-19", "segmentId": seg}),
-                                 (f"/mobile-services/bonuspage/v1/segment/{seg}", {"application": "AHWEBSHOP", "date": "2026-10-19"}),
-                                 ("/mobile-services/product/search/v2", {"bonusSegmentId": seg, "size": 30}),
-                                 ("/mobile-services/product/search/v2", {"query": "", "filters": f"bonusSegment:{seg}", "size": 30}),
-                                 (f"/mobile-services/bonuspage/v3/segment/{seg}", {"application": "AHWEBSHOP", "date": "2026-10-19"}),
-                                 ("/mobile-services/product/search/v2/segment", {"segmentId": seg, "size": 30}),
-                                 (f"/mobile-services/bonus/v1/segment/{seg}", {})]:
-                r = await c.get("https://api.ah.nl" + path, params=params, headers=H)
-                body = r.text
-                try:
-                    j = r.json()
-                    titles = [p.get("title") for p in (j.get("products") or [])][:8] if isinstance(j, dict) else None
-                except Exception:
-                    titles = None
-                logger.info("AHgroep %s %s -> %s titels=%s %s", path, params, r.status_code, titles, body[:400])
+        async with httpx.AsyncClient(timeout=30, headers=DIRK_HEADERS, follow_redirects=True) as c:
+            for term in ("brood", "heel brood", "volkoren brood", "wit brood", "bruin brood"):
+                ids = await _dirk_search_ids(c, term, limit=None)
+                have = {str(p["dirk_id"]) async for p in db.products.find({"dirk_id": {"$in": [str(i) for i in ids]}}, {"_id": 0, "dirk_id": 1})}
+                prods = await _dirk_fetch_products(c, ids[:25])
+                logger.info("Dirkbrood %s: %d gevonden, %d in app; eerste: %s", term, len(ids), len(have),
+                            [((p.get("productInformation") or {}).get("headerText"), p.get("normalPrice"), str(p.get("productId")) in have) for p in prods[:12]])
+            for url in ("https://www.dirk.nl/boodschappen/brood-beleg-koek/brood", "https://www.dirk.nl/boodschappen/brood-beleg-koek"):
+                r = await c.get(url, headers=_PAGE_HEADERS)
+                d = _nuxt_data(r.text)
+                pids = set()
+                def walk(x, depth=0):
+                    if depth > 40:
+                        return
+                    if isinstance(x, dict):
+                        if isinstance(x.get("productId"), int):
+                            pids.add(x["productId"])
+                        for v in x.values():
+                            walk(v, depth + 1)
+                    elif isinstance(x, list):
+                        for v in x:
+                            walk(v, depth + 1)
+                walk(d)
+                have = {str(p["dirk_id"]) async for p in db.products.find({"dirk_id": {"$in": [str(i) for i in pids]}}, {"_id": 0, "dirk_id": 1})}
+                links = sorted(set(re.findall(r'href="(/boodschappen/[a-z0-9\-]+/[a-z0-9\-]+)"', r.text)))
+                logger.info("Dirkbrood pagina %s %s: %d producten, %d in app, %d sublinks %s", url, r.status_code, len(pids), len(have), len(links), links[:40])
+            n = await db.products.count_documents({"dirk_id": {"$exists": True}, "deleted_at": None, "name": {"$regex": "brood", "$options": "i"}})
+            ex = await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "name": {"$regex": "brood", "$options": "i"}}, {"_id": 0, "name": 1}).to_list(30)
+            logger.info("Dirkbrood in app: %d, bv %s", n, [e["name"] for e in ex])
     except Exception as e:
-        logger.warning("AHgroep mislukt: %r", e)
+        logger.warning("Dirkbrood mislukt: %r", e)
 
 
 async def _dirk_post(client, query, variables):
@@ -4550,7 +4598,7 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
-    asyncio.create_task(_probe_ah_groups())
+    asyncio.create_task(_probe_dirk_brood())
 
 
 async def _daily_refresh_loop():

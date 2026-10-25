@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ActivityIndicator, FlatList, Image, Linking, Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { useMemo, useState } from "react";
+import { ActivityIndicator, Image, Linking, Modal, Pressable, ScrollView, SectionList, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -25,9 +25,11 @@ type FolderItem = {
   quantity: string | null;
   product_ids: string[];
   count: number;
+  category: string;
 };
 
 type FolderPeriod = {
+  categories?: { name: string; count: number }[];
   key: "current" | "next";
   title: string;
   period: string | null;
@@ -46,6 +48,7 @@ export default function FoldersScreen() {
   const [store, setStore] = useState(params.store || "Albert Heijn");
   const [periodKey, setPeriodKey] = useState<"current" | "next">("current");
   const [open, setOpen] = useState<FolderItem | null>(null);
+  const [cat, setCat] = useState<string | null>(null);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["folders", store],
@@ -54,6 +57,21 @@ export default function FoldersScreen() {
   });
   const periods = data?.periods ?? [];
   const period = periods.find((p) => p.key === periodKey) ?? periods[0];
+  // Per categorie, twee kaarten naast elkaar
+  const sections = useMemo(() => {
+    const groups: { title: string; items: FolderItem[] }[] = [];
+    for (const it of period?.items ?? []) {
+      if (cat && it.category !== cat) continue;
+      let g = groups.find((x) => x.title === it.category);
+      if (!g) groups.push((g = { title: it.category, items: [] }));
+      g.items.push(it);
+    }
+    return groups.map((g) => {
+      const rows: FolderItem[][] = [];
+      for (let i = 0; i < g.items.length; i += 2) rows.push(g.items.slice(i, i + 2));
+      return { title: `${g.title} (${g.items.length})`, data: rows };
+    });
+  }, [period, cat]);
 
   const openItem = (it: FolderItem) => {
     if (it.product_ids.length === 1) router.push(`/product/${it.product_ids[0]}`);
@@ -79,6 +97,7 @@ export default function FoldersScreen() {
               onPress={() => {
                 setStore(s);
                 setPeriodKey("current");
+                setCat(null);
               }}
               style={[styles.chip, store === s && styles.chipActive]}
             >
@@ -89,7 +108,7 @@ export default function FoldersScreen() {
         {periods.length > 0 ? (
           <View style={styles.segment}>
             {periods.map((p) => (
-              <Pressable key={p.key} onPress={() => setPeriodKey(p.key)} style={[styles.segBtn, period?.key === p.key && styles.segBtnActive]}>
+              <Pressable key={p.key} onPress={() => { setPeriodKey(p.key); setCat(null); }} style={[styles.segBtn, period?.key === p.key && styles.segBtnActive]}>
                 <Text style={[styles.segText, period?.key === p.key && styles.segTextActive]}>{p.title}</Text>
                 {p.period ? <Text style={styles.segSub}>{p.period}</Text> : null}
               </Pressable>
@@ -123,42 +142,37 @@ export default function FoldersScreen() {
           </Pressable>
         </View>
       ) : (
-        <FlatList
-          data={period.items}
-          keyExtractor={(it) => it.id}
-          numColumns={2}
-          columnWrapperStyle={{ gap: 10 }}
-          contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: insets.bottom + 40 }}
-          ListHeaderComponent={<Text style={styles.muted}>{period.items.length} aanbiedingen</Text>}
-          renderItem={({ item }) => (
-            <Pressable testID={`folder-item-${item.id}`} onPress={() => openItem(item)} style={styles.card}>
-              <View style={styles.imageBox}>
-                {item.image ? (
-                  <Image source={{ uri: item.image }} style={styles.image} resizeMode="contain" />
-                ) : (
-                  <Icon name="tag-outline" size={36} color={colors.brandPrimary} />
-                )}
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText} numberOfLines={2}>
-                    {item.label}
+        <SectionList
+          sections={sections}
+          keyExtractor={(row) => row.map((it) => it.id).join("|")}
+          stickySectionHeadersEnabled
+          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: insets.bottom + 40 }}
+          ListHeaderComponent={
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 10 }}>
+              <Pressable onPress={() => setCat(null)} style={[styles.catChip, !cat && styles.chipActive]}>
+                <Text style={[styles.chipText, !cat && styles.chipTextActive]}>Alles ({period.items.length})</Text>
+              </Pressable>
+              {(period.categories ?? []).map((c) => (
+                <Pressable key={c.name} onPress={() => setCat(c.name)} style={[styles.catChip, cat === c.name && styles.chipActive]}>
+                  <Text style={[styles.chipText, cat === c.name && styles.chipTextActive]}>
+                    {c.name} ({c.count})
                   </Text>
-                </View>
-              </View>
-              <Text style={styles.title} numberOfLines={3}>
-                {item.title}
-              </Text>
-              {item.quantity ? <Text style={styles.muted}>{item.quantity}</Text> : null}
-              <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
-                {item.regular && item.price && item.regular > item.price ? <Text style={styles.oldPrice}>{euro(item.regular)}</Text> : null}
-                {item.price ? <Text style={styles.price}>{euro(item.price)}</Text> : null}
-              </View>
-              {item.deal && item.deal.count > 1 ? (
-                <Text style={styles.deal}>
-                  {item.deal.count} stuks: {euro(item.deal.each)} p/st
-                </Text>
-              ) : null}
-              {item.count > 1 ? <Text style={styles.combi}>{item.count} producten, te combineren</Text> : null}
-            </Pressable>
+                </Pressable>
+              ))}
+            </ScrollView>
+          }
+          renderSectionHeader={({ section }) => (
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionTitle}>{section.title}</Text>
+            </View>
+          )}
+          renderItem={({ item: row }) => (
+            <View style={{ flexDirection: "row", gap: 10, marginBottom: 10 }}>
+              {row.map((item) => (
+                <ItemCard key={item.id} item={item} onPress={() => openItem(item)} />
+              ))}
+              {row.length === 1 ? <View style={{ flex: 1 }} /> : null}
+            </View>
           )}
         />
       )}
@@ -171,6 +185,41 @@ export default function FoldersScreen() {
         </Pressable>
       </Modal>
     </View>
+  );
+}
+
+function ItemCard({ item, onPress }: { item: FolderItem; onPress: () => void }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  return (
+    <Pressable testID={`folder-item-${item.id}`} onPress={onPress} style={styles.card}>
+      <View style={styles.imageBox}>
+        {item.image ? (
+          <Image source={{ uri: item.image }} style={styles.image} resizeMode="contain" />
+        ) : (
+          <Icon name="tag-outline" size={36} color={colors.brandPrimary} />
+        )}
+        <View style={styles.badge}>
+          <Text style={styles.badgeText} numberOfLines={2}>
+            {item.label}
+          </Text>
+        </View>
+      </View>
+      <Text style={styles.title} numberOfLines={3}>
+        {item.title}
+      </Text>
+      {item.quantity ? <Text style={styles.muted}>{item.quantity}</Text> : null}
+      <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+        {item.regular && item.price && item.regular > item.price ? <Text style={styles.oldPrice}>{euro(item.regular)}</Text> : null}
+        {item.price ? <Text style={styles.price}>{euro(item.price)}</Text> : null}
+      </View>
+      {item.deal && item.deal.count > 1 ? (
+        <Text style={styles.deal}>
+          {item.deal.count} stuks: {euro(item.deal.each)} p/st
+        </Text>
+      ) : null}
+      {item.count > 1 ? <Text style={styles.combi}>{item.count} producten, te combineren</Text> : null}
+    </Pressable>
   );
 }
 
@@ -251,6 +300,9 @@ const useStyles = makeStyles((colors) => ({
   segSub: { fontSize: 11, fontFamily: fonts.regular, color: colors.muted },
   folderLink: { flexDirection: "row", alignItems: "center", gap: 6 },
   folderLinkText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  catChip: { height: 32, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceTertiary, justifyContent: "center" },
+  sectionHead: { backgroundColor: colors.surface, paddingVertical: 8 },
+  sectionTitle: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },
   card: { flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 10, gap: 4 },
   imageBox: { height: 120, borderRadius: 10, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   image: { width: "90%", height: "90%" },
