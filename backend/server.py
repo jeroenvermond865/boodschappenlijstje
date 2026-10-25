@@ -3305,15 +3305,48 @@ async def _recipe_detail(rid: str) -> dict:
     return _rc_set(("detail", rid), out)
 
 
+_FILLER = {"middelgrote", "grote", "kleine", "verse", "vers", "milde", "mild", "ongezouten", "gezouten", "friszoete", "zoete", "rijpe",
+           "biologische", "bio", "fijne", "grove", "geraspte", "gehakte", "gesneden", "gedroogde", "gedroogd", "diepvries", "naturel",
+           "halfvolle", "volle", "magere", "witte", "rode", "gele", "groene", "zwarte", "stevige", "kruimige", "vastkokende", "jonge",
+           "oude", "belegen", "extra", "vierge", "koude", "warme", "lauwe", "zachte", "harde", "uitgelekte", "gekookte", "teentje", "tenen"}
+
+
+def _stems(w: str) -> list:
+    # appels -> appel, uien -> ui, worstjes -> worst, tomaten -> tomaat (ruw, maar genoeg om te zoeken)
+    out = [w]
+    for suf, rep in (("jes", ""), ("tjes", ""), ("en", ""), ("s", ""), ("ten", "t"), ("aten", "aat"), ("ien", "i"), ("eren", "eer")):
+        if w.endswith(suf) and len(w) - len(suf) >= 2:
+            out.append(w[: -len(suf)] + rep)
+    return list(dict.fromkeys(out))
+
+
+def _best_matches(pool: list, name: str, limit: int = 1) -> list:
+    # Eerst alle woorden; lukt dat niet, dan zonder bijvoeglijke woorden, dan alleen het hoofdwoord (ook enkelvoud)
+    words = _alt_terms(name, None).split()
+    if not words:
+        return []
+    core = [w for w in words if w not in _FILLER] or words
+    tries = [" ".join(words), " ".join(core)]
+    for st in _stems(core[-1]):
+        tries.append(" ".join(core[:-1] + [st]))
+        tries.append(st)
+    for t in dict.fromkeys(tries):
+        if len(t) < 2:
+            continue
+        hits = _search_products(pool, t)
+        if hits:
+            return hits[:limit]
+    return []
+
+
 def _store_matches(names: list, docs: list, store: str) -> dict:
     # Ingrediënten zonder gekoppeld product: zoek het best passende product in dezelfde winkel
     pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
     out = {}
     for n in names:
-        if _norm_text(n) in ("water", "zout", "peper", "zout en peper", "peper en zout", "kraanwater"):
+        if _norm_text(n) in ("water", "kraanwater", "lauw water", "kokend water", "ijsblokjes"):
             continue
-        terms = _alt_terms(n, None)
-        hits = _search_products(pool, terms)[:1] if terms else []
+        hits = _best_matches(pool, n)
         if hits:
             out[n] = hits[0]
     return out
@@ -3633,8 +3666,8 @@ def _alternatives(docs: list, name: str, base: Optional[dict], per_store: int = 
     terms = _alt_terms(name, base)
     pool = [d for d in docs if d.get("is_global") and d.get("_src") in ALT_STORES]
     hits = _search_products(pool, terms) if terms else []
-    if len(hits) < 3 and terms and len(terms.split()) > 1:
-        hits = _search_products(pool, terms.split()[-1])  # "verse gnocchi" -> "gnocchi"
+    if len(hits) < 3 and terms:
+        hits = hits + [d for d in _best_matches(pool, terms, limit=120) if d not in hits]  # "verse gnocchi" -> "gnocchi"
     sub = (base or {}).get("subcategory")
     base_up = (base or {}).get("_up")
     base_price = _doc_price(base) if base else 0

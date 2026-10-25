@@ -346,6 +346,7 @@ export default function DishEditScreen() {
                 />
               )}
               {!readOnly ? (
+                <>
                 <Pressable
                   testID={`ing-pantry-${idx}`}
                   hitSlop={8}
@@ -363,6 +364,7 @@ export default function DishEditScreen() {
                 >
                   <Icon name="close-circle" size={22} color={colors.muted} />
                 </Pressable>
+                </>
               ) : null}
             </View>
 
