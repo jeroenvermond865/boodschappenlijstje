@@ -5120,6 +5120,7 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
+    asyncio.create_task(_selftest_recipes())
 
 
 async def _daily_refresh_loop():
