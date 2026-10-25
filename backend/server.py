@@ -2184,6 +2184,8 @@ def _run_search(docs: list, q: str, source: str, aisle: str, favs: Optional[set]
         docs = sorted(with_up, key=lambda d: d["_up"][0], reverse=(sort == "unit_desc")) + [d for d in docs if not d.get("_up")]
     elif sort == "name":
         docs = sorted(docs, key=lambda d: d["_norm"])
+    if sort in ("", "relevance") and store and not source:
+        docs = sorted(docs, key=lambda d: 0 if d.get("_src") == store else 1)  # je favoriete winkel eerst (volgorde blijft verder gelijk)
     return docs, aisle_counts, facets
 
 
@@ -2207,7 +2209,7 @@ async def search_products(
     own = await _own_products(user)
     await _folders_fresh(wait=False)
     # Dezelfde zoekopdracht (ook bij verder scrollen) komt uit het geheugen
-    key = (source, aisle, _norm_text(q), sub, brand, offer, bio, sort,
+    key = (source, store, aisle, _norm_text(q), sub, brand, offer, bio, sort,
            tuple(sorted(favs)) if favorites else None, user["user_id"] if own else None)
     hit = _search_cache.get(key)
     if hit is None:
@@ -2217,6 +2219,12 @@ async def search_products(
             _search_cache.pop(next(iter(_search_cache)))
         _search_cache[key] = hit
     docs, aisle_counts, facets = hit
+    if offset == 0 and (aisle or brand or sub):
+        # Wat iemand opzoekt telt mee voor de aanbiedingen op Home
+        inc = {f"aisles.{_ikey(aisle)}": 1} if aisle else {}
+        inc.update({f"brands.{_ikey(_norm_text(b))}": 1 for b in _split_list(brand)})
+        inc.update({f"subs.{_ikey(x)}": 1 for x in _split_list(sub)})
+        asyncio.create_task(db.user_interest.update_one({"user_id": user["user_id"]}, {"$inc": inc}, upsert=True))
 
     offset = max(0, offset)
     limit = max(1, min(limit, 200))
@@ -2355,6 +2363,8 @@ async def get_product(product_id: str, user: dict = Depends(get_current_user)):
     if not doc or (not doc.get("is_global") and doc.get("owner_id") != user["user_id"]):
         raise HTTPException(status_code=404, detail="Product niet gevonden")
     favs = set(user.get("favorite_products") or [])
+    if doc.get("is_global"):
+        asyncio.create_task(_track_interest(user["user_id"], doc))
     return product_public(doc, user.get("store", DEFAULT_STORE), user["user_id"], favs)
 
 
@@ -4541,6 +4551,62 @@ def _compare_stores(items: list, docs: list) -> list:
     return out
 
 
+def _ikey(x: str) -> str:
+    return (x or "").replace(".", "·").replace("$", "")[:60]
+
+
+async def _track_interest(user_id: str, doc: dict) -> None:
+    # Wat bekijkt iemand: winkel, afdeling, merk en soort. Daarmee kiezen we de aanbiedingen op Home
+    inc = {}
+    for field, val in (("stores", doc.get("_src") or product_source(doc)), ("aisles", doc.get("aisle")),
+                       ("brands", _norm_text(doc.get("brand") or "")), ("subs", doc.get("subcategory"))):
+        if val:
+            inc[f"{field}.{_ikey(val)}"] = 1
+    if inc:
+        await db.user_interest.update_one({"user_id": user_id}, {"$inc": inc, "$set": {"at": now_utc()}}, upsert=True)
+
+
+def _pick_promos(cands: list, interest: dict, fav_store: str, fav_ids: set, used_ids: set, used_stores: dict, n: int = 12) -> list:
+    import random
+    stores = dict(interest.get("stores") or {})
+    for st, c in used_stores.items():
+        stores[_ikey(st)] = stores.get(_ikey(st), 0) + c
+    total = sum(stores.values())
+    # Winkelgewicht: je favoriete winkel vol; andere winkels naar hoeveel je ze gebruikt
+    def sw(st):
+        if st == fav_store:
+            return 1.0
+        if not total:
+            return 0.5
+        return min(1.0, 0.08 + stores.get(_ikey(st), 0) / total)
+
+    def norm(group):
+        g = interest.get(group) or {}
+        top = max(g.values(), default=0)
+        return {k: v / top for k, v in g.items()} if top else {}
+    aisles, brands, subs = norm("aisles"), norm("brands"), norm("subs")
+    scored = []
+    for c in cands:
+        pids = set(c["product_ids"])
+        personal = (3 if pids & fav_ids else 0) + (2 if pids & used_ids else 0) \
+            + 1.5 * max([brands.get(_ikey(b), 0) for b in c.get("_brands") or []], default=0) \
+            + 1.5 * max([subs.get(_ikey(x), 0) for x in c.get("_subs") or []], default=0) \
+            + 1.0 * max([aisles.get(_ikey(a), 0) for a in c.get("_aisles") or []], default=0)
+        scored.append((sw(c["store"]) * (1 + personal) * random.uniform(0.75, 1.25), personal, c))
+    scored.sort(key=lambda x: -x[0])
+    out, others = [], 0
+    for score, personal, c in scored:
+        if c["store"] != fav_store and sw(c["store"]) < 0.3:
+            # Een winkel die je bijna niet gebruikt: heel af en toe, en alleen als het echt iets voor jou lijkt
+            if others >= 2 or personal < 1.5:
+                continue
+            others += 1
+        out.append({k: v for k, v in c.items() if not k.startswith("_")})
+        if len(out) >= n:
+            break
+    return out
+
+
 async def _home_inspiration() -> tuple:
     # Acties uit de folders van deze week, met foto, om en om per winkel
     promos = []
@@ -4562,10 +4628,12 @@ async def _home_inspiration() -> tuple:
                         continue
                     items.append({"store": s, "id": it["id"], "title": it["title"], "label": it["label"], "image": img,
                                   "price": it.get("price"), "regular": it.get("regular"),
-                                  "product_ids": [d["product_id"] for d in docs], "end": it.get("end")})
-            import random
-            random.shuffle(items)
-            per_store.append(items[:6])
+                                  "product_ids": [d["product_id"] for d in docs], "end": it.get("end"),
+                                  "_aisles": list({d.get("aisle") for d in docs if d.get("aisle")}),
+                                  "_brands": list({_norm_text(d.get("brand") or "") for d in docs if d.get("brand")}),
+                                  "_subs": list({d.get("subcategory") for d in docs if d.get("subcategory")})})
+            per_store.append(items)
+        # Alle acties als kandidaten; per gebruiker kiest _pick_promos welke vooraan komen
         promos = [x for group in itertools.zip_longest(*per_store) for x in group if x]
     except Exception as e:
         logger.warning("Home acties: %r", e)
@@ -4665,6 +4733,21 @@ async def home(user: dict = Depends(get_current_user)):
     if "manage_settings" in perms:
         todo["stores"] = await db.store_requests.count_documents({"status": "pending"})
     own_dishes = await db.dishes.count_documents({"owner_id": user["user_id"], "deleted_at": None})
+    try:
+        interest = await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0}) or {}
+        by_pid = _product_cache.get("by_pid") or {}
+        used_ids: set = set()
+        async for d in db.dishes.find({"owner_id": user["user_id"], "deleted_at": None}, {"_id": 0, "ingredients.product_id": 1}):
+            used_ids |= {i.get("product_id") for i in d.get("ingredients") or [] if i.get("product_id")}
+        used_stores: dict = {}
+        for pid in used_ids:
+            st = (by_pid.get(pid) or {}).get("_src")
+            if st:
+                used_stores[st] = used_stores.get(st, 0) + 1
+        promos = _pick_promos(promos, interest, user.get("store") or DEFAULT_STORE, set(user.get("favorite_products") or []), used_ids, used_stores)
+    except Exception as e:
+        logger.warning("Persoonlijke acties: %r", e)
+        promos = [{k: v for k, v in c.items() if not k.startswith("_")} for c in promos[:12]]
     return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "compare_pending": compare_pending, "promos": promos,
             "recipes": recipes, "todo": todo, "own_dishes": own_dishes}
 

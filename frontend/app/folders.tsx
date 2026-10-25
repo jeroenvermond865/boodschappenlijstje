@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
 import { euro } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
@@ -46,7 +47,9 @@ export default function FoldersScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const [store, setStore] = useState(params.store || "Albert Heijn");
+  const { user } = useAuth();
+  const fav = user?.store;
+  const [store, setStore] = useState(params.store || fav || "Albert Heijn");
   const [periodKey, setPeriodKey] = useState<string>("current");
   const [open, setOpen] = useState<FolderItem | null>(null);
   const [cat, setCat] = useState<string | null>(null);
@@ -109,7 +112,7 @@ export default function FoldersScreen() {
 
       <View style={{ paddingHorizontal: 16, paddingTop: 12, gap: 10 }}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-          {[...(data?.stores ?? ["Albert Heijn", "Dirk", "Jumbo"])].sort((a, b) => a.localeCompare(b, "nl")).map((s) => (
+          {[...(data?.stores ?? ["Albert Heijn", "Dirk", "Jumbo"])].sort((a, b) => (a === fav ? -1 : b === fav ? 1 : a.localeCompare(b, "nl"))).map((s) => (
             <Pressable
               key={s}
               testID={`folder-store-${s}`}

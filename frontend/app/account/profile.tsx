@@ -125,9 +125,9 @@ export default function ProfileScreen() {
             keyboardType="phone-pad"
           />
           <View style={{ gap: 8 }}>
-            <Text style={styles.fieldLabel}>Jouw supermarkt</Text>
+            <Text style={styles.fieldLabel}>Favoriete winkel</Text>
             <Select testID="profile-store" value={store} options={stores} icon="storefront-outline" onChange={setStore} />
-            <Text style={styles.storeHint}>Prijzen en budget gebruiken de prijzen van deze winkel.</Text>
+            <Text style={styles.storeHint}>Deze winkel staat overal in de app vooraan: bij producten, folders, recepten en aanbiedingen. Prijzen en budget rekenen ook met deze winkel.</Text>
           </View>
           <Pressable testID="email-toggle" onPress={() => setEmailOn((v) => !v)} style={styles.emailToggle}>
             <Icon name={emailOn ? "checkbox-marked" : "checkbox-blank-outline"} size={22} color={emailOn ? colors.brandPrimary : colors.muted} />

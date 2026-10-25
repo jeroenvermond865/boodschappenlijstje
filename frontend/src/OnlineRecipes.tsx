@@ -6,6 +6,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useAuth } from "@/src/auth";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 export type RecipeTile = {
@@ -58,8 +59,12 @@ export function OnlineRecipes({
 
   const [input, setInput] = useState("");
   const [q, setQ] = useState("");
-  const [store, setStore] = useState<string>("all");
-  const [filters, setFilters] = useState<Filters>(initialFilters ?? {});
+  // Je favoriete winkel staat vooraan en is meteen gekozen
+  const { user } = useAuth();
+  const favKey = RECIPE_STORES.find((s) => s.label === user?.store)?.key;
+  const stores = favKey ? [RECIPE_STORES[0], ...RECIPE_STORES.filter((s) => s.key === favKey), ...RECIPE_STORES.filter((s) => s.key !== "all" && s.key !== favKey)] : RECIPE_STORES;
+  const [store, setStore] = useState<string>(favKey ?? "all");
+  const [filters, setFilters] = useState<Filters>(favKey ? {} : initialFilters ?? {});
   const [open, setOpen] = useState(false);
 
   // Even wachten met zoeken tot je klaar bent met typen
@@ -70,7 +75,7 @@ export function OnlineRecipes({
 
   // Andere winkel: elke winkel heeft eigen filters. Neem de gekozen filters mee naar de filters met dezelfde naam bij de nieuwe winkel
   const [firstStore, setFirstStore] = useState(true);
-  const [carry, setCarry] = useState<Filters | null>(null);
+  const [carry, setCarry] = useState<Filters | null>(favKey && initialFilters ? initialFilters : null);
   useEffect(() => {
     if (firstStore) return setFirstStore(false);
     if (Object.keys(filters).length) setCarry(filters);
@@ -160,7 +165,7 @@ export function OnlineRecipes({
             <Icon name={store === "fav" ? "heart" : "heart-outline"} size={15} color={store === "fav" ? colors.onBrandPrimary : "#E0245E"} />
             <Text style={[styles.chipText, store === "fav" && styles.chipTextActive]}>Favorieten</Text>
           </Pressable>
-          {RECIPE_STORES.map((s) => (
+          {stores.map((s) => (
             <Pressable key={s.key} onPress={() => setStore(s.key)} style={[styles.chip, store === s.key && styles.chipActive]}>
               <Text style={[styles.chipText, store === s.key && styles.chipTextActive]}>{s.label}</Text>
             </Pressable>
