@@ -2908,67 +2908,75 @@ def _promo_public(doc: dict, price: float) -> tuple:
 
 
 async def _probe_recipes() -> None:
-    # Tijdelijk: hoe bieden AH, Jumbo en Dirk hun recepten aan?
+    # Tijdelijk: hoe bieden AH, Jumbo en Dirk hun recepten aan? (ronde 2)
     import json as _json
     def dump(x, n=2500):
         return _json.dumps(x, ensure_ascii=False, default=str)[:n]
     await asyncio.sleep(30)
-    def keys_with(d, word):
-        out = []
-        def walk(x, path="", depth=0):
-            if depth > 25 or len(out) > 15:
-                return
-            if isinstance(x, dict):
-                for k, v in x.items():
-                    if word in k.lower():
-                        out.append((path + "." + k, (dump(v, 300))))
-                    walk(v, path + "." + k, depth + 1)
-            elif isinstance(x, list) and x:
-                walk(x[0], path + "[0]", depth + 1)
-        walk(d)
-        return out
+    intro = '{__type(name:"Query"){fields{name args{name type{name kind ofType{name kind ofType{name}}}}}}}'
+    def recipe_fields(body):
+        try:
+            fs = body["data"]["__type"]["fields"]
+            return [f for f in fs if "recip" in f["name"].lower()]
+        except Exception:
+            return str(body)[:600]
     try:
         async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
             tok = await _ah_token(c)
-            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-            for path, params in [("/mobile-services/recipes/v2/search", {"query": "pasta", "size": 3}),
-                                 ("/mobile-services/v1/recipes/search", {"query": "pasta", "size": 3}),
-                                 ("/mobile-services/recipe/v2/search", {"query": "pasta", "size": 3}),
-                                 ("/mobile-services/recipes/v1/search", {"searchText": "pasta", "size": 3}),
-                                 ("/mobile-services/allerhande/v1/recipes/search", {"query": "pasta"}),
-                                 ("/mobile-services/recipes/v3/search", {"query": "pasta", "size": 3})]:
-                r = await c.get("https://api.ah.nl" + path, params=params, headers=H)
-                logger.info("Recept AH %s -> %s %s", path, r.status_code, r.text[:700])
-            q = {"query": "query { recipeSearchV2(query: {searchText: \"pasta\", start: 0, size: 2}) { result { id title } } }"}
-            for url in ("https://www.ah.nl/gql", "https://api.ah.nl/graphql"):
-                r = await c.post(url, json=q, headers={**H, "Content-Type": "application/json", "client-name": "ah-allerhande", "client-version": "6.0"})
-                logger.info("Recept AH gql %s -> %s %s", url, r.status_code, r.text[:700])
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            for url in ("https://www.jumbo.com/recepten/zoeken/?searchTerms=pasta", "https://www.jumbo.com/recepten",
-                        "https://www.dirk.nl/recepten", "https://www.dirk.nl/recepten/zoeken?zoekterm=pasta",
-                        "https://www.ah.nl/allerhande/recepten-zoeken?query=pasta"):
-                r = await c.get(url, headers=_PAGE_HEADERS)
-                d = _nuxt_data(r.text)
-                logger.info("Recept pagina %s -> %s %s nuxt=%s len=%d", url, r.status_code, str(r.url), d is not None, len(r.text))
-                if d is not None:
-                    for w in ("recipe", "filter", "facet", "ingredient", "servings", "cookingtime", "preparation"):
-                        logger.info("Recept pagina %s veld %s: %s", url.split("/")[2], w, dump(keys_with(d, w), 1800))
-                else:
-                    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
-                    if m:
-                        logger.info("Recept pagina %s NEXT %s", url, m.group(1)[:1500])
-                    links = sorted(set(re.findall(r'href="([^"]*recept[^"]*)"', r.text)))[:20]
-                    logger.info("Recept pagina %s links %s", url, links)
+            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP", "Content-Type": "application/json",
+                 "client-name": "ah-allerhande", "client-version": "6.0"}
+            G = "https://api.ah.nl/graphql"
+            r = await c.post(G, json={"query": intro}, headers=H)
+            logger.info("Recept2 AH intro %s %s", r.status_code, dump(recipe_fields(r.json()), 3000))
+            for q in ['{recipeSearchV2{result{id}}}',
+                      '{recipeSearchV2(searchText:"pasta",size:2){result{id title}}}',
+                      '{recipeSearchV2(query:"pasta"){result{id}}}',
+                      '{__type(name:"RecipeSearchQueryInput"){inputFields{name type{name kind ofType{name}}}}}',
+                      '{__type(name:"RecipeSearchResult"){fields{name type{name kind ofType{name}}}}}',
+                      '{__type(name:"RecipeSummary"){fields{name type{name kind ofType{name}}}}}']:
+                r = await c.post(G, json={"query": q}, headers=H)
+                logger.info("Recept2 AH %s -> %s %s", q[:45], r.status_code, r.text[:1500])
         async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
-            for q in ['query { searchRecipes(input: {searchTerms: "pasta", offSet: 0}) { count } }',
-                      'query { recipes(searchTerms: "pasta") { count } }',
-                      'query { searchRecipes(searchTerms: "pasta") { count } }']:
-                r = await c.post(JUMBO_GQL, json={"query": q})
-                logger.info("Recept Jumbo gql -> %s", r.text[:500])
+            r = await c.post(JUMBO_GQL, json={"query": intro})
+            logger.info("Recept2 Jumbo intro %s", dump(recipe_fields(r.json()), 3000))
         async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
-            for q in ["query{recipes{recipeId}}", "query{listRecipes{recipeId}}", "query{recipe(recipeId:1){recipeId}}", "query{searchRecipes(searchTerm:\"pasta\"){recipeId}}"]:
-                r = await c.post(DIRK_GQL, json={"query": q})
-                logger.info("Recept Dirk gql %s -> %s", q[6:28], r.text[:400])
+            r = await c.post(DIRK_GQL, json={"query": intro})
+            logger.info("Recept2 Dirk intro %s", dump(recipe_fields(r.json()), 3000))
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            r = await c.get("https://www.jumbo.com/recepten/zoeken/?searchTerms=pasta", headers=_PAGE_HEADERS)
+            d = _nuxt_data(r.text)
+            st = _find_dict(d, "recipeStore")
+            st = st.get("recipeStore") if isinstance(st, dict) and "recipeStore" in st else st
+            logger.info("Recept2 Jumbo store keys %s", list((st or {}).keys()) if isinstance(st, dict) else type(st))
+            if isinstance(st, dict):
+                for k, v in st.items():
+                    logger.info("Recept2 Jumbo store %s = %s", k, dump(v, 2500))
+            link = None
+            m = re.search(r'href="(/recepten/[^"?#]+-\d+[^"]*)"', r.text)
+            if m:
+                link = m.group(1)
+            logger.info("Recept2 Jumbo link %s", link)
+            if link:
+                r = await c.get("https://www.jumbo.com" + link, headers=_PAGE_HEADERS)
+                d = _nuxt_data(r.text)
+                for w in ("recipe",):
+                    rd = _find_dict(d, "ingredients")
+                    logger.info("Recept2 Jumbo detail %s", dump(rd, 4000))
+            r = await c.get("https://www.dirk.nl/meer/recepten", headers=_PAGE_HEADERS)
+            d = _nuxt_data(r.text)
+            tiles = _find_dict(d, "recipeTiles")
+            logger.info("Recept2 Dirk tiles %s", dump(tiles, 3000))
+            links = sorted(set(re.findall(r'href="(/[^"]*recept[^"]*)"', r.text)))
+            logger.info("Recept2 Dirk links (%d) %s", len(links), links[:40])
+            if d is not None and isinstance(d, dict):
+                logger.info("Recept2 Dirk top %s", dump(list(d.keys()), 500))
+                dd = d.get("data") or {}
+                logger.info("Recept2 Dirk data keys %s", dump({k: (list(v.keys()) if isinstance(v, dict) else type(v).__name__) for k, v in dd.items()} if isinstance(dd, dict) else dd, 2000))
+            dl = [l for l in links if l.count("/") >= 3]
+            if dl:
+                r = await c.get("https://www.dirk.nl" + dl[0], headers=_PAGE_HEADERS)
+                d2 = _nuxt_data(r.text)
+                logger.info("Recept2 Dirk detail %s %s %s", dl[0], r.status_code, dump(_find_dict(d2, "recipeDetail"), 4000))
     except Exception as e:
         logger.warning("Recept probe mislukt: %r", e)
 
