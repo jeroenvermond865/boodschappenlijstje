@@ -3711,22 +3711,32 @@ async def remove_recipe_favorite(id: str, user: dict = Depends(get_current_user)
 
 
 async def _selftest2() -> None:
-    # Tijdelijk: alternatieven, voorraadkast en Dirk-actieprijzen controleren
-    await asyncio.sleep(45)
+    # Tijdelijk: waar staan de Dirk-folders van volgende week en de Dirck3-folder?
+    await asyncio.sleep(30)
     try:
-        docs = await _global_products()
-        for q in ("brood", "melk", "kaas", "tomaat", "kip", "appel", "pasta", "chips"):
-            res, _, _ = _run_search(docs, q, "", "", None, "", "", False, False, "", "Albert Heijn")
-            t0 = time.time()
-            res, _, _ = _run_search(docs, q, "", "", None, "", "", False, False, "", "Albert Heijn")
-            logger.info("Stest zoek %r (%d, %.2fs): %s", q, len(res), time.time() - t0, [d["name"] for d in res[:12]])
-        for st in ("Albert Heijn", "Jumbo", "Dirk"):
-            pool = [d for d in docs if d.get("_src") == st and d.get("is_global")]
-            for q in ("middelgrote ui", "witte wijn", "zwarte olijf zonder pit", "maizena", "vanille-extract", "aardbeienjam", "poedersuiker", "lasagnevel"):
-                logger.info("Stest match %s %r: %s", st, q, [d["name"] for d in _best_matches(pool, q, 3)])
-        for rid in ("ah-1302917", "dirk-aardbeien-caprese", "dirk-aspergesoep", "ah-1302830"):
-            rec = await _recipe_products(await _recipe_detail(rid), {"user_id": "x"})
-            logger.info("Stest recept %s: %s", rid, [(i["name"], i["pantry"], (i["product"] or {}).get("name")) for i in rec["ingredients"]])
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            r = await c.get("https://www.dirk.nl/folder", headers=_PAGE_HEADERS)
+            links = sorted(set(re.findall(r"https?://[^\"'\\ <>]*(?:publitas|folder|dirck|view\.)[^\"'\\ <>]*", r.text)))
+            logger.info("Stest folderpagina %s %d links: %s", r.status_code, len(links), links[:60])
+            hrefs = sorted(set(re.findall(r'href="([^"]*folder[^"]*)"', r.text)))
+            logger.info("Stest folder hrefs: %s", hrefs[:60])
+            data = _nuxt_data(r.text)
+            found = []
+
+            def walk(x, path="", depth=0):
+                if depth > 25 or len(found) > 80:
+                    return
+                if isinstance(x, dict):
+                    for k, v in x.items():
+                        if isinstance(v, str) and re.search(r"(?i)publitas|folder|dirck|week", v) and len(v) < 300:
+                            found.append(f"{path}.{k}={v}")
+                        walk(v, f"{path}.{k}", depth + 1)
+                elif isinstance(x, list):
+                    for i, v in enumerate(x[:50]):
+                        walk(v, f"{path}[{i}]", depth + 1)
+            walk(data)
+            for line in found:
+                logger.info("Stest folderdata %s", line)
     except Exception as e:
         logger.warning("Stest: %r", e)
 
