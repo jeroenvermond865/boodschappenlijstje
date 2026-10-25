@@ -1923,7 +1923,7 @@ async def off_search(q: str, user: dict = Depends(get_current_user)):
 
 # --- Dirk supermarket live product + price search (public web gateway) ---
 DIRK_GQL = "https://web-gateway.dirk.nl/graphql"
-DIRK_STORE_ID = 66
+DIRK_STORE_ID = 1067  # Dirk Leiderdorp, Winkelhof 58 (dirk.nl zelf gebruikt standaard 66)
 DIRK_HEADERS = {
     "Content-Type": "application/json",
     "User-Agent": "Mozilla/5.0 (Linux; Android 10) Chrome/120 Mobile Safari/537.36",
@@ -1986,18 +1986,17 @@ def _dirk_aisle(department: str, webgroup: str, name: str = "") -> str:
     return "Overig"
 
 
-async def _log_dirk_store_schema() -> None:
-    # Tijdelijk: uitzoeken welk winkelnummer Dirk Leiderdorp heeft
+async def _log_dirk_store_check() -> None:
+    # Controle: geeft winkel Leiderdorp (1067) producten terug, ook die bij 66 ontbraken?
     try:
-        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS, follow_redirects=True) as c:
-            r = await c.get("https://www.dirk.nl/winkels/leiderdorp/winkelhof", headers={"Accept": "text/html"})
-            html = r.text
-            logger.info("Dirk winkelpagina -> %s, %d tekens", r.status_code, len(html))
-            for pat in [r"1736a3b2", r"(?i)storeDetail", r"(?i)storeNumber|filiaalnummer|webStoreId|branchId|shopId", r"(?i)\"number\"", r"Winkelhof"]:
-                for m in list(re.finditer(pat, html))[:3]:
-                    logger.info("Dirk winkelpagina [%s]: %s", pat, html[max(0, m.start() - 250):m.start() + 350].replace("\n", " "))
+        sample = await db.products.find_one({"dirk_id": {"$exists": True}, "deleted_at": None}, {"_id": 0, "dirk_id": 1})
+        ids = [49887, 113652, 12530] + ([int(sample["dirk_id"])] if sample else [])
+        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
+            for sid in (66, 1067):
+                d = await _dirk_post(c, "query($ids:[Int!],$sid:Int!){products(productIds:$ids,storeId:$sid){productId normalPrice}}", {"ids": ids, "sid": sid})
+                logger.info("Dirk winkel %s: %s", sid, d.get("products"))
     except Exception as e:
-        logger.warning("Dirk winkel-probe mislukt: %s", e)
+        logger.warning("Dirk winkelcontrole mislukt: %s", e)
 
 
 async def _log_category_sample() -> None:
@@ -3469,7 +3468,7 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
-    asyncio.create_task(_log_dirk_store_schema())
+    asyncio.create_task(_log_dirk_store_check())
 
 
 async def _daily_refresh_loop():
