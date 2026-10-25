@@ -1380,6 +1380,27 @@ def _diet_counts(day: dict, camp: dict) -> dict:
     return {"all": (adults, children), "vega": (va, vc), "meat": (adults - va, children - vc)}
 
 
+class ProductSwap(BaseModel):
+    from_id: str
+    to_id: str
+
+
+@api_router.post("/camps/{camp_id}/product-swap")
+async def camp_product_swap(camp_id: str, data: ProductSwap, user: dict = Depends(get_current_user)):
+    # Op de boodschappenlijst een ander product kiezen, alleen voor dit kamp
+    camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "product_swaps": 1})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+    if not await db.products.find_one({"product_id": data.to_id, "deleted_at": None}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Product niet gevonden")
+    # Al eens gewisseld? Dan vervangt het nieuwe product het oorspronkelijke
+    old = camp.get("product_swaps") or {}
+    origin = next((k for k, v in old.items() if v == data.from_id), data.from_id)
+    swaps = {**old, origin: data.to_id}
+    await db.camps.update_one({"camp_id": camp_id}, {"$set": {"product_swaps": swaps}})
+    return {"ok": True}
+
+
 @api_router.get("/camps/{camp_id}/shopping-list")
 async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
@@ -1456,6 +1477,12 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
     stores = sorted(total_store_map.keys())
 
     # Prijzen: hoeveel verpakkingen je nodig hebt en wat dat kost (150 gram uit een pak van 500 gram = 1 pak)
+    # Zelf gewisseld naar een ander product (bijv. een voordeligere verpakking): alleen voor dit kamp
+    swaps = camp.get("product_swaps") or {}
+    for b in by_store + general + [x for d in per_day for x in d["by_store"]]:
+        for it in b["flat"]:
+            if it.get("product_id") in swaps:
+                it["product_id"] = swaps[it["product_id"]]
     pids = {it.get("product_id") for b in by_store + general + [x for d in per_day for x in d["by_store"]] for it in b["flat"] if it.get("product_id")}
     prods = {p["product_id"]: p for p in await db.products.find({"product_id": {"$in": list(pids)}}, {"_id": 0}).to_list(5000)} if pids else {}
 
@@ -1530,9 +1557,15 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
     prod_docs = await db.products.find({"product_id": {"$in": list(prod_ids)}}, {"_id": 0}).to_list(5000)
     products_by_id = {p["product_id"]: p for p in prod_docs}
 
+    swaps = camp.get("product_swaps") or {}
+    extra_ids = [v for v in swaps.values() if v not in products_by_id]
+    if extra_ids:
+        products_by_id.update({p["product_id"]: p for p in await db.products.find({"product_id": {"$in": extra_ids}}, {"_id": 0}).to_list(500)})
+
     def unit_price(item: dict, store: str) -> float:
         # Prijs per eenheid van het ingrediënt: 150 gram van een pak van 500 gram is 0,3 pak, niet 150 pakken
         pid = item.get("product_id")
+        pid = swaps.get(pid, pid)
         p = products_by_id.get(pid) if pid else None
         price = resolve_price(p.get("prices", {}), store, p.get("unavailable", [])) if p else (item.get("price", 0) or 0)
         return price * _pack_share(item.get("unit") or "stuks", (p or {}).get("unit") or "", (p or {}).get("name") or item.get("name") or "")
@@ -4475,13 +4508,22 @@ class RecipeImport(BaseModel):
     category: str = "avondeten"
     include: List[int] = []
     reuse: bool = False  # al eerder overgenomen? dan dat gerecht teruggeven
+    swaps: Dict[str, str] = {}  # ingrediënt (volgnummer) -> ander product, bijv. een voordeligere verpakking
 
 
-async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = False, include: Optional[List[int]] = None) -> dict:
+async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = False, include: Optional[List[int]] = None,
+                          swaps: Optional[Dict[str, str]] = None) -> dict:
     if category not in MEAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="Ongeldige categorie")
     rec = await _recipe_products(await _recipe_detail(rid), user)
-    if reuse:
+    if swaps:
+        by_pid = _product_cache.get("by_pid") or {}
+        favs = set(user.get("favorite_products") or [])
+        for k, pid in swaps.items():
+            d = by_pid.get(pid)
+            if d and str(k).isdigit() and int(k) < len(rec["ingredients"]):
+                rec["ingredients"][int(k)] = {**rec["ingredients"][int(k)], "product": product_public(_clean(d), d["_src"], user["user_id"], favs)}
+    if reuse and not swaps:
         # Al eerder overgenomen? Dan dat gerecht gebruiken (met jouw aanpassingen)
         old = await db.dishes.find_one({"owner_id": user["user_id"], "deleted_at": None, "source.recipe_id": rec["id"]}, {"_id": 0})
         if old:
@@ -4511,7 +4553,7 @@ async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = Fal
 
 @api_router.post("/recipes/import")
 async def import_recipe(data: RecipeImport, user: dict = Depends(get_current_user)):
-    return dish_public(await _recipe_to_dish(data.id, data.category, user, reuse=data.reuse, include=data.include))
+    return dish_public(await _recipe_to_dish(data.id, data.category, user, reuse=data.reuse, include=data.include, swaps=data.swaps))
 
 
 class RecipeToCamp(BaseModel):
@@ -4520,6 +4562,7 @@ class RecipeToCamp(BaseModel):
     day_index: int
     category: str
     include: List[int] = []
+    swaps: Dict[str, str] = {}
 
 
 @api_router.post("/recipes/add-to-camp")
@@ -4530,7 +4573,7 @@ async def recipe_to_camp(data: RecipeToCamp, user: dict = Depends(get_current_us
     days = camp.get("days") or []
     if not 0 <= data.day_index < len(days):
         raise HTTPException(status_code=400, detail="Die dag bestaat niet in dit kamp")
-    dish = await _recipe_to_dish(data.id, data.category, user, reuse=True, include=data.include)
+    dish = await _recipe_to_dish(data.id, data.category, user, reuse=True, include=data.include, swaps=data.swaps)
     meals = days[data.day_index].setdefault("meals", {})
     lst = meals.setdefault(data.category, [])
     if dish["dish_id"] not in lst:

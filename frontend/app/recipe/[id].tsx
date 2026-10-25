@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ActivityIndicator, Image, Linking, Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -13,7 +13,7 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { euro } from "@/src/search";
 import { STORE_LABEL } from "@/src/OnlineRecipes";
 import type { Product } from "@/app/(tabs)/products";
-import { BetterPack, PackPlan, packText } from "@/src/packs";
+import { BetterPack, PackBetter, PackPlan, packText } from "@/src/packs";
 
 type Recipe = {
   id: string;
@@ -68,7 +68,15 @@ export default function RecipeScreen() {
     staleTime: 30 * 60 * 1000,
     retry: 1,
   });
-  const r = q.data;
+  // Zelf gewisseld (bijv. naar een voordeligere verpakking): per ingrediënt het andere product
+  const [swaps, setSwaps] = useState<Record<number, Product>>({});
+  const r = useMemo(
+    () => (q.data ? { ...q.data, ingredients: q.data.ingredients.map((i, k) => (swaps[k] ? { ...i, product: swaps[k], site_packs: null } : i)) } : undefined),
+    [q.data, swaps],
+  );
+  const swapIds = Object.fromEntries(Object.entries(swaps).map(([k, p]) => [k, p.id]));
+  const swapTo = (idx: number, b: PackBetter) =>
+    setSwaps((x) => ({ ...x, [idx]: { ...(r?.ingredients[idx].product as Product), id: b.product_id, name: b.name, image: b.image ?? null, price: b.pack_price, unit: b.pack_unit, promo: null } as Product }));
   const base = r?.servings || 4;
   const n = persons ?? base;
   const scale = (qty: number | null) => (qty == null ? null : Math.round(((qty * n) / base) * 100) / 100);
@@ -82,7 +90,7 @@ export default function RecipeScreen() {
       : null,
   );
   const plans = useQuery({
-    queryKey: ["packs", id, n],
+    queryKey: ["packs", id, n, swapIds],
     enabled: planItems.some(Boolean),
     staleTime: 10 * 60 * 1000,
     queryFn: async () => {
@@ -110,7 +118,7 @@ export default function RecipeScreen() {
   });
 
   const importMut = useMutation({
-    mutationFn: (category: MealCategory) => api<{ id: string }>("/recipes/import", { method: "POST", body: { id, category, include } }),
+    mutationFn: (category: MealCategory) => api<{ id: string }>("/recipes/import", { method: "POST", body: { id, category, include, swaps: swapIds } }),
     onSuccess: (dish) => {
       setPick(false);
       qc.invalidateQueries({ queryKey: ["dishes"] });
@@ -189,7 +197,7 @@ export default function RecipeScreen() {
               ) : null}
               <View style={styles.card}>
                 {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => !x.i.pantry).map(({ i, idx }, k) => (
-                  <IngRow key={idx} i={i} first={k === 0} label={amount(i)} plan={plans.data?.[idx]} />
+                  <IngRow key={idx} i={i} first={k === 0} label={amount(i)} plan={plans.data?.[idx]} onSwap={(b) => swapTo(idx, b)} />
                 ))}
               </View>
 
@@ -205,6 +213,7 @@ export default function RecipeScreen() {
                         first={k === 0}
                         label={amount(i)}
                         plan={plans.data?.[idx]}
+                        onSwap={(b) => swapTo(idx, b)}
                         toggle={{ on: include.includes(idx), onPress: () => setInclude((x) => (x.includes(idx) ? x.filter((v) => v !== idx) : [...x, idx])) }}
                       />
                     ))}
@@ -283,7 +292,7 @@ export default function RecipeScreen() {
               </Pressable>
             </Pressable>
           </Modal>
-          <CampSheet open={campOpen} onClose={() => setCampOpen(false)} recipeId={r.id} suggested={guessCategory(r)} include={include} />
+          <CampSheet open={campOpen} onClose={() => setCampOpen(false)} recipeId={r.id} suggested={guessCategory(r)} include={include} swaps={swapIds} />
         </>
       )}
     </View>
@@ -298,12 +307,14 @@ function CampSheet({
   recipeId,
   suggested,
   include,
+  swaps,
 }: {
   open: boolean;
   onClose: () => void;
   recipeId: string;
   suggested: MealCategory;
   include: number[];
+  swaps: Record<string, string>;
 }) {
   const styles = useStyles();
   const T = useTerms();
@@ -320,7 +331,7 @@ function CampSheet({
   const camp = list.find((c) => c.id === campId) ?? (list.length === 1 ? list[0] : undefined);
 
   const add = useMutation({
-    mutationFn: () => api("/recipes/add-to-camp", { method: "POST", body: { id: recipeId, camp_id: camp!.id, day_index: day, category: cat, include } }),
+    mutationFn: () => api("/recipes/add-to-camp", { method: "POST", body: { id: recipeId, camp_id: camp!.id, day_index: day, category: cat, include, swaps } }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["camps"] });
       qc.invalidateQueries({ queryKey: ["dishes"] });
@@ -430,19 +441,22 @@ function IngRow({
   label,
   toggle,
   plan,
+  onSwap,
 }: {
   i: Recipe["ingredients"][number];
   first: boolean;
   label: string;
   plan?: PackPlan | null;
   toggle?: { on: boolean; onPress: () => void };
+  onSwap?: (b: PackBetter) => void;
 }) {
   const styles = useStyles();
   const T = useTerms();
   const { colors } = useTheme();
   const router = useRouter();
   return (
-    <View style={[styles.ingRow, !first && styles.ingBorder]}>
+    <View style={!first && styles.ingBorder}>
+    <View style={styles.ingRow}>
       <Pressable
         disabled={!i.product}
         onPress={() => i.product && router.push(`/product/${i.product.id}`)}
@@ -468,7 +482,6 @@ function IngRow({
               {packText(plan.packs, plan.pack_unit)} · {euro(plan.cost)}
             </Text>
           ) : null}
-          {!toggle || toggle.on ? <BetterPack better={plan?.better} /> : null}
         </View>
       </Pressable>
       {toggle ? (
@@ -477,6 +490,12 @@ function IngRow({
         </Pressable>
       ) : i.product ? (
         <Icon name="chevron-right" size={20} color={colors.muted} />
+      ) : null}
+    </View>
+      {i.product && (!toggle || toggle.on) && plan?.better ? (
+        <View style={{ paddingLeft: 66, paddingRight: 10, paddingBottom: 10, marginTop: -6 }}>
+          <BetterPack better={plan.better} current={i.product.name} onSwap={onSwap} />
+        </View>
       ) : null}
     </View>
   );

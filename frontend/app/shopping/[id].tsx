@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Platform, Pressable, ScrollView, Share, Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
@@ -16,7 +16,7 @@ import { useToast } from "@/src/toast";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; better?: PackBetter | null };
+type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; better?: PackBetter | null };
 type Grouped = { aisle: string; items: Item[] };
 type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number };
 
@@ -310,8 +310,23 @@ function AisleSection({
 function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boolean; onToggle: () => void; last?: boolean }) {
   const styles = useStyles();
   const { colors } = useTheme();
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const qc = useQueryClient();
+  const toast = useToast();
+  // Wisselen naar het voordeligere product: alleen voor deze lijst
+  const swap = async (b: PackBetter) => {
+    try {
+      await api(`/camps/${id}/product-swap`, { method: "POST", body: { from_id: item.product_id, to_id: b.product_id } });
+      qc.invalidateQueries({ queryKey: ["shopping"] });
+      qc.invalidateQueries({ queryKey: ["budget"] });
+      toast.show(`Gewisseld naar ${b.name}`, "success");
+    } catch (e: any) {
+      toast.show(e?.message ?? "Wisselen lukte niet", "error");
+    }
+  };
   return (
-    <Pressable testID={`item-${item.name.toLowerCase()}`} onPress={onToggle} style={[styles.itemRow, !last && styles.itemRowBorder]}>
+    <View style={!last && styles.itemRowBorder}>
+    <Pressable testID={`item-${item.name.toLowerCase()}`} onPress={onToggle} style={styles.itemRow}>
       <Icon name={checked ? "checkbox-marked-circle" : "checkbox-blank-circle-outline"} size={24} color={checked ? colors.success : colors.borderStrong} />
       <View style={{ flex: 1 }}>
         <Text style={[styles.itemName, checked && styles.itemNameChecked]}>{item.name}</Text>
@@ -320,7 +335,6 @@ function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boole
             {packText(item.packs, item.pack_unit)}
           </Text>
         ) : null}
-        <BetterPack better={item.better} />
       </View>
       <View style={{ alignItems: "flex-end" }}>
         <Text style={[styles.itemQty, checked && styles.itemQtyChecked]}>
@@ -329,6 +343,12 @@ function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boole
         {item.price ? <Text style={styles.itemPrice}>{euro(item.price)}</Text> : null}
       </View>
     </Pressable>
+      {item.better && !checked ? (
+        <View style={{ paddingLeft: 36, paddingBottom: 12, marginTop: -8 }}>
+          <BetterPack better={item.better} current={item.product} onSwap={item.product_id ? swap : undefined} />
+        </View>
+      ) : null}
+    </View>
   );
 }
 
