@@ -7079,57 +7079,86 @@ async def _import_ah_catalog(mults: dict) -> int:
 
 
 async def _import_jumbo_catalog(mults: dict) -> int:
-    # De hele Jumbo-catalogus: zoeken op "*" geeft alles, 24 per keer
+    # De hele Jumbo-catalogus: zoeken op "*" geeft alles, 24 per keer. Rustig aan, één pagina tegelijk, want bij te veel
+    # verzoeken blokkeert Jumbo ons (403) en doen ook de prijzen het even niet. We onthouden waar we waren.
     existing = {str(p["jumbo_id"]) async for p in db.products.find({"jumbo_id": {"$exists": True}}, {"_id": 0, "jumbo_id": 1})}
+    meta = await db.meta.find_one({"key": "catalog_import"}) or {}
+    off = int(meta.get("jumbo_offset") or 0)
     added = 0
     async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
         _, total = await _jumbo_search_page(c, "*", 0)
-        sem = asyncio.Semaphore(4)
-
-        async def page(off):
-            async with sem:
-                for attempt in range(3):
-                    try:
-                        return (await _jumbo_search_page(c, "*", off))[0]
-                    except Exception:
-                        await asyncio.sleep(2 * (attempt + 1))
-                return []
-        for start in range(0, total, 24 * 40):
-            batches = await asyncio.gather(*(page(o) for o in range(start, min(total, start + 24 * 40), 24)))
+        while off < total:
+            try:
+                prods = (await _jumbo_search_page(c, "*", off))[0]
+            except Exception as e:
+                if "403" in repr(e):
+                    await db.meta.update_one({"key": "catalog_import"}, {"$set": {"jumbo_offset": off, "jumbo_paused": now_utc()}})
+                    logger.warning("Jumbo-catalogus gepauzeerd bij %d van %d (%d toegevoegd): Jumbo blokkeert even", off, total, added)
+                    _invalidate_products()
+                    raise RuntimeError("Jumbo blokkeert even")
+                await asyncio.sleep(10)
+                continue
             docs = []
-            for prods in batches:
-                for pr in prods:
-                    nrm = _jumbo_normalize(pr)
-                    if not nrm or nrm["jumbo_id"] in existing:
-                        continue
-                    existing.add(nrm["jumbo_id"])
-                    nrm["source_id"] = nrm["jumbo_id"]
-                    docs.append(_new_store_product("jumbo_id", nrm, "Jumbo", mults))
+            for pr in prods:
+                nrm = _jumbo_normalize(pr)
+                if not nrm or nrm["jumbo_id"] in existing:
+                    continue
+                existing.add(nrm["jumbo_id"])
+                nrm["source_id"] = nrm["jumbo_id"]
+                docs.append(_new_store_product("jumbo_id", nrm, "Jumbo", mults))
             if docs:
                 await db.products.insert_many(docs)
                 added += len(docs)
+            off += 24
+            if off % (24 * 50) == 0:
+                await db.meta.update_one({"key": "catalog_import"}, {"$set": {"jumbo_offset": off}})
+            await asyncio.sleep(2.5)
+    await db.meta.update_one({"key": "catalog_import"}, {"$set": {"jumbo_offset": 0}})
     _invalidate_products()
     logger.info("Jumbo-catalogus: %d producten toegevoegd (van %d)", added, total)
     return added
 
 
+_catalog_busy = False
+
+
 async def _catalog_loop():
-    # Eens per week de volledige catalogus van AH en Jumbo langs, zodat nieuwe producten er ook in komen
+    # Eens per week de volledige catalogus van AH en Jumbo langs, zodat nieuwe producten er ook in komen.
+    # Een onderbroken ronde (herstart, of Jumbo die even blokkeert) gaat na een tijdje verder waar hij was.
+    global _catalog_busy
+    if _catalog_busy:
+        return
+    _catalog_busy = True
     await asyncio.sleep(120)
     while True:
-        last = await db.meta.find_one({"key": "catalog_import"}) or {}
-        at = last.get("done_at")  # pas als de hele ronde klaar is; een herstart halverwege begint gewoon opnieuw
-        if not at or (datetime.now(timezone.utc) - ensure_aware(at)).total_seconds() > 7 * 86400:
-            await db.meta.update_one({"key": "catalog_import"}, {"$set": {"key": "catalog_import", "at": now_utc()}}, upsert=True)
-            mults = await _store_mults()
-            for fn in (_import_ah_catalog, _import_jumbo_catalog):
+        wait = 6 * 3600
+        try:
+            last = await db.meta.find_one({"key": "catalog_import"}) or {}
+            at = last.get("done_at")
+            if not at or (datetime.now(timezone.utc) - ensure_aware(at)).total_seconds() > 7 * 86400:
+                mults = await _store_mults()
+                ok = True
+                if not last.get("ah_done_at") or (at and ensure_aware(last["ah_done_at"]) <= ensure_aware(at)):
+                    try:
+                        await _import_ah_catalog(mults)
+                        await db.meta.update_one({"key": "catalog_import"}, {"$set": {"key": "catalog_import", "ah_done_at": now_utc()}}, upsert=True)
+                    except Exception as e:
+                        ok = False
+                        logger.warning("AH-catalogus mislukt: %r", e)
                 try:
-                    await fn(mults)
+                    await _import_jumbo_catalog(mults)
                 except Exception as e:
-                    logger.warning("Catalogus %s mislukt: %r", fn.__name__, e)
-            await db.meta.update_one({"key": "catalog_import"}, {"$set": {"done_at": now_utc()}})
-            await _log_product_counts(0)
-        await asyncio.sleep(6 * 3600)
+                    ok = False
+                    logger.warning("Jumbo-catalogus niet af: %r", e)
+                if ok:
+                    await db.meta.update_one({"key": "catalog_import"}, {"$set": {"done_at": now_utc()}})
+                else:
+                    wait = 45 * 60  # straks verder
+                await _log_product_counts(0)
+        except Exception as e:
+            logger.warning("Catalogus: %r", e)
+            wait = 45 * 60
+        await asyncio.sleep(wait)
 
 
 async def _daily_refresh_loop():
