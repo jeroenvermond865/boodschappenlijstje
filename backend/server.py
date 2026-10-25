@@ -2907,15 +2907,70 @@ def _promo_public(doc: dict, price: float) -> tuple:
     return now_p, next_p
 
 
-async def _full_import_once() -> None:
-    # Eenmalig op verzoek: alle winkels opnieuw doorlopen en ontbrekende producten toevoegen
-    await asyncio.sleep(90)
-    if await db.settings.find_one({"key": "full_import_2026_10_25"}):
-        return
-    await db.settings.update_one({"key": "full_import_2026_10_25"}, {"$set": {"started_at": now_utc()}}, upsert=True)
-    logger.info("Volledige import gestart (eenmalig)")
-    await _import_all_dirk(with_others=True)
-    logger.info("Volledige import klaar")
+async def _probe_recipes() -> None:
+    # Tijdelijk: hoe bieden AH, Jumbo en Dirk hun recepten aan?
+    import json as _json
+    def dump(x, n=2500):
+        return _json.dumps(x, ensure_ascii=False, default=str)[:n]
+    await asyncio.sleep(30)
+    def keys_with(d, word):
+        out = []
+        def walk(x, path="", depth=0):
+            if depth > 25 or len(out) > 15:
+                return
+            if isinstance(x, dict):
+                for k, v in x.items():
+                    if word in k.lower():
+                        out.append((path + "." + k, (dump(v, 300))))
+                    walk(v, path + "." + k, depth + 1)
+            elif isinstance(x, list) and x:
+                walk(x[0], path + "[0]", depth + 1)
+        walk(d)
+        return out
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
+            tok = await _ah_token(c)
+            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
+            for path, params in [("/mobile-services/recipes/v2/search", {"query": "pasta", "size": 3}),
+                                 ("/mobile-services/v1/recipes/search", {"query": "pasta", "size": 3}),
+                                 ("/mobile-services/recipe/v2/search", {"query": "pasta", "size": 3}),
+                                 ("/mobile-services/recipes/v1/search", {"searchText": "pasta", "size": 3}),
+                                 ("/mobile-services/allerhande/v1/recipes/search", {"query": "pasta"}),
+                                 ("/mobile-services/recipes/v3/search", {"query": "pasta", "size": 3})]:
+                r = await c.get("https://api.ah.nl" + path, params=params, headers=H)
+                logger.info("Recept AH %s -> %s %s", path, r.status_code, r.text[:700])
+            q = {"query": "query { recipeSearchV2(query: {searchText: \"pasta\", start: 0, size: 2}) { result { id title } } }"}
+            for url in ("https://www.ah.nl/gql", "https://api.ah.nl/graphql"):
+                r = await c.post(url, json=q, headers={**H, "Content-Type": "application/json", "client-name": "ah-allerhande", "client-version": "6.0"})
+                logger.info("Recept AH gql %s -> %s %s", url, r.status_code, r.text[:700])
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+            for url in ("https://www.jumbo.com/recepten/zoeken/?searchTerms=pasta", "https://www.jumbo.com/recepten",
+                        "https://www.dirk.nl/recepten", "https://www.dirk.nl/recepten/zoeken?zoekterm=pasta",
+                        "https://www.ah.nl/allerhande/recepten-zoeken?query=pasta"):
+                r = await c.get(url, headers=_PAGE_HEADERS)
+                d = _nuxt_data(r.text)
+                logger.info("Recept pagina %s -> %s %s nuxt=%s len=%d", url, r.status_code, str(r.url), d is not None, len(r.text))
+                if d is not None:
+                    for w in ("recipe", "filter", "facet", "ingredient", "servings", "cookingtime", "preparation"):
+                        logger.info("Recept pagina %s veld %s: %s", url.split("/")[2], w, dump(keys_with(d, w), 1800))
+                else:
+                    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.S)
+                    if m:
+                        logger.info("Recept pagina %s NEXT %s", url, m.group(1)[:1500])
+                    links = sorted(set(re.findall(r'href="([^"]*recept[^"]*)"', r.text)))[:20]
+                    logger.info("Recept pagina %s links %s", url, links)
+        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
+            for q in ['query { searchRecipes(input: {searchTerms: "pasta", offSet: 0}) { count } }',
+                      'query { recipes(searchTerms: "pasta") { count } }',
+                      'query { searchRecipes(searchTerms: "pasta") { count } }']:
+                r = await c.post(JUMBO_GQL, json={"query": q})
+                logger.info("Recept Jumbo gql -> %s", r.text[:500])
+        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
+            for q in ["query{recipes{recipeId}}", "query{listRecipes{recipeId}}", "query{recipe(recipeId:1){recipeId}}", "query{searchRecipes(searchTerm:\"pasta\"){recipeId}}"]:
+                r = await c.post(DIRK_GQL, json={"query": q})
+                logger.info("Recept Dirk gql %s -> %s", q[6:28], r.text[:400])
+    except Exception as e:
+        logger.warning("Recept probe mislukt: %r", e)
 
 
 async def _dirk_post(client, query, variables):
@@ -4674,7 +4729,7 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
-    asyncio.create_task(_full_import_once())
+    asyncio.create_task(_probe_recipes())
 
 
 async def _daily_refresh_loop():
