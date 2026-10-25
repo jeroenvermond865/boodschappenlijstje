@@ -1923,7 +1923,7 @@ async def off_search(q: str, user: dict = Depends(get_current_user)):
 
 # --- Dirk supermarket live product + price search (public web gateway) ---
 DIRK_GQL = "https://web-gateway.dirk.nl/graphql"
-DIRK_STORE_ID = 1067  # Dirk Leiderdorp, Winkelhof 58 (dirk.nl zelf gebruikt standaard 66)
+DIRK_STORE_ID = 66  # webwinkel van dirk.nl; filiaalnummers (bijv. Leiderdorp 1067) geven geen productdata
 DIRK_HEADERS = {
     "Content-Type": "application/json",
     "User-Agent": "Mozilla/5.0 (Linux; Android 10) Chrome/120 Mobile Safari/537.36",
@@ -1984,45 +1984,6 @@ def _dirk_aisle(department: str, webgroup: str, name: str = "") -> str:
     if main:
         return main[0]
     return "Overig"
-
-
-async def _log_dirk_store_check() -> None:
-    # Controle: geeft winkel Leiderdorp (1067) producten terug, ook die bij 66 ontbraken?
-    try:
-        sample = await db.products.find_one({"dirk_id": {"$exists": True}, "deleted_at": None}, {"_id": 0, "dirk_id": 1})
-        ids = [49887, 113652, 12530] + ([int(sample["dirk_id"])] if sample else [])
-        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
-            for sid in (66, 1067):
-                d = await _dirk_post(c, "query($ids:[Int!],$sid:Int!){products(productIds:$ids,storeId:$sid){productId normalPrice}}", {"ids": ids, "sid": sid})
-                logger.info("Dirk winkel %s: %s", sid, d.get("products"))
-    except Exception as e:
-        logger.warning("Dirk winkelcontrole mislukt: %s", e)
-
-
-async def _log_category_sample() -> None:
-    # Controle: welke categorieën Dirk en AH geven en in welke afdeling ze bij ons landen
-    terms = ["melk", "kaas", "brood", "koek", "chips", "rijst", "ijs", "bier", "shampoo", "kip", "appel", "pizza", "ham", "hondenvoer", "afwasmiddel"]
-    seen: Dict[str, str] = {}
-    try:
-        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
-            for t in terms:
-                ids = await _dirk_search_ids(c, t, limit=20)
-                for p in await _dirk_fetch_products(c, ids):
-                    info = p.get("productInformation") or {}
-                    k = f"Dirk: {info.get('department')} / {info.get('webgroup')}"
-                    seen[k] = _dirk_aisle(info.get("department") or "", info.get("webgroup") or "")
-        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
-            tok = await _ah_token(c)
-            for t in terms:
-                r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"query": t, "size": 20},
-                                headers={"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"})
-                for p in r.json().get("products", []) or []:
-                    k = f"AH: {p.get('mainCategory')} / {p.get('subCategory')}"
-                    seen[k] = _dirk_aisle(p.get("mainCategory") or "", p.get("subCategory") or "")
-    except Exception as e:
-        logger.warning("Categorie-steekproef mislukt: %s", e)
-    for k in sorted(seen):
-        logger.info("Categorie %s -> %s", k, seen[k])
 
 
 async def _dirk_post(client, query, variables):
@@ -3468,7 +3429,6 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
-    asyncio.create_task(_log_dirk_store_check())
 
 
 async def _daily_refresh_loop():
