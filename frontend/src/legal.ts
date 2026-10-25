@@ -156,7 +156,7 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
           "Zolang je account bestaat. Verwijder je je account, dan worden je gegevens direct en definitief gewist. Gedeelde planningen blijven bestaan voor de andere deelnemers, en standaardgerechten die je hebt aangemeld blijven zonder je naam staan.",
           "Dingen die je zelf verwijdert, staan nog 30 dagen in \"Recent verwijderd\" zodat je ze terug kunt zetten. Daarna zijn ze weg.",
           "Een inlogsessie verloopt na 7 dagen. Een code om je wachtwoord te herstellen verloopt na 1 uur.",
-          "Gebruik je je account twee jaar niet, dan mogen we het verwijderen. We sturen je eerst een e-mail.",
+          "Gebruik je je account twee jaar niet, dan sturen we je een e-mail. Log je daarna binnen 30 dagen niet in, dan verwijderen we je account en je gegevens. Inloggen is genoeg om je account te houden.",
           "Logboeken van de server worden na korte tijd automatisch gewist.",
         ],
       },

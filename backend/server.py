@@ -133,6 +133,7 @@ def new_token() -> str:
 
 
 async def create_session(user_id: str) -> str:
+    await _mark_seen(user_id)
     token = new_token()
     await db.user_sessions.insert_one(
         {
@@ -330,7 +331,15 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
     if not user or user.get("deleted_at"):
         raise HTTPException(status_code=401, detail="Gebruiker niet gevonden")
+    seen = user.get("last_seen_at")
+    if not seen or ensure_aware(seen) < now_utc() - timedelta(hours=12):
+        await _mark_seen(user["user_id"])
     return user
+
+
+async def _mark_seen(user_id: str) -> None:
+    # Wie de app gebruikt, is actief: een waarschuwing over verwijderen vervalt dan
+    await db.users.update_one({"user_id": user_id}, {"$set": {"last_seen_at": now_utc()}, "$unset": {"inactive_warned_at": ""}})
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +764,12 @@ async def delete_account(data: DeleteAccount, user: dict = Depends(get_current_u
         {"role": "beheerder", "deleted_at": None, "user_id": {"$ne": uid}}
     ):
         raise HTTPException(status_code=400, detail="Je bent de enige beheerder. Maak eerst iemand anders beheerder")
+    await _erase_user(user)
+    return {"ok": True}
+
+
+async def _erase_user(user: dict) -> None:
+    uid = user["user_id"]
     # Gedeelde kampen blijven bestaan voor de andere leiders: de eerste leider wordt eigenaar
     async for camp in db.camps.find({"owner_id": uid, "member_ids.0": {"$exists": True}}, {"_id": 0, "camp_id": 1, "member_ids": 1}):
         others = [m for m in camp.get("member_ids") or [] if m != uid]
@@ -770,7 +785,47 @@ async def delete_account(data: DeleteAccount, user: dict = Depends(get_current_u
     if user.get("email"):
         for coll in (db.email_prefs, db.password_resets, db.invitations):
             await coll.delete_many({"email": user["email"]})
-    return {"ok": True}
+
+
+# Accounts die lang niet gebruikt zijn (zie privacyverklaring): eerst een mail, na 30 dagen zonder inloggen weg
+INACTIVE_DAYS = 730
+INACTIVE_GRACE_DAYS = 30
+
+
+async def _cleanup_inactive_users() -> None:
+    now = now_utc()
+    stale = now - timedelta(days=INACTIVE_DAYS)
+    base = (FRONTEND_URL or "").rstrip("/")
+    async for u in db.users.find(
+        {"deleted_at": None, "role": {"$ne": "beheerder"}, "last_seen_at": {"$lt": stale}, "inactive_warned_at": {"$exists": False}},
+        {"_id": 0},
+    ):
+        if not u.get("email"):
+            continue
+        html = (
+            '<table role="presentation" width="100%"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#1C1B1A">'
+            f'<h2 style="color:#2E5E38;margin:0 0 12px">We missen je!</h2>'
+            f'<p>Hoi {escape(u.get("name") or "")},</p>'
+            f'<p>Je hebt je account bij Slim Boodschappenlijstje al twee jaar niet gebruikt. Om je gegevens niet langer te bewaren dan nodig, '
+            f'verwijderen we je account over {INACTIVE_GRACE_DAYS} dagen, samen met je planningen, gerechten en favorieten.</p>'
+            f'<p><b>Wil je je account houden?</b> Log dan voor die tijd één keer in'
+            + (f' op <a href="{escape(base)}" style="color:#2E5E38">{escape(base.replace("https://", ""))}</a>' if base else "")
+            + '. Meer hoef je niet te doen.</p>'
+            f'<p>Wil je het niet meer gebruiken? Dan hoef je niets te doen.</p>'
+            f'<p style="font-size:12px;color:#888">Verstuurd door Slim Boodschappenlijstje.</p>'
+            '</td></tr></table>'
+        )
+        # Alleen als de mail echt weg is, gaat de termijn lopen: zonder waarschuwing verwijderen we niets
+        if await send_email(u["email"], "Je Slim Boodschappenlijstje-account wordt binnenkort verwijderd", html, allow_unsubscribe=False):
+            await db.users.update_one({"user_id": u["user_id"]}, {"$set": {"inactive_warned_at": now}})
+            logger.info("Inactief account gewaarschuwd: %s", u["user_id"])
+    async for u in db.users.find(
+        {"deleted_at": None, "role": {"$ne": "beheerder"}, "last_seen_at": {"$lt": stale},
+         "inactive_warned_at": {"$lt": now - timedelta(days=INACTIVE_GRACE_DAYS)}},
+        {"_id": 0},
+    ):
+        await _erase_user(u)
+        logger.info("Inactief account verwijderd: %s", u["user_id"])
 
 
 @api_router.post("/auth/logout")
@@ -6971,6 +7026,8 @@ async def startup():
     await db.invitations.create_index([("email", 1), ("camp_id", 1)], unique=True)
     await db.google_logins.create_index("expires_at", expireAfterSeconds=0)
     await db.password_resets.create_index("expires_at", expireAfterSeconds=0)
+    # Accounts van voor het bijhouden van "laatst gezien": de twee jaar tellen vanaf nu
+    await db.users.update_many({"last_seen_at": {"$exists": False}}, {"$set": {"last_seen_at": now_utc()}})
 
     # Rollen: dubbele opruimen (ontstonden doordat twee servers tegelijk opstartten)
     seen_names, seen_labels = {}, {}
@@ -7263,6 +7320,13 @@ async def _daily_refresh_loop():
                 await _purge_expired_trash()
         except Exception as e:
             logger.warning("Daily Dirk refresh error: %s", e)
+        try:
+            doc = await db.meta.find_one({"key": "inactive_check"}) or {}
+            if not doc.get("at") or ensure_aware(doc["at"]) < now_utc() - timedelta(hours=22):
+                await db.meta.update_one({"key": "inactive_check"}, {"$set": {"at": now_utc()}}, upsert=True)
+                await _cleanup_inactive_users()
+        except Exception as e:
+            logger.warning("Inactieve accounts: %r", e)
         await asyncio.sleep(3600)
 
 
