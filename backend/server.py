@@ -145,6 +145,11 @@ async def create_session(user_id: str) -> str:
     return token
 
 
+# Datum van de huidige voorwaarden en privacyverklaring. Verander je de teksten wezenlijk, zet dan een nieuwe datum:
+# iedereen moet dan bij de volgende keer inloggen opnieuw akkoord geven.
+TERMS_VERSION = "2026-10-25"
+
+
 def public_user(doc: dict) -> dict:
     return {
         "id": doc["user_id"],
@@ -156,6 +161,10 @@ def public_user(doc: dict) -> dict:
         "role": doc.get("role", DEFAULT_ROLE),
         "store": doc.get("store", DEFAULT_STORE),
         "email_opt_out": doc.get("email_opt_out", False),
+        "terms_ok": doc.get("terms_version") == TERMS_VERSION,
+        "onboarded": bool(doc.get("onboarded_at")),
+        "has_password": bool(doc.get("password_hash")),
+        "no_personal": doc.get("no_personal", False),
     }
 
 
@@ -331,6 +340,7 @@ class RegisterInput(BaseModel):
     email: EmailStr
     password: str
     name: str
+    accept_terms: bool = False
 
 
 class LoginInput(BaseModel):
@@ -346,6 +356,11 @@ class ProfileUpdate(BaseModel):
     store: Optional[str] = None
     email_opt_out: Optional[bool] = None
     picture: Optional[str] = None
+    no_personal: Optional[bool] = None
+
+
+class DeleteAccount(BaseModel):
+    password: Optional[str] = None
 
 
 class ChangePassword(BaseModel):
@@ -432,6 +447,8 @@ class CampUpdate(BaseModel):
 async def register(data: RegisterInput):
     if len(data.password) < 6:
         raise HTTPException(status_code=400, detail="Wachtwoord moet minstens 6 tekens zijn")
+    if not data.accept_terms:
+        raise HTTPException(status_code=400, detail="Ga eerst akkoord met de voorwaarden en de privacyverklaring")
     email = data.email.lower().strip()
     existing = await db.users.find_one({"email": email})
     if existing:
@@ -451,6 +468,8 @@ async def register(data: RegisterInput):
         "auth_provider": "password",
         "role": "beheerder" if is_admin else await default_role(),
         "created_at": now_utc(),
+        "terms_version": TERMS_VERSION,
+        "terms_accepted_at": now_utc(),
     }
     await db.users.insert_one(doc)
     await accept_invitations(doc)
@@ -485,6 +504,11 @@ async def update_profile(data: ProfileUpdate, user: dict = Depends(get_current_u
                 {"$set": {"opted_out": data.email_opt_out}, "$setOnInsert": {"email": user["email"], "token": uuid.uuid4().hex}},
                 upsert=True,
             )
+    if data.no_personal is not None:
+        update["no_personal"] = data.no_personal
+        if data.no_personal:
+            # Uitgezet: wat we over je voorkeuren bijhielden, gaat meteen weg
+            await db.user_interest.delete_many({"user_id": user["user_id"]})
     if data.picture is not None:
         update["picture"] = data.picture.strip() or None
     if data.username is not None:
@@ -706,6 +730,47 @@ async def auth_session(data: SessionInput):
 async def me(user: dict = Depends(get_current_user)):
     perms = await user_permissions(user)
     return {"user": public_user(user), "permissions": perms}
+
+
+@api_router.post("/auth/accept-terms")
+async def accept_terms(user: dict = Depends(get_current_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"terms_version": TERMS_VERSION, "terms_accepted_at": now_utc()}})
+    return {"ok": True}
+
+
+@api_router.post("/auth/onboarded")
+async def mark_onboarded(user: dict = Depends(get_current_user)):
+    # De uitleg is gezien: niet meer vanzelf tonen (blijft te vinden onder Account)
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"onboarded_at": now_utc()}})
+    return {"ok": True}
+
+
+@api_router.post("/auth/delete-account")
+async def delete_account(data: DeleteAccount, user: dict = Depends(get_current_user)):
+    # Recht op verwijdering (AVG): alles van deze gebruiker gaat direct en definitief weg
+    uid = user["user_id"]
+    if user.get("password_hash") and (not data.password or not verify_password(data.password, user["password_hash"])):
+        raise HTTPException(status_code=400, detail="Wachtwoord is onjuist")
+    if user.get("role") == "beheerder" and not await db.users.find_one(
+        {"role": "beheerder", "deleted_at": None, "user_id": {"$ne": uid}}
+    ):
+        raise HTTPException(status_code=400, detail="Je bent de enige beheerder. Maak eerst iemand anders beheerder")
+    # Gedeelde kampen blijven bestaan voor de andere leiders: de eerste leider wordt eigenaar
+    async for camp in db.camps.find({"owner_id": uid, "member_ids.0": {"$exists": True}}, {"_id": 0, "camp_id": 1, "member_ids": 1}):
+        others = [m for m in camp.get("member_ids") or [] if m != uid]
+        if others:
+            await db.camps.update_one({"camp_id": camp["camp_id"]}, {"$set": {"owner_id": others[0]}, "$pull": {"member_ids": others[0]}})
+    # Standaardgerechten zijn van iedereen: die blijven, zonder maker
+    await db.dishes.update_many({"owner_id": uid, "is_standard": True}, {"$set": {"owner_id": None}})
+    await _purge_docs("user", [user])
+    await db.packages.delete_many({"owner_id": uid})
+    await db.user_interest.delete_many({"user_id": uid})
+    await db.feedback.delete_many({"user_id": uid})
+    await db.store_requests.delete_many({"requested_by": uid})
+    if user.get("email"):
+        for coll in (db.email_prefs, db.password_resets, db.invitations):
+            await coll.delete_many({"email": user["email"]})
+    return {"ok": True}
 
 
 @api_router.post("/auth/logout")
@@ -2266,7 +2331,7 @@ async def search_products(
             _search_cache.pop(next(iter(_search_cache)))
         _search_cache[key] = hit
     docs, aisle_counts, facets = hit
-    if offset == 0 and (aisle or brand or sub):
+    if offset == 0 and (aisle or brand or sub) and not user.get("no_personal"):
         # Wat iemand opzoekt telt mee voor de aanbiedingen op Home
         inc = {f"aisles.{_ikey(aisle)}": 1} if aisle else {}
         inc.update({f"brands.{_ikey(_norm_text(b))}": 1 for b in _split_list(brand)})
@@ -2413,7 +2478,8 @@ async def get_product(product_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Product niet gevonden")
     favs = set(user.get("favorite_products") or [])
     if doc.get("is_global"):
-        asyncio.create_task(_track_interest(user["user_id"], doc))
+        if not user.get("no_personal"):
+            asyncio.create_task(_track_interest(user["user_id"], doc))
     return product_public(doc, user.get("store", DEFAULT_STORE), user["user_id"], favs)
 
 
@@ -4192,7 +4258,7 @@ async def search_recipes(q: str = "", store: str = "all", page: int = 0, filters
     q = (q or "").strip()[:80]
     if q:
         return await _search_recipes(q, store, page, filters)
-    interest = await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0, "rwords": 1, "rtags": 1}) or {}
+    interest = {} if user.get("no_personal") else await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0, "rwords": 1, "rtags": 1}) or {}
     now = datetime.now(timezone.utc)
     seed = f"{user['user_id']}-{now.strftime('%Y%m%d%H')}{now.minute // 10}-{store}-{filters}"  # elke 10 minuten anders, gelijk tijdens het scrollen
     if store == "dirk":
@@ -4648,7 +4714,8 @@ async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.warning("Recept %s: %r", id, e)
         raise HTTPException(status_code=502, detail="Dit recept is nu niet op te halen, probeer het zo nog eens")
-    asyncio.create_task(_track_recipe(user["user_id"], rec, 1))
+    if not user.get("no_personal"):
+        asyncio.create_task(_track_recipe(user["user_id"], rec, 1))
     return await _recipe_products(rec, user)
 
 
@@ -4816,7 +4883,8 @@ async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = Fal
 @api_router.post("/recipes/import")
 async def import_recipe(data: RecipeImport, user: dict = Depends(get_current_user)):
     dish = await _recipe_to_dish(data.id, data.category, user, reuse=data.reuse, include=data.include, swaps=data.swaps)
-    asyncio.create_task(_track_recipe(user["user_id"], await _recipe_detail(data.id), 3))
+    if not user.get("no_personal"):
+        asyncio.create_task(_track_recipe(user["user_id"], await _recipe_detail(data.id), 3))
     return dish_public(dish)
 
 
@@ -4838,7 +4906,8 @@ async def recipe_to_camp(data: RecipeToCamp, user: dict = Depends(get_current_us
     if not 0 <= data.day_index < len(days):
         raise HTTPException(status_code=400, detail="Die dag bestaat niet in dit kamp")
     dish = await _recipe_to_dish(data.id, data.category, user, reuse=True, include=data.include, swaps=data.swaps)
-    asyncio.create_task(_track_recipe(user["user_id"], await _recipe_detail(data.id), 3))
+    if not user.get("no_personal"):
+        asyncio.create_task(_track_recipe(user["user_id"], await _recipe_detail(data.id), 3))
     meals = days[data.day_index].setdefault("meals", {})
     lst = meals.setdefault(data.category, [])
     if dish["dish_id"] not in lst:
@@ -5072,7 +5141,7 @@ async def home(user: dict = Depends(get_current_user)):
         todo["stores"] = await db.store_requests.count_documents({"status": "pending"})
     own_dishes = await db.dishes.count_documents({"owner_id": user["user_id"], "deleted_at": None})
     try:
-        interest = await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0}) or {}
+        interest = {} if user.get("no_personal") else await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0}) or {}
         by_pid = _product_cache.get("by_pid") or {}
         used_ids: set = set()
         async for d in db.dishes.find({"owner_id": user["user_id"], "deleted_at": None}, {"_id": 0, "ingredients.product_id": 1}):

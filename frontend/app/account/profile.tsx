@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Modal, Pressable, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -16,7 +16,7 @@ export default function ProfileScreen() {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { user, refresh } = useAuth();
+  const { user, refresh, logout } = useAuth();
   const toast = useToast();
 
   const { data: storeData } = useQuery({
@@ -32,6 +32,7 @@ export default function ProfileScreen() {
   const [store, setStore] = useState(user?.store ?? "Albert Heijn");
   const [picture, setPicture] = useState(user?.picture ?? "");
   const [emailOn, setEmailOn] = useState(!(user?.email_opt_out ?? false));
+  const [personalOn, setPersonalOn] = useState(!(user?.no_personal ?? false));
   const [savingProfile, setSavingProfile] = useState(false);
 
   const [current, setCurrent] = useState("");
@@ -44,7 +45,7 @@ export default function ProfileScreen() {
     try {
       await api("/auth/profile", {
         method: "PUT",
-        body: { name, username, email, phone, store, picture, email_opt_out: !emailOn },
+        body: { name, username, email, phone, store, picture, email_opt_out: !emailOn, no_personal: !personalOn },
       });
       await refresh();
       toast.show("Profiel opgeslagen", "success");
@@ -52,6 +53,24 @@ export default function ProfileScreen() {
       toast.show(e?.message ?? "Opslaan mislukt", "error");
     } finally {
       setSavingProfile(false);
+    }
+  };
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePw, setDeletePw] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  const deleteAccount = async () => {
+    setDeleting(true);
+    try {
+      await api("/auth/delete-account", { method: "POST", body: { password: deletePw } });
+      setDeleteOpen(false);
+      toast.show("Je account en gegevens zijn verwijderd", "success");
+      await logout();
+    } catch (e: any) {
+      toast.show(e?.message ?? "Verwijderen mislukt", "error");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -136,6 +155,15 @@ export default function ProfileScreen() {
               <Text style={styles.storeHint}>Bijv. uitnodigingen. Belangrijke berichten zoals wachtwoord-reset blijven altijd komen.</Text>
             </View>
           </Pressable>
+          <Pressable testID="personal-toggle" onPress={() => setPersonalOn((v) => !v)} style={styles.emailToggle}>
+            <Icon name={personalOn ? "checkbox-marked" : "checkbox-blank-outline"} size={22} color={personalOn ? colors.brandPrimary : colors.muted} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.fieldLabel}>Persoonlijke aanbiedingen en recepten</Text>
+              <Text style={styles.storeHint}>
+                We onthouden welke afdelingen, merken en recepten je bekijkt, zodat wat bij jou past bovenaan staat. Zet je dit uit, dan wissen we wat we hadden bijgehouden.
+              </Text>
+            </View>
+          </Pressable>
           <Button label="Gegevens opslaan" onPress={saveProfile} loading={savingProfile} testID="save-profile-button" />
         </View>
 
@@ -170,7 +198,47 @@ export default function ProfileScreen() {
             testID="save-password-button"
           />
         </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Account verwijderen</Text>
+          <Text style={styles.storeHint}>
+            Je account en alles wat van jou is, worden direct en definitief gewist. Gedeelde planningen blijven bestaan voor de anderen. Dit kun je niet ongedaan maken.
+          </Text>
+          <Pressable testID="delete-account-button" onPress={() => setDeleteOpen(true)} style={styles.dangerBtn}>
+            <Icon name="account-remove-outline" size={18} color={colors.error} />
+            <Text style={styles.dangerText}>Account verwijderen</Text>
+          </Pressable>
+        </View>
       </KeyboardAwareScrollView>
+
+      <Modal visible={deleteOpen} transparent animationType="fade" onRequestClose={() => setDeleteOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.sectionTitle}>Weet je het zeker?</Text>
+            <Text style={styles.storeHint}>
+              Al je gegevens worden definitief verwijderd: je profiel, je eigen planningen, gerechten, pakketten en favorieten.
+            </Text>
+            {user?.has_password ? (
+              <PasswordField
+                label="Je wachtwoord ter bevestiging"
+                testID="delete-account-pw"
+                placeholder="••••••••"
+                value={deletePw}
+                onChangeText={setDeletePw}
+              />
+            ) : null}
+            <Pressable
+              testID="delete-account-confirm"
+              disabled={deleting || (!!user?.has_password && !deletePw)}
+              onPress={deleteAccount}
+              style={[styles.dangerBtnSolid, (deleting || (!!user?.has_password && !deletePw)) && { opacity: 0.5 }]}
+            >
+              <Text style={styles.dangerSolidText}>{deleting ? "Bezig…" : "Ja, verwijder mijn account"}</Text>
+            </Pressable>
+            <Button label="Annuleren" variant="ghost" onPress={() => setDeleteOpen(false)} testID="delete-account-cancel" />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -193,4 +261,19 @@ const useStyles = makeStyles((colors) => ({
   fieldLabel: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },
   storeHint: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted },
   emailToggle: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 4 },
+  dangerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.error,
+  },
+  dangerText: { fontSize: 15, fontFamily: fonts.semibold, color: colors.error },
+  dangerBtnSolid: { paddingVertical: 14, borderRadius: 14, backgroundColor: colors.error, alignItems: "center" },
+  dangerSolidText: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onError },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(28,27,26,0.5)", justifyContent: "center", padding: 20 },
+  modalCard: { backgroundColor: colors.surface, borderRadius: 20, padding: 20, gap: 14 },
 }));

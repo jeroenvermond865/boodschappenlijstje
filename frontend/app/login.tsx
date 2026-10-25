@@ -10,6 +10,7 @@ import { Button, Field, Icon } from "@/src/components/ui";
 import { api, mediaUrl } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { useToast } from "@/src/toast";
+import { LegalLinks, TermsCheck } from "@/src/TermsCheck";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 const HERO =
@@ -26,6 +27,7 @@ export default function LoginScreen() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [agree, setAgree] = useState(false);
   const [busy, setBusy] = useState(false);
   const [forgotOpen, setForgotOpen] = useState(false);
 
@@ -47,12 +49,16 @@ export default function LoginScreen() {
       toast.show("Vul je naam in", "error");
       return;
     }
+    if (mode === "register" && !agree) {
+      toast.show("Ga eerst akkoord met de voorwaarden en de privacyverklaring", "error");
+      return;
+    }
     setBusy(true);
     try {
       if (mode === "login") {
         await login(email.trim(), password);
       } else {
-        await register(name.trim(), email.trim(), password);
+        await register(name.trim(), email.trim(), password, agree);
       }
     } catch (e: any) {
       toast.show(e?.message ?? "Inloggen mislukt", "error");
@@ -149,7 +155,9 @@ export default function LoginScreen() {
               <Pressable testID="forgot-link" onPress={() => setForgotOpen(true)} hitSlop={6} style={styles.forgotWrap}>
                 <Text style={styles.forgotText}>Wachtwoord vergeten?</Text>
               </Pressable>
-            ) : null}
+            ) : (
+              <TermsCheck value={agree} onChange={setAgree} />
+            )}
             <Button
               label={mode === "login" ? "Inloggen" : "Account aanmaken"}
               onPress={submit}
@@ -176,6 +184,7 @@ export default function LoginScreen() {
             ) : null}
           </View>
         </View>
+        <LegalLinks />
       </KeyboardAwareScrollView>
 
       <ForgotPasswordModal visible={forgotOpen} onClose={() => setForgotOpen(false)} />

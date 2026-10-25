@@ -10,7 +10,21 @@ WebBrowser.maybeCompleteAuthSession();
 
 const TOKEN_KEY = "scoutkook_token";
 
-export type User = { id: string; email: string; name: string; username?: string | null; phone?: string | null; picture?: string | null; role: string; store?: string };
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+  username?: string | null;
+  phone?: string | null;
+  picture?: string | null;
+  role: string;
+  store?: string;
+  email_opt_out?: boolean;
+  terms_ok?: boolean;
+  onboarded?: boolean;
+  has_password?: boolean;
+  no_personal?: boolean;
+};
 type Status = "loading" | "authed" | "guest";
 
 type AuthContextType = {
@@ -19,7 +33,7 @@ type AuthContextType = {
   permissions: string[];
   has: (perm: string) => boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string, acceptTerms: boolean) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -115,10 +129,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const register = useCallback(
-    async (name: string, email: string, password: string) => {
+    async (name: string, email: string, password: string, acceptTerms: boolean) => {
       const res = await api<{ session_token: string }>("/auth/register", {
         method: "POST",
-        body: { name, email, password },
+        body: { name, email, password, accept_terms: acceptTerms },
       });
       await persist(res.session_token);
     },

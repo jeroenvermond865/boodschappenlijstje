@@ -17,7 +17,7 @@ import { useTheme } from "@/src/theme";
 LogBox.ignoreAllLogs(true);
 
 function Gate() {
-  const { status } = useAuth();
+  const { status, user } = useAuth();
   const segments = useSegments();
   const router = useRouter();
   const { colors } = useTheme();
@@ -25,12 +25,17 @@ function Gate() {
   useEffect(() => {
     if (status === "loading") return;
     const inAuth = segments[0] === "login";
-    if (status === "guest" && !inAuth) {
+    const inLegal = segments[0] === "legal";
+    // Eerst akkoord met de voorwaarden en de uitleg gezien, daarna pas de app
+    const needsWelcome = status === "authed" && !!user && (!user.terms_ok || !user.onboarded);
+    if (status === "guest" && !inAuth && !inLegal) {
       router.replace("/login");
+    } else if (needsWelcome && segments[0] !== "welcome" && !inLegal) {
+      router.replace("/welcome");
     } else if (status === "authed" && inAuth) {
       router.replace("/");
     }
-  }, [status, segments, router]);
+  }, [status, user, segments, router]);
 
   if (status === "loading") {
     return (
@@ -43,6 +48,9 @@ function Gate() {
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
       <Stack.Screen name="login" />
+      <Stack.Screen name="welcome" />
+      <Stack.Screen name="help" />
+      <Stack.Screen name="legal/[doc]" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="camp/new" options={{ presentation: "modal" }} />
       <Stack.Screen name="camp/[id]" />

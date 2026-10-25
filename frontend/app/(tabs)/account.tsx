@@ -112,6 +112,18 @@ export default function AccountScreen() {
           label="Feedback & verbeteringen"
           onPress={() => router.push("/feedback")}
         />
+        <AdminRow
+          testID="help-link"
+          icon="help-circle-outline"
+          label="Zo werkt de app"
+          onPress={() => router.push("/help")}
+        />
+        <AdminRow
+          testID="legal-link"
+          icon="file-document-outline"
+          label="Voorwaarden, privacy & cookies"
+          onPress={() => router.push({ pathname: "/legal/[doc]", params: { doc: "voorwaarden" } })}
+        />
 
         {isAdminArea ? (
           <View style={{ gap: 10 }}>
