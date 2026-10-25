@@ -4386,9 +4386,37 @@ async def _import_linked(rec: dict) -> None:
         logger.warning("Receptproducten inladen mislukt: %r", e)
 
 
+async def _import_linked_jumbo(rec: dict) -> None:
+    by_sid = _product_cache.get("by_sid") or {}
+    todo = [i["product"]["sid"] for i in rec["ingredients"] if i.get("product") and i["product"]["store"] == "Jumbo"
+            and ("Jumbo", i["product"]["sid"]) not in by_sid]
+    if not todo:
+        return
+    have = {p["jumbo_id"] async for p in db.products.find({"jumbo_id": {"$in": todo}}, {"_id": 0, "jumbo_id": 1})}
+    todo = [t for t in todo if t not in have][:15]
+    if not todo:
+        return
+    try:
+        mults = await _store_mults()
+        found = await asyncio.gather(*(_jumbo_search(t) for t in todo), return_exceptions=True)
+        docs = []
+        for sid, res in zip(todo, found):
+            nrm = next((n for n in res if n["jumbo_id"] == sid), None) if isinstance(res, list) else None
+            if nrm:
+                nrm["source_id"] = nrm["jumbo_id"]
+                docs.append(_new_store_product("jumbo_id", nrm, "Jumbo", mults))
+        if docs:
+            await db.products.insert_many(docs)
+            _invalidate_products()
+            logger.info("Recept %s: %d producten van Jumbo ingeladen", rec["id"], len(docs))
+    except Exception as e:
+        logger.warning("Jumbo-receptproducten inladen mislukt: %r", e)
+
+
 async def _recipe_products(rec: dict, user: dict) -> dict:
     await _global_products()
     await _import_linked(rec)
+    await _import_linked_jumbo(rec)
     docs = await _global_products()
     matches = _rc_get(("match", rec["id"]), 6 * 3600)
     if matches is None:
@@ -6703,6 +6731,13 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
+    asyncio.create_task(_log_product_counts())
+
+
+async def _log_product_counts():
+    await asyncio.sleep(15)
+    counts = {st: await db.products.count_documents({_id_field(st): {"$exists": True}, "deleted_at": None}) for st in COUPLED_STORES}
+    logger.info("Producten per winkel: %s", counts)
 
 
 async def _daily_refresh_loop():
