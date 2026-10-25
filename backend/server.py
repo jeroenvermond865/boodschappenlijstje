@@ -6248,6 +6248,45 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
+    asyncio.create_task(_stest11())
+
+
+async def _stest11():
+    # Tijdelijk: hoe laat jumbo.com de acties van volgende week zien?
+    await asyncio.sleep(20)
+    try:
+        async with httpx.AsyncClient(timeout=20, headers={**JUMBO_HEADERS, "Accept": "text/html"}, follow_redirects=True) as c:
+            r = await c.get("https://www.jumbo.com/aanbiedingen/volgende-week")
+            h = r.text
+            logger.info("Stest11 page %s %d", r.status_code, len(h))
+            ops = sorted(set(re.findall(r'operationName[\\"]*:[\\"]*([A-Za-z]+)', h)))
+            logger.info("Stest11 ops %s", ops[:40])
+            for m in re.finditer(r'(?i)promotion[A-Za-z]*', h):
+                pass
+            words = {}
+            for m in re.findall(r'"(__typename)":"([A-Za-z]+)"', h):
+                words[m[1]] = words.get(m[1], 0) + 1
+            logger.info("Stest11 types %s", sorted(words.items(), key=lambda x: -x[1])[:30])
+            k = h.find("romotion")
+            logger.info("Stest11 snip %s", h[max(0, k - 400): k + 600] if k >= 0 else "-")
+            js = sorted(set(re.findall(r'(?:src|href)="([^"]+\.js)"', h)))
+            logger.info("Stest11 js %d %s", len(js), js[:8])
+            found = 0
+            for u in js[:60]:
+                u = u if u.startswith("http") else "https://www.jumbo.com" + u
+                try:
+                    t = (await c.get(u)).text
+                except Exception:
+                    continue
+                for q in re.finditer(r'(query|fragment) ([A-Za-z]*[Pp]romotion[A-Za-z]*)', t):
+                    found += 1
+                    if found <= 12:
+                        logger.info("Stest11 q %s: %s", u.rsplit("/", 1)[-1], t[q.start(): q.start() + 700].replace("\\n", " "))
+            gi = await c.post(JUMBO_GQL, headers={"Content-Type": "application/json"},
+                              json={"query": "{ __schema { queryType { fields { name args { name } } } } }"})
+            logger.info("Stest11 introspect %s %s", gi.status_code, gi.text[:3000])
+    except Exception as e:
+        logger.warning("Stest11: %r", e)
 
 
 async def _daily_refresh_loop():
