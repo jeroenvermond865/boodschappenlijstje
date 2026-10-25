@@ -7,6 +7,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Card, Field, Icon, Stepper } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { DateField } from "@/src/DateField";
 import { useTerms } from "@/src/settings";
 import { MEAL_CATEGORIES } from "@/src/constants";
 import { goBack } from "@/src/nav";
@@ -22,6 +23,7 @@ export default function NewCampScreen() {
   const toast = useToast();
   const qc = useQueryClient();
 
+  const [startDate, setStartDate] = useState("");
   const [name, setName] = useState("");
   const [days, setDays] = useState(3);
   const [adults, setAdults] = useState(4);
@@ -40,7 +42,7 @@ export default function NewCampScreen() {
       }));
       return api<{ id: string }>("/camps", {
         method: "POST",
-        body: { name: name.trim() || `${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`, days: dayArr, vega_adults: vegaA, vega_children: vegaC },
+        body: { name: name.trim() || `${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`, days: dayArr, vega_adults: vegaA, vega_children: vegaC, start_date: startDate || null },
       });
     },
     onSuccess: (camp) => {
@@ -73,6 +75,12 @@ export default function NewCampScreen() {
           value={name}
           onChangeText={setName}
         />
+
+        <View style={{ gap: 6 }}>
+          <Text style={styles.sectionLabel}>Eerste dag</Text>
+          <DateField value={startDate} onChange={setStartDate} testID="camp-start-date" />
+          <Text style={styles.rowSub}>Op de startpagina zie je dan waar het eerstvolgende lijstje het goedkoopst is.</Text>
+        </View>
 
         <Card style={styles.rowCard}>
           <View style={styles.rowLabel}>

@@ -17,6 +17,7 @@ import type { Product } from "@/app/(tabs)/products";
 import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
 import { VegaPicker } from "@/src/VegaPicker";
+import { DateField } from "@/src/DateField";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -36,6 +37,7 @@ type Camp = {
   owner_id: string;
   member_ids: string[];
   vega_adults?: number;
+  start_date?: string | null;
   vega_children?: number;
   general?: Extra[];
   budget_target?: number;
@@ -676,10 +678,12 @@ function EditCampModal({
   const [count, setCount] = useState(camp.days.length);
   const [vegaA, setVegaA] = useState(camp.vega_adults ?? 0);
   const [vegaC, setVegaC] = useState(camp.vega_children ?? 0);
+  const [startDate, setStartDate] = useState(camp.start_date ?? "");
 
   useEffect(() => {
     if (visible) {
       setName(camp.name);
+      setStartDate(camp.start_date ?? "");
       setCount(camp.days.length);
       setVegaA(camp.vega_adults ?? 0);
       setVegaC(camp.vega_children ?? 0);
@@ -703,7 +707,7 @@ function EditCampModal({
           },
         ];
       }
-      return api(`/camps/${camp.id}`, { method: "PUT", body: { name: name.trim() || camp.name, days, vega_adults: vegaA, vega_children: vegaC } });
+      return api(`/camps/${camp.id}`, { method: "PUT", body: { name: name.trim() || camp.name, days, vega_adults: vegaA, vega_children: vegaC, start_date: startDate } });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["camp", camp.id] });
@@ -738,6 +742,11 @@ function EditCampModal({
             placeholderTextColor={colors.muted}
             style={styles.memberInput}
           />
+        </View>
+
+        <View style={{ gap: 8, marginBottom: 14 }}>
+          <Text style={styles.editLabel}>Eerste dag</Text>
+          <DateField value={startDate} onChange={setStartDate} testID="edit-camp-date" />
         </View>
 
         <View style={styles.editRow}>

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Image, Linking, Modal, Pressable, ScrollView, SectionList, Text, View } from "react-native";
+import { ActivityIndicator, FlatList, Image, Linking, Modal, Pressable, ScrollView, SectionList, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -197,16 +197,26 @@ export default function FoldersScreen() {
 }
 
 function FolderPages({ pages, bottom }: { pages: string[]; bottom: number }) {
+  // Tientallen grote pagina's: alleen laden wat in beeld komt, in een kleiner formaat
   const styles = useStyles();
   const [w, setW] = useState(0);
+  const h = w ? (w - 32) * 1.42 : 480;
   return (
-    <ScrollView onLayout={(e) => setW(e.nativeEvent.layout.width)} contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: bottom, gap: 12 }}>
-      {pages.map((u, i) => (
-        <Pressable key={u} onPress={() => Linking.openURL(u.replace(/\?width=\d+/, ""))}>
-          <Image source={{ uri: u }} style={[styles.page, w ? { height: ((w - 32) * 1.42) } : null]} resizeMode="contain" accessibilityLabel={`Folderpagina ${i + 1}`} />
+    <FlatList
+      data={pages}
+      keyExtractor={(u) => u}
+      onLayout={(e) => setW(e.nativeEvent.layout.width)}
+      initialNumToRender={2}
+      maxToRenderPerBatch={2}
+      windowSize={3}
+      contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: bottom, gap: 12 }}
+      getItemLayout={(_, i) => ({ length: h + 12, offset: 10 + (h + 12) * i, index: i })}
+      renderItem={({ item: u, index }) => (
+        <Pressable onPress={() => Linking.openURL(u.replace(/\?width=\d+/, "?width=1600"))}>
+          <Image source={{ uri: u.replace(/\?width=\d+/, "?width=800") }} style={[styles.page, { height: h }]} resizeMode="contain" accessibilityLabel={`Folderpagina ${index + 1}`} />
         </Pressable>
-      ))}
-    </ScrollView>
+      )}
+    />
   );
 }
 

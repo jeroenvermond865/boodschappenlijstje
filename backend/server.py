@@ -411,6 +411,7 @@ class CampCreate(BaseModel):
     vega_children: int = 0
     general: List[ExtraItem] = Field(default_factory=list)
     budget_target: float = 0
+    start_date: Optional[str] = None  # JJJJ-MM-DD, eerste dag
 
 
 class CampUpdate(BaseModel):
@@ -420,6 +421,7 @@ class CampUpdate(BaseModel):
     vega_children: Optional[int] = None
     general: Optional[List[ExtraItem]] = None
     budget_target: Optional[float] = None
+    start_date: Optional[str] = None  # "" wist de datum
 
 
 # ---------------------------------------------------------------------------
@@ -1036,6 +1038,7 @@ def camp_public(doc: dict) -> dict:
         "vega_children": doc.get("vega_children", 0),
         "general": doc.get("general", []),
         "budget_target": doc.get("budget_target", 0),
+        "start_date": doc.get("start_date"),
         "owner_id": doc.get("owner_id"),
         "member_ids": doc.get("member_ids", []),
         "created_at": doc["created_at"].isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at"),
@@ -1088,6 +1091,7 @@ async def create_camp(data: CampCreate, user: dict = Depends(get_current_user)):
         "vega_children": max(0, data.vega_children),
         "general": [e.model_dump() for e in data.general],
         "budget_target": max(0, data.budget_target),
+        "start_date": _iso_day(data.start_date),
         "deleted_at": None,
         "created_at": now_utc(),
     }
@@ -1117,6 +1121,8 @@ async def update_camp(camp_id: str, data: CampUpdate, user: dict = Depends(get_c
         update["vega_adults"] = max(0, data.vega_adults)
     if data.vega_children is not None:
         update["vega_children"] = max(0, data.vega_children)
+    if data.start_date is not None:
+        update["start_date"] = _iso_day(data.start_date)
     if data.general is not None:
         update["general"] = [e.model_dump() for e in data.general]
     if data.budget_target is not None:
@@ -4188,7 +4194,13 @@ async def home(user: dict = Depends(get_current_user)):
     compare = None
     compare_pending = False
     if camps:
-        c = camps[0]
+        # Het eerstvolgende lijstje (op datum), anders het laatst aangemaakte
+        today = _iso_day(now_utc().isoformat())
+
+        def last_day(x):
+            return (datetime.fromisoformat(x["start_date"]) + timedelta(days=max(0, len(x.get("days") or []) - 1))).date().isoformat()
+        upcoming = sorted((x for x in camps if x.get("start_date") and last_day(x) >= today), key=lambda x: x["start_date"])
+        c = upcoming[0] if upcoming else camps[0]
         dish_ids = {did for day in c.get("days", []) for cat in MEAL_CATEGORIES for did in (day.get("meals") or {}).get(cat, [])}
         dishes = await db.dishes.find({"dish_id": {"$in": list(dish_ids)}}, {"_id": 0, "dish_id": 1, "name": 1, "ingredients": 1}).to_list(500)
         names = {}
@@ -4204,7 +4216,7 @@ async def home(user: dict = Depends(get_current_user)):
             if e.get("name"):
                 names.setdefault(_norm_text(e["name"]), (e["name"], e.get("product_id")))
         days = c.get("days", [])
-        camp = {"id": c["camp_id"], "name": c["name"], "days": len(days),
+        camp = {"id": c["camp_id"], "name": c["name"], "days": len(days), "start_date": c.get("start_date"),
                 "max_people": max((d.get("adults", 0) + d.get("children", 0) for d in days), default=0),
                 "shopping_days": sum(1 for d in days if d.get("is_shopping_day")),
                 "meals_planned": sum(len((d.get("meals") or {}).get(cat, [])) for d in days for cat in MEAL_CATEGORIES),

@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 
 import { Icon } from "@/src/components/ui";
+import { niceDate } from "@/src/DateField";
 import { api } from "@/src/api";
 import { useTerms } from "@/src/settings";
 import { usesNativeTabs } from "@/src/navigation";
@@ -23,6 +24,7 @@ type Home = {
     meals_planned: number;
     products: number;
     other_camps: number;
+    start_date?: string | null;
   } | null;
   compare: CompareStore[] | null;
   compare_pending?: boolean;
@@ -116,7 +118,7 @@ export default function HomeScreen() {
                 <Icon name="tent" size={26} color={colors.onBrandPrimary} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.campLabel}>{`Je ${T.one}`}</Text>
+                <Text style={styles.campLabel}>{data.camp.start_date ? `Eerstvolgende ${T.one} · ${niceDate(data.camp.start_date)}` : `Je ${T.one}`}</Text>
                 <Text style={styles.campName} numberOfLines={1}>
                   {data.camp.name}
                 </Text>
