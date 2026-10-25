@@ -20,7 +20,7 @@ import base64
 import unicodedata
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 import bcrypt
 import httpx
 from html import escape
@@ -6856,6 +6856,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # js-bundel en icoon-lettertype sneller binnen
+
+
+@app.middleware("http")
+async def to_own_domain(request, call_next):
+    # Het oude onrender.com-adres stuurt door naar het eigen domein (daar werkt ook Google-inlog)
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    if FRONTEND_URL and host.endswith(".onrender.com") and request.url.path != "/healthz":
+        target = FRONTEND_URL.rstrip("/") + request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        if urlparse(target).hostname != host:
+            return RedirectResponse(target, status_code=301 if request.method in ("GET", "HEAD") else 308)
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
