@@ -2908,75 +2908,50 @@ def _promo_public(doc: dict, price: float) -> tuple:
 
 
 async def _probe_recipes() -> None:
-    # Tijdelijk: hoe bieden AH, Jumbo en Dirk hun recepten aan? (ronde 2)
+    # Tijdelijk: hoe bieden AH, Jumbo en Dirk hun recepten aan? (ronde 3)
     import json as _json
     def dump(x, n=2500):
         return _json.dumps(x, ensure_ascii=False, default=str)[:n]
     await asyncio.sleep(30)
-    intro = '{__type(name:"Query"){fields{name args{name type{name kind ofType{name kind ofType{name}}}}}}}'
-    def recipe_fields(body):
-        try:
-            fs = body["data"]["__type"]["fields"]
-            return [f for f in fs if "recip" in f["name"].lower()]
-        except Exception:
-            return str(body)[:600]
     try:
         async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
             tok = await _ah_token(c)
             H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP", "Content-Type": "application/json",
                  "client-name": "ah-allerhande", "client-version": "6.0"}
             G = "https://api.ah.nl/graphql"
-            r = await c.post(G, json={"query": intro}, headers=H)
-            logger.info("Recept2 AH intro %s %s", r.status_code, dump(recipe_fields(r.json()), 3000))
-            for q in ['{recipeSearchV2{result{id}}}',
-                      '{recipeSearchV2(searchText:"pasta",size:2){result{id title}}}',
-                      '{recipeSearchV2(query:"pasta"){result{id}}}',
-                      '{__type(name:"RecipeSearchQueryInput"){inputFields{name type{name kind ofType{name}}}}}',
-                      '{__type(name:"RecipeSearchResult"){fields{name type{name kind ofType{name}}}}}',
-                      '{__type(name:"RecipeSummary"){fields{name type{name kind ofType{name}}}}}']:
+            out = []
+            for f in ["title", "slug", "cookTime", "time{cook oven wait}", "servings{number type}", "serving{number}",
+                      "images{url width height}", "imageRenditions{url width}", "image{url}", "courses", "cuisines",
+                      "tags{key value}", "rating{average count}", "nutritions{energy{value}}", "href", "url", "flags",
+                      "nutriScore", "ingredients{name}", "preparation{steps}", "author{origin{type}}"]:
+                r = await c.post(G, json={"query": '{recipeSearchV2(searchText:"pasta",size:1){result{%s}}}' % f}, headers=H)
+                out.append((f, r.text[:350]))
+            for f in ["page{total}", "totalElements", "total", "filters{name}", "facets{name}", "page{size total number}"]:
+                r = await c.post(G, json={"query": '{recipeSearchV2(searchText:"pasta",size:1){%s}}' % f}, headers=H)
+                out.append(("TOP " + f, r.text[:350]))
+            for a in ["start:5", "from:5", "page:1", "offset:5", "filters:[]", "sortBy:RELEVANCE", "filter:{}"]:
+                r = await c.post(G, json={"query": '{recipeSearchV2(searchText:"pasta",size:1,%s){result{id}}}' % a}, headers=H)
+                out.append(("ARG " + a, r.text[:300]))
+            for q in ['{recipe(id:1302917){id title}}', '{recipeV2(id:1302917){id title}}', '{recipeDetails(id:1302917){id}}']:
                 r = await c.post(G, json={"query": q}, headers=H)
-                logger.info("Recept2 AH %s -> %s %s", q[:45], r.status_code, r.text[:1500])
-        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
-            r = await c.post(JUMBO_GQL, json={"query": intro})
-            logger.info("Recept2 Jumbo intro %s", dump(recipe_fields(r.json()), 3000))
-        async with httpx.AsyncClient(timeout=20, headers=DIRK_HEADERS) as c:
-            r = await c.post(DIRK_GQL, json={"query": intro})
-            logger.info("Recept2 Dirk intro %s", dump(recipe_fields(r.json()), 3000))
+                out.append((q, r.text[:350]))
+            for k, v in out:
+                logger.info("Recept3 AH %s -> %s", k, v)
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            r = await c.get("https://www.jumbo.com/recepten/zoeken/?searchTerms=pasta", headers=_PAGE_HEADERS)
-            d = _nuxt_data(r.text)
-            st = _find_dict(d, "recipeStore")
-            st = st.get("recipeStore") if isinstance(st, dict) and "recipeStore" in st else st
-            logger.info("Recept2 Jumbo store keys %s", list((st or {}).keys()) if isinstance(st, dict) else type(st))
-            if isinstance(st, dict):
-                for k, v in st.items():
-                    logger.info("Recept2 Jumbo store %s = %s", k, dump(v, 2500))
-            link = None
-            m = re.search(r'href="(/recepten/[^"?#]+-\d+[^"]*)"', r.text)
-            if m:
-                link = m.group(1)
-            logger.info("Recept2 Jumbo link %s", link)
-            if link:
-                r = await c.get("https://www.jumbo.com" + link, headers=_PAGE_HEADERS)
-                d = _nuxt_data(r.text)
-                for w in ("recipe",):
-                    rd = _find_dict(d, "ingredients")
-                    logger.info("Recept2 Jumbo detail %s", dump(rd, 4000))
-            r = await c.get("https://www.dirk.nl/meer/recepten", headers=_PAGE_HEADERS)
-            d = _nuxt_data(r.text)
-            tiles = _find_dict(d, "recipeTiles")
-            logger.info("Recept2 Dirk tiles %s", dump(tiles, 3000))
-            links = sorted(set(re.findall(r'href="(/[^"]*recept[^"]*)"', r.text)))
-            logger.info("Recept2 Dirk links (%d) %s", len(links), links[:40])
-            if d is not None and isinstance(d, dict):
-                logger.info("Recept2 Dirk top %s", dump(list(d.keys()), 500))
+            for url in ("https://www.dirk.nl/meer/recepten/gang/avondeten", "https://www.dirk.nl/meer/recepten/recept/nacho-s-uit-de-oven"):
+                r = await c.get(url, headers=_PAGE_HEADERS)
+                d = _nuxt_data(r.text) or {}
                 dd = d.get("data") or {}
-                logger.info("Recept2 Dirk data keys %s", dump({k: (list(v.keys()) if isinstance(v, dict) else type(v).__name__) for k, v in dd.items()} if isinstance(dd, dict) else dd, 2000))
-            dl = [l for l in links if l.count("/") >= 3]
-            if dl:
-                r = await c.get("https://www.dirk.nl" + dl[0], headers=_PAGE_HEADERS)
-                d2 = _nuxt_data(r.text)
-                logger.info("Recept2 Dirk detail %s %s %s", dl[0], r.status_code, dump(_find_dict(d2, "recipeDetail"), 4000))
+                logger.info("Recept3 Dirk %s keys %s", url, list(dd.keys()) if isinstance(dd, dict) else None)
+                for k, v in (dd.items() if isinstance(dd, dict) else []):
+                    if k.startswith("recipeTiles"):
+                        logger.info("Recept3 Dirk %s n=%d first=%s", k, len(v or []), dump((v or [None])[0], 800))
+                    elif k.startswith("recipeDetail"):
+                        logger.info("Recept3 Dirk detail %s", dump(v, 3500))
+                    elif k.startswith("/meer"):
+                        logger.info("Recept3 Dirk page %s", dump(v.get("sections") if isinstance(v, dict) else v, 2500))
+                links = sorted(set(re.findall(r'href="(/meer/recepten/[^"]*)"', r.text)))
+                logger.info("Recept3 Dirk links %d %s", len(links), links[:60])
     except Exception as e:
         logger.warning("Recept probe mislukt: %r", e)
 
@@ -4638,8 +4613,13 @@ async def startup():
     await db.users.update_many({"role": {"$exists": False}}, {"$set": {"role": DEFAULT_ROLE}})
     await db.users.update_many({"email": {"$in": ADMIN_SEED_EMAILS}}, {"$set": {"role": "beheerder"}})
 
+    # Eenmalig: alle bestaande gerechten naar de prullenbak; daarna geen standaardgerechten meer aanmaken
+    if not await db.settings.find_one({"key": "dishes_cleared"}):
+        res = await db.dishes.update_many({"deleted_at": None}, {"$set": {"deleted_at": now_utc()}})
+        await db.settings.update_one({"key": "dishes_cleared"}, {"$set": {"value": True}}, upsert=True)
+        logger.info("Alle %d bestaande gerechten verwijderd", res.modified_count)
     count = await db.dishes.count_documents({"is_standard": True})
-    if count == 0:
+    if count == 0 and not await db.settings.find_one({"key": "dishes_cleared"}):
         docs = []
         for name, category, ings in STANDARD_DISHES:
             docs.append({
