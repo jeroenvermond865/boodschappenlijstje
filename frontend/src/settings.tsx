@@ -19,7 +19,7 @@ export type AppSettings = {
 };
 
 const DEFAULTS: AppSettings = {
-  app_name: "Boodschappenlijstje",
+  app_name: "Slim Boodschappenlijstje",
   tagline: "Plan maaltijden en boodschappen per kampdag",
   hero_url: "",
   logo_url: "",

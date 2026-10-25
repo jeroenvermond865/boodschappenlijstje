@@ -1,4 +1,4 @@
-# Boodschappenlijstje: zelf hosten
+# Slim Boodschappenlijstje: zelf hosten
 
 De app draait als één website. De server (FastAPI) levert zowel de API (`/api/...`) als de webversie van de Expo-app. Render bouwt alles met de `Dockerfile`.
 

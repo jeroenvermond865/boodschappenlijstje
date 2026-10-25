@@ -49,7 +49,7 @@ GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 
 EMAIL_BASE_URL = "https://integrations.emergentagent.com"
 EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
-EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Boodschappenlijstje")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Slim Boodschappenlijstje")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "onboarding@resend.dev")
@@ -528,13 +528,13 @@ async def forgot_password(data: ForgotPassword):
         html = (
             '<table role="presentation" width="100%"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#1C1B1A">'
             f'<h2 style="color:#2E5E38;margin:0 0 12px">Wachtwoord opnieuw instellen</h2>'
-            f'<p>Gebruik deze code in de Boodschappenlijstje-app om een nieuw wachtwoord in te stellen:</p>'
+            f'<p>Gebruik deze code in de Slim Boodschappenlijstje-app om een nieuw wachtwoord in te stellen:</p>'
             f'<p style="font-size:30px;font-weight:700;letter-spacing:6px;color:#2E5E38">{escape(code)}</p>'
             f'<p>De code is 1 uur geldig. Heb je dit niet aangevraagd? Negeer deze e-mail.</p>'
-            f'<p style="font-size:12px;color:#888">Verstuurd door Boodschappenlijstje. We vragen nooit je wachtwoord via e-mail.</p>'
+            f'<p style="font-size:12px;color:#888">Verstuurd door Slim Boodschappenlijstje. We vragen nooit je wachtwoord via e-mail.</p>'
             '</td></tr></table>'
         )
-        await send_email(email, "Je Boodschappenlijstje wachtwoord-resetcode", html)
+        await send_email(email, "Je Slim Boodschappenlijstje wachtwoord-resetcode", html)
     return {"ok": True}
 
 
@@ -1323,16 +1323,16 @@ async def add_member(camp_id: str, data: MemberInput, user: dict = Depends(get_c
     t = await _terms()
     html = (
         '<table role="presentation" width="100%"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#1C1B1A">'
-        f'<h2 style="color:#2E5E38;margin:0 0 12px">Uitnodiging voor Boodschappenlijstje</h2>'
+        f'<h2 style="color:#2E5E38;margin:0 0 12px">Uitnodiging voor Slim Boodschappenlijstje</h2>'
         f'<p>{escape(user.get("name") or "Een leider")} nodigt je uit om samen te plannen in {t["de"]} {escape(t["one"])} '
         f'<strong>{escape(camp["name"])}</strong>.</p>'
         f'<p>Maak een account aan met dit e-mailadres ({escape(email)}) en je wordt automatisch aan {t["de"]} {escape(t["one"])} toegevoegd.</p>'
         f'<p style="margin:20px 0"><a href="{escape(link)}" style="background:#2E5E38;color:#fff;'
-        f'padding:12px 20px;border-radius:10px;text-decoration:none;display:inline-block">Open Boodschappenlijstje</a></p>'
-        f'<p style="font-size:12px;color:#888">Verstuurd door Boodschappenlijstje. We vragen nooit je wachtwoord via e-mail.</p>'
+        f'padding:12px 20px;border-radius:10px;text-decoration:none;display:inline-block">Open Slim Boodschappenlijstje</a></p>'
+        f'<p style="font-size:12px;color:#888">Verstuurd door Slim Boodschappenlijstje. We vragen nooit je wachtwoord via e-mail.</p>'
         '</td></tr></table>'
     )
-    await send_email(email, f"Je bent uitgenodigd voor een {t['one']} in Boodschappenlijstje", html)
+    await send_email(email, f"Je bent uitgenodigd voor een {t['one']} in Slim Boodschappenlijstje", html)
     return {"ok": True, "invited": True}
 
 
@@ -3054,7 +3054,7 @@ async def delete_product(product_id: str, user: dict = Depends(get_current_user)
 
 
 # --- Open Food Facts lookup (barcode + search) ---
-OFF_HEADERS = {"User-Agent": "Boodschappenlijstje/1.0 (scoutkook app)"}
+OFF_HEADERS = {"User-Agent": "SlimBoodschappenlijstje/1.0 (scoutkook app)"}
 
 
 def _off_normalize(p: dict) -> Optional[dict]:
@@ -6253,7 +6253,7 @@ class SettingsInput(BaseModel):
 
 
 DEFAULT_SETTINGS = {
-    "app_name": "Boodschappenlijstje",
+    "app_name": "Slim Boodschappenlijstje",
     "tagline": "Plan maaltijden en boodschappen per kampdag",
     "hero_url": "https://images.unsplash.com/photo-1466220549276-aef9ce186540?crop=entropy&cs=srgb&fm=jpg&q=85&w=1200",
     "logo_url": "",
@@ -6370,7 +6370,7 @@ async def email_unsubscribe(token: str):
         "<style>body{font-family:Arial,sans-serif;background:#F5F2EC;color:#1C1B1A;text-align:center;padding:48px 20px}"
         ".card{max-width:420px;margin:0 auto;background:#fff;border-radius:16px;padding:32px}</style></head>"
         "<body><div class='card'><h2 style='color:#2E5E38'>Afgemeld</h2>"
-        "<p>Je ontvangt geen e-mails meer van Boodschappenlijstje. Je kunt dit altijd weer aanzetten in de app bij Instellingen.</p>"
+        "<p>Je ontvangt geen e-mails meer van Slim Boodschappenlijstje. Je kunt dit altijd weer aanzetten in de app bij Instellingen.</p>"
         "</div></body></html>"
     )
     return HTMLResponse(content=page)
@@ -7019,6 +7019,8 @@ async def startup():
     active_stores = await db.stores.find({"active": True}, {"_id": 0}).to_list(200)
     logger.info("Stores ready: %d", len(active_stores))
 
+    # De app heet nu Slim Boodschappenlijstje (zoals de website); een opgeslagen oude naam meenemen
+    await db.settings.update_one({"key": "app", "app_name": "Boodschappenlijstje"}, {"$set": {"app_name": "Slim Boodschappenlijstje"}})
     # Migrate legacy department names -> new Dirk-style departments
     for old, new in OLD_AISLE_MAP.items():
         await db.products.update_many({"aisle": old}, {"$set": {"aisle": new}})

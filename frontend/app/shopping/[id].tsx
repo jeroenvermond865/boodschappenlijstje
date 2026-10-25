@@ -101,7 +101,7 @@ export default function ShoppingScreen() {
       });
       lines.push("");
     });
-    lines.push("Gemaakt met Boodschappenlijstje");
+    lines.push("Gemaakt met Slim Boodschappenlijstje");
     return lines.join("\n");
   };
 
@@ -137,7 +137,7 @@ export default function ShoppingScreen() {
     const html = `<html><head><meta charset="utf-8"/></head><body style="font-family:Arial,sans-serif;color:#1C1B1A;padding:24px">
       <h1 style="color:#2E5E38;font-size:22px;margin:0 0 4px">Boodschappenlijst</h1>
       <p style="color:#777;margin:0 0 8px">${camp?.name ?? ""}</p>${blocks}
-      <p style="color:#999;font-size:11px;margin-top:24px">Gemaakt met Boodschappenlijstje</p></body></html>`;
+      <p style="color:#999;font-size:11px;margin-top:24px">Gemaakt met Slim Boodschappenlijstje</p></body></html>`;
     try {
       if (Platform.OS === "web") {
         await Print.printAsync({ html });

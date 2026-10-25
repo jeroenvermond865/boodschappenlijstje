@@ -179,7 +179,7 @@ export default function AccountScreen() {
         ) : null}
 
         <Button label="Uitloggen" variant="ghost" icon="logout" onPress={logout} testID="logout-button" />
-        <Text style={styles.version}>Boodschappenlijstje · v1.0</Text>
+        <Text style={styles.version}>Slim Boodschappenlijstje · v1.0</Text>
       </ScrollView>
     </View>
   );

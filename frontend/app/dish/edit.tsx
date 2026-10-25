@@ -271,7 +271,7 @@ export default function DishEditScreen() {
     try {
       const { token } = await api<{ token: string }>(`/dishes/${params.id}/share`, { method: "POST" });
       const url = Linking.createURL(`/dish/shared/${token}`);
-      await Share.share({ message: `Bekijk mijn gerecht "${name}" in Boodschappenlijstje:\n${url}` });
+      await Share.share({ message: `Bekijk mijn gerecht "${name}" in Slim Boodschappenlijstje:\n${url}` });
     } catch (e: any) {
       toast.show(e?.message ?? "Delen mislukt", "error");
     }

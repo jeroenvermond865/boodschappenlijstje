@@ -18,4 +18,4 @@ services:
       - key: EMAIL_FROM_ADDRESS
         sync: false
       - key: EMAIL_FROM_NAME
-        value: Boodschappenlijstje
+        value: Slim Boodschappenlijstje

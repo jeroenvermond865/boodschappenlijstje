@@ -33,7 +33,7 @@ export default function LoginScreen() {
     queryKey: ["settings"],
     queryFn: () => api<{ app_name: string; tagline: string; hero_url: string; logo_url: string }>("/settings"),
   });
-  const appName = settings?.app_name ?? "Boodschappenlijstje";
+  const appName = settings?.app_name ?? "Slim Boodschappenlijstje";
   const tagline = settings?.tagline ?? "Plan maaltijden en boodschappen per kampdag";
   const hero = mediaUrl(settings?.hero_url) ?? HERO;
   const logo = mediaUrl(settings?.logo_url);
