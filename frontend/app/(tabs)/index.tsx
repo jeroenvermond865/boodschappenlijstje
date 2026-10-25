@@ -61,7 +61,6 @@ function greeting() {
 
 export default function HomeScreen() {
   const { width } = useWindowDimensions();
-  // Op een breed scherm (laptop) staan de aanbiedingen in een raster i.p.v. één schuifrij.
   const wide = width >= 700;
   const styles = useStyles();
   const T = useTerms();
@@ -194,13 +193,9 @@ export default function HomeScreen() {
       {data?.promos.length ? (
         <View style={{ gap: 10 }}>
           <SectionHead title="Nu in de aanbieding" link="Alle folders" onPress={() => router.push("/folders")} />
-          <ScrollView
-            horizontal={!wide}
-            scrollEnabled={!wide}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={wide ? styles.promoGrid : styles.hRow}
-          >
-            {(wide ? data.promos : data.promos.slice(0, 12)).map((p, i) => (
+          {/* Eén rij om opzij te scrollen; op een laptop met zichtbare schuifbalk */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={wide} contentContainerStyle={styles.hRow}>
+            {data.promos.map((p, i) => (
               <Pressable
                 key={i}
                 onPress={() =>
@@ -244,7 +239,7 @@ export default function HomeScreen() {
             link="Alle recepten"
             onPress={() => router.push({ pathname: "/dishes", params: { tab: "online" } })}
           />
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.hRow}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={wide} contentContainerStyle={styles.hRow}>
             {data.recipes.map((r) => (
               <Pressable key={r.id} onPress={() => router.push({ pathname: "/recipe/[id]", params: { id: r.id } })} style={styles.recipe}>
                 {r.image ? <Image source={{ uri: r.image }} style={styles.recipeImg} resizeMode="cover" /> : <View style={styles.recipeImg} />}
@@ -391,7 +386,6 @@ const useStyles = makeStyles((colors) => ({
   todoBadge: { minWidth: 26, height: 26, borderRadius: 13, backgroundColor: colors.warning, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 },
   todoBadgeText: { fontSize: 13, fontFamily: fonts.bold, color: colors.onWarning },
   hRow: { gap: 10, paddingHorizontal: 16 },
-  promoGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, paddingHorizontal: 16 },
   promo: { width: 150, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 10, gap: 6 },
   promoImgBox: { height: 110, borderRadius: 10, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   promoImg: { width: "90%", height: "90%" },
