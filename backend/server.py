@@ -4573,6 +4573,31 @@ async def product_alternatives(name: str = "", product_id: str = "", user: dict 
             "base": product_public(_clean(base), base["_src"], user["user_id"], favs) if base else None}
 
 
+def _same_kind(base: dict, cand: dict) -> bool:
+    # Is het andere product echt hetzelfde soort? "Jumbo Kaneel Gemalen" wel voor kaneelpoeder, "Appelmoes Kaneel" niet
+    def stem(w):
+        for f in _FORMS:
+            if w.endswith(f) and len(w) > len(f) + 2:
+                return w[:-len(f)]
+        return w
+    def same(c, b):
+        # "melk" = "melk", "halfvol" = "halfvolle", maar "chocolademelk" is iets anders dan "melk"
+        c = stem(c)
+        return c == b or (c.startswith(b) and len(c) - len(b) <= 3) or (b.startswith(c) and len(b) - len(c) <= 3)
+    bw = [stem(w) for w in _alt_terms(base["name"], base).split()]
+    cw = _alt_terms(cand["name"], cand).split()
+    if not bw or not cw:
+        return False
+    if not any(same(c, bw[-1]) for c in cw):
+        return False
+    for c in cw:
+        if c in _FORMS or any(same(c, b) for b in bw):
+            continue
+        if len(c) >= 6 or any(c.endswith(x) for x in _PROCESSED):
+            return False  # een ander product waar het ingrediënt alleen in zit
+    return True
+
+
 class SuggestIn(BaseModel):
     ingredients: List[Dict] = []
 
@@ -4595,6 +4620,11 @@ async def dish_suggestions(data: SuggestIn, user: dict = Depends(get_current_use
             best = None
             for s, items in res["by_store"].items():
                 for d in items:
+                    if not _same_kind(base, d):
+                        continue
+                    up, bup = d.get("_up"), res["base_up"]
+                    if up and bup and up[1] == bup[1] and up[0] < bup[0] * 0.2:
+                        continue  # meer dan 80% goedkoper per kilo is bijna altijd een ander soort product
                     note = _alt_note(d, res["base_up"], res["base_price"])
                     if note and (best is None or (d.get("_up") or (_doc_price(d),))[0] < (best[0].get("_up") or (_doc_price(best[0]),))[0]):
                         best = (d, note)
