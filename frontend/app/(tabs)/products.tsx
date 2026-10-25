@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, Image, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
-import { fetchProducts, useDebounced } from "@/src/search";
+import { countFilters, fetchProducts, NO_FILTERS, useDebounced } from "@/src/search";
+import type { Facet, ProductFilters } from "@/src/search";
 import { AISLES, AISLE_ICONS } from "@/src/constants";
 import { useAuth } from "@/src/auth";
 import { usesNativeTabs } from "@/src/navigation";
@@ -28,7 +30,16 @@ export type Product = {
   source?: "Dirk" | "Albert Heijn" | "Jumbo" | null;
   image?: string | null;
   is_favorite?: boolean;
+  subcategory?: string | null;
+  on_offer?: boolean;
 };
+
+const SORTS: { key: ProductFilters["sort"]; label: string }[] = [
+  { key: "", label: "Beste treffers" },
+  { key: "price_asc", label: "Prijs laag-hoog" },
+  { key: "price_desc", label: "Prijs hoog-laag" },
+  { key: "name", label: "Naam A-Z" },
+];
 
 const STORE_FILTERS = [
   { key: "all", label: "Alle producten" },
@@ -51,9 +62,13 @@ export default function ProductsScreen() {
   const [aisle, setAisle] = useState<string>("all");
   const [storeFilter, setStoreFilter] = useState<"all" | "Dirk" | "Albert Heijn" | "Jumbo">("all");
   const [storeOpen, setStoreOpen] = useState(false);
+  const [filters, setFilters] = useState<ProductFilters>(NO_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const router = useRouter();
+  const nFilters = countFilters(filters);
 
   const debouncedSearch = useDebounced(search);
-  const queryKey = ["products", "search", storeFilter, aisle, onlyFavorites, debouncedSearch.trim()];
+  const queryKey = ["products", "search", storeFilter, aisle, onlyFavorites, debouncedSearch.trim(), filters];
   const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
     queryKey,
     initialPageParam: 0,
@@ -63,6 +78,7 @@ export default function ProductsScreen() {
         source: storeFilter === "all" ? "" : storeFilter,
         aisle: aisle === "all" ? "" : aisle,
         favorites: onlyFavorites,
+        filters,
         offset: pageParam,
         limit: 50,
       }),
@@ -72,6 +88,8 @@ export default function ProductsScreen() {
 
   const filtered = useMemo(() => (data?.pages ?? []).flatMap((pg) => pg.products), [data]);
   const aisleCounts = data?.pages[0]?.aisle_counts ?? {};
+  const facets = data?.pages[0]?.facets ?? [];
+  const total = data?.pages[0]?.total;
 
   const toggleFavorite = useMutation({
     mutationFn: (p: Product) => api(`/products/${p.id}/favorite`, { method: p.is_favorite ? "DELETE" : "POST" }),
@@ -114,6 +132,7 @@ export default function ProductsScreen() {
                 onPress={() => {
                   setStoreFilter(f.key);
                   setAisle("all");
+                  setFilters((x) => ({ ...x, sub: [], brand: [] }));
                   setStoreOpen(false);
                 }}
                 style={styles.storeMenuItem}
@@ -135,20 +154,37 @@ export default function ProductsScreen() {
             style={styles.searchInput}
           />
         </View>
-        <Pressable
-          testID="product-favorites-toggle"
-          onPress={() => setOnlyFavorites((v) => !v)}
-          style={[styles.favToggle, onlyFavorites && styles.favToggleActive]}
-        >
-          <Icon name={onlyFavorites ? "star" : "star-outline"} size={16} color={onlyFavorites ? colors.onBrandPrimary : colors.brandPrimary} />
-          <Text style={[styles.favToggleText, onlyFavorites && styles.favToggleTextActive]}>Mijn favorieten</Text>
-        </Pressable>
+        <View style={styles.toggleRow}>
+          <Pressable
+            testID="product-favorites-toggle"
+            onPress={() => setOnlyFavorites((v) => !v)}
+            style={[styles.favToggle, onlyFavorites && styles.favToggleActive]}
+          >
+            <Icon name={onlyFavorites ? "star" : "star-outline"} size={16} color={onlyFavorites ? colors.onBrandPrimary : colors.brandPrimary} />
+            <Text style={[styles.favToggleText, onlyFavorites && styles.favToggleTextActive]}>Mijn favorieten</Text>
+          </Pressable>
+          <Pressable
+            testID="product-filters-open"
+            onPress={() => setFiltersOpen(true)}
+            style={[styles.favToggle, nFilters > 0 && styles.favToggleActive]}
+          >
+            <Icon name="tune-variant" size={16} color={nFilters > 0 ? colors.onBrandPrimary : colors.brandPrimary} />
+            <Text style={[styles.favToggleText, nFilters > 0 && styles.favToggleTextActive]}>
+              Filters{nFilters > 0 ? ` (${nFilters})` : ""}
+            </Text>
+          </Pressable>
+          {nFilters > 0 ? (
+            <Pressable testID="product-filters-clear" onPress={() => setFilters(NO_FILTERS)} hitSlop={8}>
+              <Text style={styles.clearText}>Wissen</Text>
+            </Pressable>
+          ) : null}
+        </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.deptRow}>
-          <Pressable testID="dept-all" onPress={() => setAisle("all")} style={[styles.deptChip, aisle === "all" && styles.deptChipActive]}>
+          <Pressable testID="dept-all" onPress={() => { setAisle("all"); setFilters((x) => ({ ...x, sub: [] })); }} style={[styles.deptChip, aisle === "all" && styles.deptChipActive]}>
             <Text style={[styles.deptText, aisle === "all" && styles.deptTextActive]}>Alle afdelingen</Text>
           </Pressable>
           {AISLES.filter((a) => (aisleCounts[a] ?? 0) > 0).map((a) => (
-            <Pressable key={a} testID={`dept-${a}`} onPress={() => setAisle(a)} style={[styles.deptChip, aisle === a && styles.deptChipActive]}>
+            <Pressable key={a} testID={`dept-${a}`} onPress={() => { setAisle(a); setFilters((x) => ({ ...x, sub: [] })); }} style={[styles.deptChip, aisle === a && styles.deptChipActive]}>
               <Icon name={(AISLE_ICONS[a] ?? "cart-outline") as any} size={14} color={aisle === a ? colors.onBrandPrimary : colors.brandPrimary} />
               <Text style={[styles.deptText, aisle === a && styles.deptTextActive]}>{a}</Text>
             </Pressable>
@@ -173,7 +209,7 @@ export default function ProductsScreen() {
           ListFooterComponent={isFetchingNextPage ? <ActivityIndicator color={colors.brandPrimary} style={{ marginTop: 8 }} /> : null}
           contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomChrome + 96, gap: 10 }}
           renderItem={({ item }) => (
-            <View testID={`product-row-${item.id}`} style={styles.row}>
+            <Pressable testID={`product-row-${item.id}`} onPress={() => router.push(`/product/${item.id}`)} style={styles.row}>
               {item.image ? (
                 <Image source={{ uri: item.image }} style={styles.rowImage} resizeMode="contain" />
               ) : (
@@ -186,8 +222,8 @@ export default function ProductsScreen() {
                   {item.name}
                   {item.brand ? <Text style={styles.brand}> · {item.brand}</Text> : null}
                 </Text>
-                <Text style={styles.rowSub}>
-                  {item.aisle} · per {item.unit}
+                <Text style={styles.rowSub} numberOfLines={1}>
+                  {item.subcategory || item.aisle} · per {item.unit}
                 </Text>
               </View>
               <Pressable
@@ -200,9 +236,12 @@ export default function ProductsScreen() {
               {item.unavailable_here ? (
                 <Text style={styles.naPrice}>Niet verkr.</Text>
               ) : (
-                <Text style={styles.price}>{item.price > 0 ? `€ ${item.price.toFixed(2)}` : "—"}</Text>
+                <View style={{ alignItems: "flex-end" }}>
+                  <Text style={styles.price}>{item.price > 0 ? `€ ${item.price.toFixed(2)}` : "—"}</Text>
+                  {item.on_offer ? <Text style={styles.offerTag}>Aanbieding</Text> : null}
+                </View>
               )}
-            </View>
+            </Pressable>
           )}
           ListEmptyComponent={
             onlyFavorites ? (
@@ -214,8 +253,146 @@ export default function ProductsScreen() {
         />
       )}
 
-
+      <FiltersSheet
+        visible={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        facets={facets}
+        filters={filters}
+        setFilters={setFilters}
+        total={total}
+        aisle={aisle === "all" ? null : aisle}
+      />
     </View>
+  );
+}
+
+function FiltersSheet({
+  visible,
+  onClose,
+  facets,
+  filters,
+  setFilters,
+  total,
+  aisle,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  facets: Facet[];
+  filters: ProductFilters;
+  setFilters: (f: ProductFilters | ((x: ProductFilters) => ProductFilters)) => void;
+  total?: number;
+  aisle: string | null;
+}) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [showAll, setShowAll] = useState<Record<string, boolean>>({});
+
+  const toggleIn = (key: "sub" | "brand", value: string) =>
+    setFilters((x) => {
+      const next = x[key].includes(value) ? x[key].filter((v) => v !== value) : [...x[key], value];
+      return key === "sub" ? { ...x, sub: next } : { ...x, brand: next };
+    });
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.modalBackdrop} onPress={onClose}>
+        <Pressable style={[styles.sheet, { maxHeight: "85%", paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
+          <View style={styles.sheetHeader}>
+            <Text style={styles.sheetTitle}>Filters{aisle ? ` · ${aisle}` : ""}</Text>
+            <Pressable testID="filters-close" onPress={onClose} hitSlop={10}>
+              <Icon name="close" size={24} color={colors.onSurface} />
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={{ gap: 16, paddingBottom: 8 }}>
+            <View style={{ gap: 8 }}>
+              <Text style={styles.filterLabel}>Sorteren</Text>
+              <View style={styles.chipWrap}>
+                {SORTS.map((o) => (
+                  <Pressable
+                    key={o.key || "best"}
+                    onPress={() => setFilters((x) => ({ ...x, sort: o.key }))}
+                    style={[styles.deptChip, filters.sort === o.key && styles.deptChipActive]}
+                  >
+                    <Text style={[styles.deptText, filters.sort === o.key && styles.deptTextActive]}>{o.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.chipWrap}>
+              {facets
+                .filter((f) => f.key === "offer" || f.key === "bio")
+                .map((f) => {
+                  const on = f.key === "offer" ? filters.offer : filters.bio;
+                  if (!on && !f.count) return null;
+                  return (
+                    <Pressable
+                      key={f.key}
+                      testID={`filter-${f.key}`}
+                      onPress={() => setFilters((x) => (f.key === "offer" ? { ...x, offer: !on } : { ...x, bio: !on }))}
+                      style={[styles.deptChip, on && styles.deptChipActive]}
+                    >
+                      <Icon name={f.key === "offer" ? "tag-outline" : "leaf"} size={14} color={on ? colors.onBrandPrimary : colors.brandPrimary} />
+                      <Text style={[styles.deptText, on && styles.deptTextActive]}>
+                        {f.label} ({f.count ?? 0})
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+            </View>
+
+            {facets
+              .filter((f) => (f.key === "sub" || f.key === "brand") && (f.options?.length ?? 0) > 0)
+              .map((f) => {
+                const key = f.key as "sub" | "brand";
+                const selected = filters[key];
+                const opts = f.options ?? [];
+                // Gekozen waarden altijd tonen, ook als ze buiten de top vallen
+                const extra = selected.filter((v) => !opts.some((o) => o.value === v)).map((v) => ({ value: v, count: 0 }));
+                const all = [...extra, ...opts];
+                const limit = showAll[key] ? all.length : 16;
+                return (
+                  <View key={key} style={{ gap: 8 }}>
+                    <Text style={styles.filterLabel}>{f.label}</Text>
+                    <View style={styles.chipWrap}>
+                      {all.slice(0, limit).map((o) => {
+                        const on = selected.includes(o.value);
+                        return (
+                          <Pressable
+                            key={o.value}
+                            onPress={() => toggleIn(key, o.value)}
+                            style={[styles.deptChip, on && styles.deptChipActive]}
+                          >
+                            <Text style={[styles.deptText, on && styles.deptTextActive]}>
+                              {o.value} ({o.count})
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    {all.length > 16 ? (
+                      <Pressable onPress={() => setShowAll((x) => ({ ...x, [key]: !x[key] }))}>
+                        <Text style={styles.clearText}>{showAll[key] ? "Minder tonen" : `Alle ${all.length} tonen`}</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                );
+              })}
+          </ScrollView>
+          <View style={styles.reqRow}>
+            <Pressable onPress={() => setFilters(NO_FILTERS)} style={[styles.reqBtn, { flex: 1, paddingVertical: 13 }]}>
+              <Text style={styles.reqBtnText}>Alles wissen</Text>
+            </Pressable>
+            <Pressable testID="filters-apply" onPress={onClose} style={[styles.reqBtn, { flex: 2, paddingVertical: 13, backgroundColor: colors.brandPrimary }]}>
+              <Text style={[styles.reqBtnText, { color: colors.onBrandPrimary }]}>
+                {total != null ? `Toon ${total} producten` : "Klaar"}
+              </Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -292,6 +469,11 @@ const useStyles = makeStyles((colors) => ({
   favToggleActive: { backgroundColor: colors.brandPrimary },
   favToggleText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
   favToggleTextActive: { color: colors.onBrandPrimary },
+  toggleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  clearText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  offerTag: { fontSize: 11, fontFamily: fonts.semibold, color: colors.warning, marginTop: 2 },
+  filterLabel: { fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface },
+  chipWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   rowImage: { width: 44, height: 44, borderRadius: 12, backgroundColor: "#fff" },
   rowTitle: { fontSize: 16, fontFamily: fonts.semibold, color: colors.onSurface },
   brand: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },

@@ -52,6 +52,7 @@ function Gate() {
       <Stack.Screen name="admin/submissions" />
       <Stack.Screen name="admin/store-requests" />
       <Stack.Screen name="store-request" options={{ presentation: "modal" }} />
+      <Stack.Screen name="product/[id]" />
       <Stack.Screen name="admin/users" />
       <Stack.Screen name="admin/roles" />
       <Stack.Screen name="account/profile" />

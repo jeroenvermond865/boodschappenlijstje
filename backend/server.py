@@ -1593,6 +1593,8 @@ def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set]
         "image": doc.get("image"),
         "is_favorite": doc["product_id"] in (favorites or set()),
         "source": product_source(doc),
+        "subcategory": doc.get("subcategory"),
+        "on_offer": bool(doc.get("on_offer")),
     }
 
 
@@ -1681,12 +1683,38 @@ async def list_products(user: dict = Depends(get_current_user)):
     return {"products": [product_public(_clean(d), store, user["user_id"], favorites) for d in docs], "stores": await get_active_stores()}
 
 
+_BIO_RE = re.compile(r"\b(bio|biologisch|biologische|organic)\b")
+
+
+def _is_bio(d: dict) -> bool:
+    return bool(_BIO_RE.search(d.get("_norm") or "") or _BIO_RE.search(_norm_text(d.get("brand") or "")))
+
+
+def _split_list(v: str) -> list:
+    return [x for x in (v or "").split("|") if x]
+
+
+def _facet(docs: list, field: str, top: int = 60) -> list:
+    counts: Dict[str, int] = {}
+    for d in docs:
+        v = (d.get(field) or "").strip()
+        if v:
+            counts[v] = counts.get(v, 0) + 1
+    items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:top]
+    return [{"value": k, "count": n} for k, n in items]
+
+
 @api_router.get("/products/search")
 async def search_products(
     q: str = "",
     source: str = "",
     aisle: str = "",
     favorites: bool = False,
+    sub: str = "",
+    brand: str = "",
+    offer: bool = False,
+    bio: bool = False,
+    sort: str = "",
     offset: int = 0,
     limit: int = 50,
     user: dict = Depends(get_current_user),
@@ -1706,6 +1734,39 @@ async def search_products(
         docs = [d for d in docs if d.get("aisle") == aisle]
     if q.strip():
         docs = _search_products(docs, q)
+
+    # Filters zoals op de sites; de keuzes (soort, merk) hangen af van de afdeling en zoekterm.
+    # Elke lijst telt mee met de andere filters, maar niet met zichzelf.
+    subs, brands = set(_split_list(sub)), set(_split_list(brand))
+    def keep(d: dict, skip: str = "") -> bool:
+        if subs and skip != "sub" and (d.get("subcategory") or "") not in subs:
+            return False
+        if brands and skip != "brand" and (d.get("brand") or "") not in brands:
+            return False
+        if offer and skip != "offer" and not d.get("on_offer"):
+            return False
+        if bio and skip != "bio" and not _is_bio(d):
+            return False
+        return True
+    facets = [
+        {"key": "sub", "label": "Soort", "options": _facet([d for d in docs if keep(d, "sub")], "subcategory")},
+        {"key": "brand", "label": "Merk", "options": _facet([d for d in docs if keep(d, "brand")], "brand", 80)},
+        {"key": "offer", "label": "Aanbieding", "count": sum(1 for d in docs if keep(d, "offer") and d.get("on_offer"))},
+        {"key": "bio", "label": "Biologisch", "count": sum(1 for d in docs if keep(d, "bio") and _is_bio(d))},
+    ]
+    if subs or brands or offer or bio:
+        docs = [d for d in docs if keep(d)]
+
+    if sort in ("price_asc", "price_desc"):
+        def price_of(d):
+            v = resolve_price(d.get("prices") or {}, product_source(d) or store, d.get("unavailable") or [])
+            return v if v > 0 else 9999
+        docs = sorted(docs, key=price_of, reverse=(sort == "price_desc"))
+        if sort == "price_desc":
+            docs = [d for d in docs if price_of(d) < 9999] + [d for d in docs if price_of(d) >= 9999]
+    elif sort == "name":
+        docs = sorted(docs, key=lambda d: d["_norm"])
+
     offset = max(0, offset)
     limit = max(1, min(limit, 200))
     page = docs[offset:offset + limit]
@@ -1714,6 +1775,7 @@ async def search_products(
         "total": len(docs),
         "next_offset": offset + limit if offset + limit < len(docs) else None,
         "aisle_counts": aisle_counts,
+        "facets": facets,
     }
 
 
@@ -1724,6 +1786,322 @@ async def get_product(product_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Product niet gevonden")
     favs = set(user.get("favorite_products") or [])
     return product_public(doc, user.get("store", DEFAULT_STORE), user["user_id"], favs)
+
+
+# --- Productdetails zoals op de site van de winkel (live opgehaald, even bewaard) ---
+DETAIL_CACHE_SECONDS = 6 * 3600
+_detail_cache: dict = {}
+_detail_logged = {"Jumbo": 0}
+_PAGE_HEADERS = {"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
+
+
+def _euro(v: float) -> str:
+    return f"€ {v:.2f}".replace(".", ",")
+
+
+def _unit_price_from(price: float, qty: str) -> Optional[str]:
+    # "2 liter", "1,5 l", "6 x 330 ml", "500 gram" -> prijs per liter of kilo
+    if not price or not qty:
+        return None
+    m = re.search(r"(?:(\d+)\s*x\s*)?(\d+(?:[.,]\d+)?)\s*(kg|kilo|kilogram|gram|gr|g|liter|ltr|l|cl|ml)\b", qty.lower())
+    if not m:
+        return None
+    amount = float(m.group(2).replace(",", ".")) * int(m.group(1) or 1)
+    u = m.group(3)
+    if u in ("g", "gr", "gram"):
+        amount, per = amount / 1000, "kilo"
+    elif u in ("kg", "kilo", "kilogram"):
+        per = "kilo"
+    elif u == "ml":
+        amount, per = amount / 1000, "liter"
+    elif u == "cl":
+        amount, per = amount / 100, "liter"
+    else:
+        per = "liter"
+    if amount <= 0:
+        return None
+    return f"{_euro(price / amount)} per {per}"
+
+
+def _strip_html(h: str) -> str:
+    from html import unescape
+    t = re.sub(r"<li[^>]*>", "\n• ", h or "")
+    t = re.sub(r"</p>|<br\s*/?>", "\n", t)
+    t = unescape(re.sub(r"<[^>]+>", "", t))
+    return re.sub(r"\n\s*\n+", "\n", t).strip()
+
+
+def _texts(x) -> list:
+    # Haalt leesbare tekst uit een onbekende structuur
+    if x is None or x == "" or isinstance(x, bool):
+        return []
+    if isinstance(x, (str, int, float)):
+        return [str(x).strip()] if str(x).strip() else []
+    if isinstance(x, list):
+        out = []
+        for v in x:
+            out += _texts(v)
+        return out
+    if isinstance(x, dict):
+        for k in ("text", "label", "name", "description", "title", "value"):
+            if isinstance(x.get(k), (str, int, float)) and str(x.get(k)).strip():
+                return [str(x[k]).strip()]
+        out = []
+        for k, v in x.items():
+            if k.startswith("__"):
+                continue
+            out += _texts(v)
+        return out
+    return []
+
+
+def _join(x) -> Optional[str]:
+    t = [v for v in _texts(x) if v]
+    return "\n".join(t) if t else None
+
+
+def _empty_details(source: str, url: str) -> dict:
+    return {"source": source, "url": url, "description": None, "unit_price": None, "ingredients": None, "allergens": [],
+            "nutrition": None, "storage": None, "usage": None, "origin": None, "nutriscore": None, "labels": [], "diets": [], "extra": []}
+
+
+async def _dirk_details(doc: dict) -> dict:
+    pid = str(doc["dirk_id"])
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+        r = await c.get(f"https://www.dirk.nl/boodschappen/x/x/x/{pid}", headers=_PAGE_HEADERS)
+    data = _nuxt_data(r.text)
+    out = _empty_details("Dirk", str(r.url))
+    if not data:
+        raise RuntimeError(f"Dirk-pagina zonder gegevens ({r.status_code})")
+    prod = _find_dict(data, "productInformation") or {}
+    info = prod.get("productInformation") or {}
+    decl_holder = _find_dict(data, "declarations") or {}
+    decl = decl_holder.get("declarations") or {}
+    out["description"] = (info.get("subText") or "").strip() or None
+    price = prod.get("offerPrice") or prod.get("normalPrice") or 0
+    out["unit_price"] = _unit_price_from(float(price or 0), info.get("packaging") or doc.get("unit") or "")
+    ing = (decl.get("ingredients") or "").strip()
+    out["ingredients"] = re.sub(r"^ingredi[eë]nten\s*:\s*", "", ing, flags=re.I) or None
+    for k, v in decl.items():
+        if "allerg" in k.lower():
+            out["allergens"] += _texts(v)
+    ni = decl.get("nutritionalInformation") or {}
+    rows = []
+    for nv in ni.get("nutritionalValues") or []:
+        rows.append([nv.get("text") or "", nv.get("value") or ""])
+        for sv in nv.get("nutritionalSubValues") or []:
+            rows.append(["  " + (sv.get("text") or ""), sv.get("value") or ""])
+    if rows:
+        basis = (ni.get("standardPackagingUnit") or "100 g").replace("MLT", "ml").replace("GRM", "g")
+        out["nutrition"] = {"columns": ["", f"Per {basis}"], "rows": rows}
+    out["storage"] = _join(decl.get("storageInstructions"))
+    out["usage"] = _join((decl.get("instructionsForUse") or []) + (decl.get("cookingInstructions") or []))
+    out["labels"] = [l.get("description") for l in (info.get("logos") or []) if isinstance(l, dict) and l.get("description")]
+    contact = decl.get("contactInformation") or {}
+    if contact.get("contactName"):
+        out["extra"].append({"label": "Afzender", "value": ", ".join(x for x in [contact.get("contactName"), contact.get("contactAdress")] if x)})
+    # Vangnet: allergenen staan soms los in de pagina, als lijst met {"text": "Bevat ..."}
+    if not out["allergens"]:
+        found = []
+        def walk(x, depth=0):
+            if depth > 8 or len(found) > 20:
+                return
+            if isinstance(x, dict):
+                for v in x.values():
+                    walk(v, depth + 1)
+            elif isinstance(x, list):
+                if x and all(isinstance(i, dict) and set(i.keys()) == {"text"} for i in x):
+                    t = [i["text"] for i in x if isinstance(i.get("text"), str)]
+                    if any(re.match(r"(bevat|kan .*bevatten|sporen)", v, re.I) for v in t):
+                        found.extend(t)
+                        return
+                for v in x:
+                    walk(v, depth + 1)
+        walk(decl_holder)
+        out["allergens"] = found
+    return out
+
+
+async def _ah_details(doc: dict) -> dict:
+    pid = str(doc["ah_id"])
+    out = _empty_details("Albert Heijn", f"https://www.ah.nl/producten/product/wi{pid}")
+    async with httpx.AsyncClient(timeout=15, headers=AH_HEADERS) as c:
+        tok = await _ah_token(c)
+        r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{pid}",
+                        headers={"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"})
+    body = r.json() or {}
+    card = body.get("productCard") or {}
+    trade = body.get("tradeItem") or {}
+    props = body.get("properties") or {}
+    if not card:
+        raise RuntimeError(f"AH gaf geen product ({r.status_code})")
+    desc = "\n".join(x for x in [_strip_html(card.get("descriptionHighlights") or ""), _strip_html(card.get("descriptionFull") or "")] if x)
+    out["description"] = desc or None
+    price = card.get("currentPrice") or card.get("priceBeforeBonus") or 0
+    upd = (card.get("unitPriceDescription") or "").strip()
+    out["unit_price"] = (upd[0].upper() + upd[1:]) if upd else _unit_price_from(float(price or 0), card.get("salesUnitSize") or "")
+    ing = _find_dict(trade, "ingredientStatement")
+    if ing:
+        out["ingredients"] = _join(ing.get("ingredientStatement"))
+    if not out["ingredients"]:
+        for k, v in trade.items():
+            if "ingredient" in k.lower():
+                out["ingredients"] = _join(v)
+                break
+    if out["ingredients"]:
+        out["ingredients"] = re.sub(r"^ingredi[eë]nten\s*:\s*", "", out["ingredients"], flags=re.I)
+    groups: Dict[str, list] = {}
+    for block in trade.get("allergenInformation") or []:
+        for it in (block or {}).get("items") or []:
+            lvl = ((it.get("levelOfContainmentCode") or {}).get("label") or "Bevat").strip()
+            name = ((it.get("typeCode") or {}).get("label") or "").strip()
+            if name:
+                groups.setdefault(lvl, []).append(name.lower())
+    out["allergens"] = [f"{lvl}: {', '.join(v)}" for lvl, v in groups.items()]
+    headers = ((trade.get("nutritionalInformation") or {}).get("nutrientHeaders") or [])
+    if headers:
+        h = headers[0]
+        bq = h.get("nutrientBasisQuantity") or {}
+        unit = ((bq.get("measurementUnitCode") or {}).get("value") or "").strip()
+        val = bq.get("value")
+        basis = f"{int(val) if isinstance(val, (int, float)) and float(val).is_integer() else val} {unit}".strip() if val else "100 g"
+        rows = []
+        for nd in h.get("nutrientDetail") or []:
+            label = ((nd.get("nutrientTypeCode") or {}).get("label") or "").strip()
+            qc = (nd.get("quantityContained") or [{}])[0] or {}
+            v = qc.get("value")
+            u = ((qc.get("measurementUnitCode") or {}).get("value") or "")
+            vs = (f"{v:g}" if isinstance(v, (int, float)) else str(v or "")).replace(".", ",")
+            rows.append([("  " + label) if label.lower().startswith("waarvan") else label, f"{vs} {u}".strip()])
+        if rows:
+            out["nutrition"] = {"columns": ["", f"Per {basis}"], "rows": rows}
+    ci = trade.get("consumerInstructions") or {}
+    out["storage"] = _join(ci.get("storageInstructions"))
+    out["usage"] = _join(ci.get("usageInstructions"))
+    ns = props.get("nutriscore") or [card.get("nutriscore")]
+    out["nutriscore"] = (ns[0] if ns and ns[0] else None)
+    acc = {"WEIDEMELK": "Weidemelk", "ON_THE_WAY_TO_PLANETPROOF": "On the way to PlanetProof", "BETER_LEVEN_1_STER": "Beter Leven 1 ster",
+           "BETER_LEVEN_2_STER": "Beter Leven 2 sterren", "BETER_LEVEN_3_STER": "Beter Leven 3 sterren", "EU_BIOLOGISCH": "Biologisch",
+           "FAIRTRADE": "Fairtrade", "RAINFOREST_ALLIANCE": "Rainforest Alliance", "MSC": "MSC", "ASC": "ASC", "UTZ": "UTZ"}
+    out["labels"] = [acc.get(a, a.replace("_", " ").capitalize()) for a in (props.get("da_accreditation") or [])]
+    out["labels"] += [i.get("description") or i.get("name") for i in (card.get("propertyIcons") or []) if isinstance(i, dict) and (i.get("description") or i.get("name"))]
+    diets = []
+    for k, v in props.items():
+        if k.startswith("sp_include_"):
+            diets += [x for x in (v or []) if x]
+    out["diets"] = diets
+    if card.get("mainCategory") or card.get("subCategory"):
+        out["extra"].append({"label": "Categorie", "value": " › ".join(x for x in [card.get("mainCategory"), card.get("subCategory")] if x)})
+    if card.get("minBestBeforeDays"):
+        out["extra"].append({"label": "Minimaal houdbaar", "value": f"{card['minBestBeforeDays']} dagen na levering"})
+    serv = ((trade.get("foodAndBeveragePreparationServing") or {}).get("servingQuantityInformation") or {}).get("numberOfServingsPerPackage")
+    if serv:
+        out["extra"].append({"label": "Porties per verpakking", "value": f"ongeveer {serv:g}" if isinstance(serv, (int, float)) else str(serv)})
+    return out
+
+
+def _jumbo_table(t) -> Optional[dict]:
+    # Jumbo: voedingstabel als kolommen en rijen; lege kolommen weglaten
+    if not t:
+        return None
+    cols, rows = [], []
+    if isinstance(t, dict):
+        cols = [(_texts(c) or [""])[0] for c in (t.get("columns") or t.get("headers") or t.get("header") or [])]
+        raw_rows = t.get("rows") or t.get("body") or t.get("values") or []
+    else:
+        raw_rows = t
+    for row in raw_rows or []:
+        cells = row.get("cells") or row.get("columns") or row.get("values") if isinstance(row, dict) else row
+        if isinstance(cells, list):
+            rows.append([(_texts(c) or [""])[0] for c in cells])
+        elif isinstance(row, dict):
+            rows.append([str(v) for k, v in row.items() if not k.startswith("__") and isinstance(v, (str, int, float))])
+    if not rows:
+        return None
+    width = max(len(r) for r in rows + ([cols] if cols else []))
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    cols = (cols + [""] * (width - len(cols))) if cols else [""] * width
+    keep = [i for i in range(width) if i == 0 or cols[i] or any(r[i] for r in rows)]
+    # Een lege eerste rij-cel bij een vervolg (kcal na kJ) laten we leeg; de app toont die als vervolgregel
+    return {"columns": [cols[i] for i in keep], "rows": [[r[i] for i in keep] for r in rows]}
+
+
+async def _jumbo_details(doc: dict) -> dict:
+    sku = str(doc["jumbo_id"])
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+        r = await c.get(f"https://www.jumbo.com/producten/x-{sku}", headers=_PAGE_HEADERS)
+    data = _nuxt_data(r.text)
+    out = _empty_details("Jumbo", str(r.url))
+    p = _find_dict(data, "nutritionsTable") or _find_dict(data, "customerAllergies") if data else None
+    if not p:
+        raise RuntimeError(f"Jumbo-pagina zonder gegevens ({r.status_code})")
+    if _detail_logged["Jumbo"] < 2:
+        _detail_logged["Jumbo"] += 1
+        import json as _json
+        logger.info("Jumbo details vorm: nutritionsTable=%s allergens=%s nutriScore=%s",
+                    _json.dumps(p.get("nutritionsTable"), default=str)[:700], _json.dumps(p.get("productAllergens"), default=str)[:400],
+                    _json.dumps(p.get("nutriScore"), default=str)[:200])
+    out["description"] = _strip_html(p.get("description") or "") or None
+    ppu = (p.get("price") or {}).get("pricePerUnit") or {}
+    if ppu.get("price"):
+        unit = {"l": "liter", "kg": "kilo", "st": "stuk", "stk": "stuk", "pce": "stuk"}.get(str(ppu.get("unit") or "").lower(), ppu.get("unit") or "")
+        out["unit_price"] = f"{_euro(ppu['price'] / 100)} per {unit}".strip()
+    out["ingredients"] = ", ".join(_texts(p.get("ingredients"))) or None
+    al = p.get("productAllergens")
+    if isinstance(al, dict):
+        names = {"contains": "Bevat", "mayContain": "Kan bevatten", "may_contain": "Kan bevatten", "freeFrom": "Vrij van"}
+        for k, v in al.items():
+            if k.startswith("__"):
+                continue
+            t = _texts(v)
+            if t:
+                out["allergens"].append(f"{names.get(k, k)}: {', '.join(t)}")
+    else:
+        out["allergens"] = _texts(al)
+    out["nutrition"] = _jumbo_table(p.get("nutritionsTable"))
+    out["storage"] = _join(p.get("storage"))
+    out["usage"] = _join(p.get("preparationAndUsage"))
+    out["origin"] = _join(p.get("origin"))
+    ns = p.get("nutriScore")
+    ns_t = _texts(ns.get("value") if isinstance(ns, dict) and "value" in ns else ns)
+    out["nutriscore"] = next((x.upper() for x in ns_t if re.fullmatch(r"[A-Ea-e]", x)), None)
+    out["labels"] = _texts((p.get("characteristics") or {}).get("thirdPartyLogos"))
+    out["diets"] = _texts(p.get("nutritionHealthClaims"))
+    cats = [c.get("name") for c in (p.get("categories") or []) if isinstance(c, dict) and c.get("name")]
+    if cats:
+        out["extra"].append({"label": "Categorie", "value": " › ".join(cats)})
+    for key, label in (("additives", "Toevoegingen"), ("alcoholByVolume", "Alcoholpercentage"), ("drainedWeight", "Uitlekgewicht"),
+                       ("safetyWarning", "Waarschuwing"), ("manufacturer", "Fabrikant"), ("regulatedProductName", "Wettelijke naam")):
+        v = _join(p.get(key))
+        if v:
+            out["extra"].append({"label": label, "value": v})
+    return out
+
+
+@api_router.get("/products/{product_id}/details")
+async def product_details(product_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.products.find_one({"product_id": product_id, "deleted_at": None}, {"_id": 0})
+    if not doc or (not doc.get("is_global") and doc.get("owner_id") != user["user_id"]):
+        raise HTTPException(status_code=404, detail="Product niet gevonden")
+    src = product_source(doc)
+    if not src:
+        return _empty_details("", "")
+    hit = _detail_cache.get(product_id)
+    now = datetime.now(timezone.utc)
+    if hit and (now - hit[0]).total_seconds() < DETAIL_CACHE_SECONDS:
+        return hit[1]
+    try:
+        fn = {"Dirk": _dirk_details, "Albert Heijn": _ah_details, "Jumbo": _jumbo_details}[src]
+        out = await fn(doc)
+    except Exception as e:
+        logger.warning("Productdetails %s (%s) mislukt: %r", product_id, src, e)
+        raise HTTPException(status_code=502, detail=f"De productinformatie van {src} is nu niet op te halen")
+    out["labels"] = list(dict.fromkeys(x for x in out["labels"] if x))
+    out["diets"] = list(dict.fromkeys(x for x in out["diets"] if x))
+    if len(_detail_cache) > 800:
+        _detail_cache.clear()
+    _detail_cache[product_id] = (now, out)
+    return out
 
 
 @api_router.post("/products/{product_id}/favorite")
@@ -2061,61 +2439,6 @@ def _find_dict(obj, key: str, seen=None):
     return None
 
 
-async def _probe_details() -> None:
-    # Tijdelijk: hoe zien de productdetails van Dirk, AH en Jumbo eruit?
-    import json as _json
-    def dump(x, n=3500):
-        try:
-            return _json.dumps(x, ensure_ascii=False, default=str)[:n]
-        except Exception as e:
-            return f"<{e}>"
-    UA = {"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
-    await asyncio.sleep(20)
-    try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-            r = await c.get("https://www.dirk.nl/boodschappen/x/x/x/101229", headers=UA)
-            d = _nuxt_data(r.text)
-            logger.info("Detail probe2 Dirk pagina %s %s nuxt=%s", r.status_code, str(r.url), d is not None)
-            nv = _find_dict(d, "nutritionalValues")
-            pi = _find_dict(d, "productInformation") or _find_dict(d, "headerText")
-            logger.info("Detail probe2 Dirk nv %s", dump(nv, 1500))
-            logger.info("Detail probe2 Dirk product %s", dump(pi, 3500))
-            for k in ["ingredients", "allergens", "allergyInfo", "declarations", "logos", "unitPrice", "pricePerUnit", "storage", "usage", "origin"]:
-                f = _find_dict(d, k)
-                if f is not None:
-                    logger.info("Detail probe2 Dirk veld %s -> %s", k, dump(f.get(k), 600))
-            r = await c.get("https://www.jumbo.com/producten/x-293407STK", headers=UA)
-            d = _nuxt_data(r.text)
-            logger.info("Detail probe2 Jumbo pagina %s %s nuxt=%s", r.status_code, str(r.url), d is not None)
-            pr = _find_dict(d, "customerAllergies")
-            logger.info("Detail probe2 Jumbo keys %s", list(pr.keys()) if isinstance(pr, dict) else None)
-            for k in ["nutritionalInformation", "nutritions", "nutrition", "nutritionalValues", "allergyText", "allergens", "ingredients", "characteristics", "prices", "price", "storage", "usage", "preparation", "origin", "customerAllergies", "brand", "category", "categories", "regulatedTitle", "packaging", "quantityDetails"]:
-                f = _find_dict(d, k)
-                if f is not None:
-                    logger.info("Detail probe2 Jumbo veld %s -> %s", k, dump(f.get(k), 900))
-        async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS, follow_redirects=True) as c:
-            tok = await _ah_token(c)
-            H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-            r = await c.get("https://api.ah.nl/mobile-services/product/detail/v4/fir/441199", headers=H)
-            body = r.json() or {}
-            logger.info("Detail probe2 AH keys %s card %s", list(body.keys()), list((body.get("productCard") or {}).keys()))
-            for k, v in body.items():
-                if k != "productCard":
-                    logger.info("Detail probe2 AH %s -> %s", k, dump(v, 3000))
-            r = await c.get("https://api.ah.nl/mobile-services/product/search/v2", params={"query": "melk", "size": 1}, headers=H)
-            b = r.json() or {}
-            logger.info("Detail probe2 AH filterlijst %s", dump([{"id": f.get("id"), "label": f.get("label"), "type": f.get("type"), "n": len(f.get("options") or []), "eerste": [o.get("label") for o in (f.get("options") or [])[:6]]} for f in (b.get("filters") or [])], 3500))
-            logger.info("Detail probe2 AH product rest %s", dump({k: v for k, v in ((b.get("products") or [{}])[0]).items() if k not in ("images",)}, 2500))
-        async with httpx.AsyncClient(timeout=20, headers=JUMBO_HEADERS) as c:
-            for q in ['query { __type(name: "Facet") { fields { name } } }', 'query { __type(name: "Product") { fields { name } } }',
-                      'query SearchProducts($input: ProductSearchInput!) { searchProducts(input: $input) { facets { key } } }']:
-                v = {"input": {"searchType": "keyword", "searchTerms": "melk", "friendlyUrl": "", "offSet": 0, "currentUrl": "/producten/?searchType=keyword&searchTerms=melk", "previousUrl": "", "bloomreachCookieId": ""}}
-                r = await c.post(JUMBO_GQL, json={"query": q, "variables": v} if "$input" in q else {"query": q})
-                logger.info("Detail probe2 Jumbo gql -> %s", r.text[:1500])
-    except Exception as e:
-        logger.warning("Detail probe2 mislukt: %r", e)
-
-
 async def _dirk_post(client, query, variables):
     r = await client.post(DIRK_GQL, json={"query": query, "variables": variables})
     if r.status_code >= 500:
@@ -2205,6 +2528,7 @@ def _dirk_normalize(p: dict) -> Optional[dict]:
         "price": round(float(price), 2) if price else 0,
         "on_offer": bool(p.get("offerPrice")),
         "aisle": _dirk_aisle(info.get("department") or "", info.get("webgroup") or ""),
+        "subcategory": (info.get("webgroup") or None),
     }
 
 
@@ -2250,6 +2574,7 @@ def _ah_normalize(p: dict) -> Optional[dict]:
         "price": round(float(price), 2) if price else 0,
         "on_offer": bool(before and price and price < before),
         "aisle": _dirk_aisle(p.get("mainCategory") or "", p.get("subCategory") or ""),
+        "subcategory": (p.get("subCategory") or None),
     }
 
 
@@ -2295,6 +2620,7 @@ def _jumbo_normalize(p: dict) -> Optional[dict]:
         "price": round(float(cents) / 100, 2) if cents else 0,
         "on_offer": bool(promo and normal and promo < normal),
         "aisle": _dirk_aisle(p.get("category") or "", "", name),
+        "subcategory": (p.get("category") or None),
     }
 
 
@@ -2467,6 +2793,8 @@ def _new_store_product(idf: str, nrm: dict, store: str, mults: dict) -> dict:
         "unit": (nrm.get("quantity") or "stuks").strip()[:24] or "stuks",
         "brand": nrm.get("brand"),
         "barcode": nrm.get("barcode"),
+        "subcategory": nrm.get("subcategory"),
+        "on_offer": bool(nrm.get("on_offer")),
         "prices": _prices_from(nrm["price"], store, mults),
         "image": nrm.get("image"),
         "unavailable": [],
@@ -2808,12 +3136,12 @@ async def product_by_barcode(ean: str, user: dict = Depends(get_current_user)):
     return {"barcode": ean, "products": [product_public(x, store, user["user_id"], favs) for x in docs]}
 
 
-def _apply_refresh(p: dict, store: str, price: float, aisle: str, mults: dict, image: Optional[str] = None, barcode: Optional[str] = None) -> dict:
-    out = {"prices": {store: price}, "aisle": aisle if aisle in AISLES else p.get("aisle", "Overig")}
-    if image:
-        out["image"] = image
-    if barcode:
-        out["barcode"] = barcode
+def _apply_refresh(p: dict, store: str, n: dict, mults: dict) -> dict:
+    aisle = n.get("aisle")
+    out = {"prices": {store: n["price"]}, "aisle": aisle if aisle in AISLES else p.get("aisle", "Overig"), "on_offer": bool(n.get("on_offer"))}
+    for k in ("image", "barcode", "subcategory"):
+        if n.get(k):
+            out[k] = n[k]
     return out
 
 
@@ -2840,7 +3168,7 @@ async def _refresh_dirk_prices(mults: dict) -> int:
         n = fetched.get(str(p["dirk_id"]))
         if not n or not n["price"]:
             continue
-        await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Dirk", n["price"], n["aisle"], mults, n.get("image"))})
+        await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Dirk", n, mults)})
         updated += 1
     return updated
 
@@ -2862,7 +3190,7 @@ async def _refresh_ah_prices(mults: dict) -> int:
             n = _ah_normalize(card)
             if not n or not n["price"]:
                 continue
-            await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Albert Heijn", n["price"], n["aisle"], mults, n.get("image"))})
+            await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Albert Heijn", n, mults)})
             updated += 1
     return updated
 
@@ -2883,7 +3211,7 @@ async def _refresh_jumbo_prices(mults: dict) -> int:
                             continue
                         done.add(n["jumbo_id"])
                         p = prods[n["jumbo_id"]]
-                        await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n["price"], n["aisle"], mults, n.get("image"), n.get("barcode"))})
+                        await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n, mults)})
             except Exception as e:
                 logger.warning("Jumbo-prijzen %s mislukt: %s", term, e)
     return len(done)
@@ -3734,7 +4062,6 @@ async def startup():
 
     # Start the daily Dirk price/category refresh loop (runs while server is up)
     asyncio.create_task(_daily_refresh_loop())
-    asyncio.create_task(_probe_details())
 
 
 async def _daily_refresh_loop():
