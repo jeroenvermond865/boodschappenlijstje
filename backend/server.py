@@ -2819,17 +2819,18 @@ async def _dirk_folder() -> list:
 async def _jumbo_folder() -> list:
     # Jumbo: acties komen mee met de producten (bij import en de dagelijkse update)
     docs = await db.products.find({"jumbo_id": {"$exists": True}, "promo": {"$ne": None}, "deleted_at": None, "is_global": True},
-                                  {"_id": 0, "jumbo_id": 1, "promo": 1, "image": 1, "name": 1, "prices": 1}).to_list(None)
+                                  {"_id": 0, "jumbo_id": 1, "promo": 1, "promos": 1, "image": 1, "name": 1, "prices": 1}).to_list(None)
     items: dict = {}
     for d in docs:
-        pr = d.get("promo") or {}
-        if not pr.get("id"):
-            continue
-        it = items.get(pr["id"])
-        if not it:
-            it = items[pr["id"]] = _promo_item("Jumbo", pr["id"], pr.get("title") or d["name"], pr.get("label"), pr.get("start"), pr.get("end"),
-                                               pr.get("image") or d.get("image"), combinable=pr.get("combinable"))
-        it["ids"].append(str(d["jumbo_id"]))
+        for pr in d.get("promos") or [d.get("promo") or {}]:
+            if not pr.get("id"):
+                continue
+            it = items.get(pr["id"])
+            if not it:
+                it = items[pr["id"]] = _promo_item("Jumbo", pr["id"], pr.get("title") or d["name"], pr.get("label"), pr.get("start"), pr.get("end"),
+                                                   pr.get("image") or d.get("image"), combinable=pr.get("combinable"))
+            if str(d["jumbo_id"]) not in it["ids"]:
+                it["ids"].append(str(d["jumbo_id"]))
     today = _iso_day(datetime.now(timezone.utc).isoformat())
     cur = [i for i in items.values() if (i["start"] or "") <= today]
     nxt = [i for i in items.values() if (i["start"] or "") > today]
@@ -2881,9 +2882,9 @@ def _promos_for(doc: dict) -> list:
     src = doc.get("_src") or product_source(doc)
     sid = doc.get("dirk_id") or doc.get("ah_id") or doc.get("jumbo_id")
     found = list(_folders["by_id"].get((src, str(sid)), [])) if src and sid else []
-    if not found and doc.get("promo") and doc["promo"].get("id"):
-        pr = doc["promo"]
-        found = [_promo_item(src, pr["id"], pr.get("title"), pr.get("label"), pr.get("start"), pr.get("end"), combinable=pr.get("combinable"))]
+    if not found:
+        found = [_promo_item(src, pr["id"], pr.get("title"), pr.get("label"), pr.get("start"), pr.get("end"), combinable=pr.get("combinable"))
+                 for pr in (doc.get("promos") or [doc.get("promo") or {}]) if pr.get("id")]
     return found
 
 
@@ -2999,7 +3000,7 @@ async def _ah_recipes(q: str, filters: dict, page: int, size: int) -> dict:
                for r in res.get("result") or [] if r.get("id")]
     facets = [{"key": g["name"], "label": _nice(g.get("label") or g["name"]), "multi": True,
                "values": [{"value": f["name"], "label": _nice(f.get("label") or f["name"]), "count": f.get("count")} for f in g.get("filters") or []]}
-              for g in res.get("filters") or [] if g.get("name") and g.get("filters")]
+              for g in res.get("filters") or [] if g.get("name") and g.get("filters") and g["name"] != "allerhande-magazine"]
     return {"recipes": recipes, "total": total, "facets": facets, "has_more": (page + 1) * size < total}
 
 
@@ -3290,13 +3291,28 @@ async def _recipe_detail(rid: str) -> dict:
     return _rc_set(("detail", rid), out)
 
 
-def _recipe_with_products(rec: dict, user: dict) -> dict:
+def _ah_matches(names: list, docs: list) -> dict:
+    # AH koppelt recepten niet aan producten; zoek per ingrediënt het best passende AH-product
+    ah = [d for d in docs if d.get("_src") == "Albert Heijn" and d.get("is_global")]
+    out = {}
+    for n in names:
+        if _norm_text(n) in ("water", "zout", "peper", "zout en peper", "peper en zout"):
+            continue
+        hits = _search_products(ah, n)[:1]
+        if hits:
+            out[n] = hits[0]
+    return out
+
+
+def _recipe_with_products(rec: dict, user: dict, matches: Optional[dict] = None) -> dict:
     by_sid = _product_cache.get("by_sid") or {}
     favs = set(user.get("favorite_products") or [])
     ings = []
     for i in rec["ingredients"]:
         p = i.get("product")
-        doc = by_sid.get((p["store"], p["sid"])) if p else None
+        doc = by_sid.get((p["store"], p["sid"])) if p else (matches or {}).get(i["name"])
+        if doc is not None and not p:
+            p = {"store": "Albert Heijn"}
         ings.append({**i, "product": product_public(_clean(doc), p["store"], user["user_id"], favs) if doc else None})
     return {**rec, "ingredients": ings}
 
@@ -3310,30 +3326,17 @@ async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.warning("Recept %s: %r", id, e)
         raise HTTPException(status_code=502, detail="Dit recept is nu niet op te halen, probeer het zo nog eens")
-    await _global_products()
-    return _recipe_with_products(rec, user)
+    return await _recipe_products(rec, user)
 
 
-async def _selftest_recipes() -> None:
-    # Tijdelijk: controleren of zoeken en recepten ophalen werkt
-    await asyncio.sleep(40)
-    try:
-        pr, rc = await _home_inspiration()
-        logger.info("Rtest home promos=%d %s recipes=%d", len(pr), pr[:1], len(rc))
-    except Exception as e:
-        logger.warning("Rtest home: %r", e)
-    for store, q, f in (("ah", "pasta", {}), ("ah", "", {"menugang": ["lunch"]})):
-        try:
-            res = await _store_recipes(store, q, f, 0, 24)
-            logger.info("Rtest %s %r %s: total=%s n=%d facets=%s first=%s", store, q, f, res["total"], len(res["recipes"]),
-                        [(x["key"], len(x["values"])) for x in res["facets"]], res["recipes"][:1])
-            if res["recipes"]:
-                d = await _recipe_detail(res["recipes"][0]["id"])
-                logger.info("Rtest detail %s: %s ings=%d steps=%d img=%s time=%s pers=%s prods=%d first=%s",
-                            d["id"], d["title"], len(d["ingredients"]), len(d["steps"]), bool(d["image"]), d["time"], d["servings"],
-                            sum(1 for i in d["ingredients"] if i.get("product")), d["ingredients"][:2])
-        except Exception as e:
-            logger.warning("Rtest %s %r: %r", store, q, e)
+async def _recipe_products(rec: dict, user: dict) -> dict:
+    docs = await _global_products()
+    matches = None
+    if rec["store"] == "ah":
+        matches = _rc_get(("ahmatch", rec["id"]), 6 * 3600)
+        if matches is None:
+            matches = _rc_set(("ahmatch", rec["id"]), await asyncio.to_thread(_ah_matches, [i["name"] for i in rec["ingredients"]], docs))
+    return _recipe_with_products(rec, user, matches)
 
 
 class RecipeImport(BaseModel):
@@ -3345,7 +3348,7 @@ class RecipeImport(BaseModel):
 async def import_recipe(data: RecipeImport, user: dict = Depends(get_current_user)):
     if data.category not in MEAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="Ongeldige categorie")
-    rec = _recipe_with_products(await _recipe_detail(data.id), user)
+    rec = await _recipe_products(await _recipe_detail(data.id), user)
     persons = rec.get("servings") or 4
     ings = []
     for i in rec["ingredients"]:
@@ -3670,18 +3673,27 @@ def _jumbo_normalize(p: dict) -> Optional[dict]:
         "aisle": _dirk_aisle(p.get("category") or "", "", name),
         "subcategory": (p.get("category") or None),
         "promo": _jumbo_promo(p),
+        "promos": _jumbo_promos(p),
     }
 
 
-def _jumbo_promo(p: dict) -> Optional[dict]:
+def _jumbo_promos(p: dict) -> list:
+    # Alle acties van een product: die van nu en, zodra Jumbo ze toont, die van volgende week
+    out = []
     for pr in p.get("promotions") or []:
         if not isinstance(pr, dict) or not pr.get("id"):
             continue
         tags = [t.get("text") for t in pr.get("tags") or [] if isinstance(t, dict) and t.get("text")]
-        return {"id": str(pr["id"]), "title": pr.get("title"), "label": tags[0] if tags else "Actie",
-                "start": _iso_day((pr.get("start") or {}).get("iso")), "end": _iso_day((pr.get("end") or {}).get("iso")),
-                "combinable": bool(pr.get("isKiesAndMix")), "image": pr.get("image")}
-    return None
+        out.append({"id": str(pr["id"]), "title": pr.get("title"), "label": tags[0] if tags else "Actie",
+                    "start": _iso_day((pr.get("start") or {}).get("iso")), "end": _iso_day((pr.get("end") or {}).get("iso")),
+                    "combinable": bool(pr.get("isKiesAndMix")), "image": pr.get("image")})
+    out.sort(key=lambda x: x["start"] or "")
+    return out
+
+
+def _jumbo_promo(p: dict) -> Optional[dict]:
+    promos = _jumbo_promos(p)
+    return promos[0] if promos else None
 
 
 async def _jumbo_search_page(client, term: str, offset: int = 0) -> tuple:
@@ -3856,6 +3868,7 @@ def _new_store_product(idf: str, nrm: dict, store: str, mults: dict) -> dict:
         "subcategory": nrm.get("subcategory"),
         "on_offer": bool(nrm.get("on_offer")),
         "promo": nrm.get("promo"),
+        "promos": nrm.get("promos") or [],
         "prices": _prices_from(nrm["price"], store, mults),
         "image": nrm.get("image"),
         "unavailable": [],
@@ -4252,6 +4265,8 @@ def _apply_refresh(p: dict, store: str, n: dict, mults: dict) -> dict:
             out[k] = n[k]
     if "promo" in n:
         out["promo"] = n["promo"]
+    if "promos" in n:
+        out["promos"] = n["promos"]
     return out
 
 
@@ -5247,7 +5262,6 @@ async def startup():
     asyncio.create_task(_daily_refresh_loop())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
-    asyncio.create_task(_selftest_recipes())
 
 
 async def _daily_refresh_loop():
