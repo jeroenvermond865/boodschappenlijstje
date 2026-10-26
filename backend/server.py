@@ -3956,8 +3956,6 @@ def _pack_share(item_unit: str, pack: str, name: str = "", count: Optional[int] 
             m = re.search(r"(\d+)\s*(plakken|plakjes|st)\b", (pack or "").lower()) or re.search(r"(\d+)\s*(plakken|plakjes)\b", (name or "").lower())
             if m and 1 < int(m.group(1)) <= 100:
                 return 1 / int(m.group(1))
-            if count:
-                return 1 / count
             # Pak per gewicht: een plak kaas weegt zo'n 20 gram, een plak vleeswaren 15 gram (48+ is vet, geen aantal)
             w = _UNIT_RE.search((pack or "").lower())
             if w and w.group(3) not in ("ml", "cl", "l", "liter", "ltr"):
@@ -3967,6 +3965,10 @@ def _pack_share(item_unit: str, pack: str, name: str = "", count: Optional[int] 
                     25 if re.search(r"ontbijtkoek|brood|koek", n) else 15)
                 if grams > slice_g:
                     return slice_g / grams
+            # Meerdere pakjes in één (3 stuks): elk pakje heeft zo'n 10 plakken
+            n = _pack_count(pack) or count
+            if n and n > 1:
+                return _PART_OF_PACK[u] / n
         return _PART_OF_PACK[u]
     return 1.0
 
@@ -7414,7 +7416,10 @@ async def import_store_products(data: StoreImportInput, user: dict = Depends(get
 # Later toegevoegd: kruiden en bakproducten vielen bij AH buiten de algemene zoektermen (geen kaneel of kerrie)
 EXTRA_TERMS = ["kaneel", "kerrie", "paprikapoeder", "komijn", "oregano", "basilicum", "tijm", "rozemarijn", "nootmuskaat", "gember",
                "kurkuma", "chilipoeder", "knoflookpoeder", "uienpoeder", "laurier", "peterselie", "dille", "specerijen", "vanille",
-               "bakpoeder", "gist", "maizena", "paneermeel", "kokosmelk", "sojasaus", "ketjap", "rijstazijn", "sesam", "garam masala"]
+               "bakpoeder", "gist", "maizena", "paneermeel", "kokosmelk", "sojasaus", "ketjap", "rijstazijn", "sesam", "garam masala",
+               # Bakkerij: bij "brood" alleen haal je niet alles op
+               "krentenbollen", "krentenbol", "volkoren brood", "volkorenbrood", "bruin brood", "witbrood", "roggebrood",
+               "bolletjes", "brood vers", "bake off", "afbakbrood", "stokbrood", "beschuit", "rozijnenbrood", "suikerbrood"]
 DIRK_ALL_TERMS = [
     "aardappel", "groente", "fruit", "appel", "banaan", "peer", "sinaasappel", "druiven", "aardbei", "citroen",
     "tomaat", "komkommer", "paprika", "ui", "knoflook", "wortel", "sla", "spinazie", "broccoli", "bloemkool",
