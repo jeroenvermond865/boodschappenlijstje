@@ -2258,6 +2258,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
     shop_store = None if _for_compare else camp.get("shop_store")
     split_stores = [x for x in camp.get("split_stores") or [] if x in active] if shop_store == "split" else []
     item_stores = (camp.get("item_stores") or {}) if split_stores else {}
+    item_was = (camp.get("item_was") or {}) if split_stores else {}
     if shop_store and shop_store not in active and not split_stores:
         shop_store = None
 
@@ -2375,6 +2376,9 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
                     it.update({"packs": packs, "pack_unit": p.get("unit") or "", "price": round(packs * price, 2), "pack_price": price,
                                "product": p.get("name"), "image": p.get("image"), "better": plan.get("better")})
                     total += packs * price
+                    w = item_was.get(_ikey(_norm_text(it.get("name") or "")))
+                    if w and w.get("store") != b["store"] and (w.get("price") or 0) > it["price"]:
+                        it["was"] = w  # gesplitst: hier goedkoper dan bij de andere winkel
                     # Korting door een aanbieding: normale prijs min wat je nu betaalt
                     off = _promo_saving(p, price, packs)
                     if off > 0:
@@ -6048,7 +6052,8 @@ _FORMS = ("poeder", "korrels", "vlokken", "stokjes", "stokje", "snippers", "blaa
 _NONFOOD = {"Huishoud & huisdieren", "Kind & drogisterij", "Non food"}
 _NONFOOD_RE = re.compile(r"drogist|huishoud|huisdier|baby|verzorging|cosmetica|non food|shampoo|douche|zeep|tandpasta|wasmiddel|afwas|"
                          r"deodorant|bodylotion|conditioner|wc |toilet|schoonmaak|kattenvoer|hondenvoer|luier|parfum|scheer|haar|navulling|douchegel|handzeep|"
-                         r"palmolive|nivea|dove |andrelon|robijn|dreft|ariel|persil|sanex|zwitsal|rexona|glorix|cillit|vanish|lenor|page |zewa")
+                         r"palmolive|nivea|dove |andrelon|robijn|dreft|ariel|persil|sanex|zwitsal|rexona|glorix|cillit|vanish|lenor|page |zewa|"
+                         r"bloemen|boeket|\bbos\b.*(tulp|roos|rozen|bloem)|tulpen|rozen\b|plant\b|planten|potgrond|cadeau|geschenk|kaart\b|vrolijkveld")
 _CANDY_RE = re.compile(r"\b(snoep|drop|winegum|spekjes|chips|koek|koekjes|chocolade|lolly|kauwgom)\b")
 # Bewerkte producten: "ciabatta" is geen ciabatta-cracker, "citroen" geen citroenkoek, "olijf" geen tapenade
 _PROCESSED = ("koek", "cracker", "tapenade", "azijn", "saus", "chips", "spread", "sap", "drank", "siroop", "thee", "snoep", "taart", "cake",
@@ -6056,7 +6061,8 @@ _PROCESSED = ("koek", "cracker", "tapenade", "azijn", "saus", "chips", "spread",
               "frisdrank", "bier", "radler", "likeur", "zeep", "geur", "poeder", "aroma", "pesto", "dip", "smeer", "mix", "kruiden", "biscuit",
               "kroket", "salami", "worst", "honing", "kogel", "zuurkool", "snack", "bonbon", "brandewijn", "jenever", "mayo", "ketchup", "jus",
               "bar", "vloeibaar", "braden", "focaccia", "brood", "margarine", "shake", "drink",
-              "olie", "skyr", "muffin", "viennetta", "feta")
+              "olie", "skyr", "muffin", "viennetta", "feta", "marmelade", "jam", "confiture", "compote", "moes", "gelei", "chutney",
+              "bonbons", "tompouce", "gebak", "bonbonniere")
 # Woorden die alleen iets over het product zeggen ("citroenen verpakt", "kaas plakken")
 _DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", "plakjes", "blokjes", "reepjes", "schijfjes", "zwart", "wit",
                 "rood", "groen", "geel", "bio", "biologisch", "biologische", "naturel", "kruimig", "vastkokend", "s", "m", "l", "xl", "kanjers",
@@ -6179,6 +6185,9 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     # "verse peterselie" is geen potje gedroogde kruiden
     if any(q in ("vers", "verse") for q in words) and (re.search(r"gedroogd|gemalen|strooibus", full) or brand_of(d) in _DRIED_BRANDS):
         pen += 4
+    # "Vrolijkveld pastel + prosecco": een cadeau met iets erbij, niet het product zelf
+    if " + " in (d.get("name") or "") and not any(q in ("pakket", "set", "combi") for q in words):
+        pen += 6
     # "pizza" is een gewone pizza, geen mini pizza's
     if re.search(r"\bmini", d["_norm"]) and not any(q.startswith("mini") for q in words):
         pen += 3
@@ -6810,25 +6819,28 @@ async def camp_shop_store(camp_id: str, data: ShopStoreInput, user: dict = Depen
         raise HTTPException(status_code=404, detail="Kamp niet gevonden")
     split = [x for x in dict.fromkeys(data.split) if x in COMPARE_STORES]
     if not data.store and len(split) < 2:
-        await db.camps.update_one({"camp_id": camp_id}, {"$unset": {"shop_store": "", "store_products": "", "split_stores": "", "item_stores": ""}})
+        await db.camps.update_one({"camp_id": camp_id}, {"$unset": {"shop_store": "", "store_products": "", "split_stores": "", "item_stores": "", "item_was": ""}})
         return {"shop_store": None}
     if len(split) >= 2:
         compare, pending = await _camp_compare(c, user)
         if not compare:
             raise HTTPException(status_code=409, detail="De vergelijking wordt nog uitgerekend, probeer het zo nog eens")
         per = [x for x in compare if x["store"] in split]
-        prods, stores = {}, {}
+        prods, stores, was = {}, {}, {}
         for k in range(len(per[0]["items"]) if per else 0):
             opts = [(x["items"][k]["price"], x["store"], x["items"][k]) for x in per if k < len(x["items"]) and x["items"][k].get("price") is not None]
             if not opts:
                 continue
-            _, st, it = min(opts, key=lambda o: o[0])
+            opts.sort(key=lambda o: o[0])
+            _, st, it = opts[0]
             key = _ikey(_norm_text(it["name"]))
             stores[key] = st
+            if len(opts) > 1 and opts[1][0] > opts[0][0]:
+                was[key] = {"store": opts[1][1], "price": round(opts[1][0], 2)}  # "bij Jumbo was het € 2,49"
             if it.get("product_id"):
                 prods[key] = it["product_id"]
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {"shop_store": "split", "split_stores": split, "item_stores": stores,
-                                                                   "store_products": prods}})
+                                                                   "item_was": was, "store_products": prods}})
         return {"shop_store": "split", "split_stores": split}
     if data.store not in COMPARE_STORES:
         raise HTTPException(status_code=400, detail="Onbekende winkel")
@@ -9454,10 +9466,50 @@ async def startup():
         asyncio.create_task(_import_extra_terms())
     else:
         logger.info("Testsite: achtergrondtaken staan uit")
+        asyncio.create_task(_probe_ah_kies())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_basic_dish_info_loop())
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_log_product_counts())
+
+
+async def _probe_ah_kies() -> None:
+    # Tijdelijk (testsite): zoeken hoe AH de producten van "Kies producten" bij een recept doorgeeft
+    await asyncio.sleep(30)
+    rid = 1188190
+    qs = ["{recipeProduct}", "{recipeShop}", "{recipeIngredient}", "{productSuggestion}", "{recipeBasket}", "{shoppableRecipe}",
+          f"{{recipe(id:{rid}){{product}}}}", f"{{recipe(id:{rid}){{shop}}}}", f"{{recipe(id:{rid}){{ingredientProduct}}}}",
+          f"{{recipe(id:{rid}){{ingredients{{product}}}}}}", f"{{recipe(id:{rid}){{ingredients{{shop}}}}}}"]
+    hdr = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+           "Content-Type": "application/json", "client-name": "ah-recipes", "client-version": "1.0", "Origin": "https://www.ah.nl",
+           "Referer": f"https://www.ah.nl/allerhande/recept/R-R{rid}/x"}
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
+        tok = None
+        try:
+            tok = await _ah_token(c)
+        except Exception as e:
+            logger.info("AH-kies token %r", e)
+        for url, extra in ((AH_GQL, {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP", "User-Agent": "Appie/8.22.3"}),
+                           ("https://www.ah.nl/gql", {})):
+            for q in qs:
+                try:
+                    r = await c.post(url, json={"query": q}, headers={**hdr, **extra})
+                    logger.info("AH-kies %s %s %s -> %s", url, r.status_code, q, r.text[:700])
+                except Exception as e:
+                    logger.info("AH-kies %s %s fout %r", url, q, e)
+        for url in (f"https://www.ah.nl/allerhande/api/recipe/{rid}/products", f"https://www.ah.nl/allerhande/api/recipes/{rid}/shoppable",
+                    f"https://api.ah.nl/mobile-services/recipes/v2/{rid}", f"https://api.ah.nl/mobile-services/recipes/v1/{rid}/products",
+                    f"https://www.ah.nl/allerhande/recept/R-R{rid}/oranje-spritz-granita"):
+            try:
+                r = await c.get(url, headers={**hdr, **({"Authorization": f"Bearer {tok}"} if "api.ah.nl" in url and tok else {})})
+                body = r.text
+                k = max(body.find("productSuggest"), body.find("shoppable"), body.find("Kies producten"))
+                logger.info("AH-kies GET %s %s len=%d -> %s", url, r.status_code, len(body), body[max(0, k - 300):k + 700] if k >= 0 else body[:400])
+                if "R-R" in url:
+                    for w in ("gql", "operationName", "productSuggestions", "shoppingList", "ingredientProducts", "recipeProducts"):
+                        logger.info("AH-kies html %s: %s", w, [body[m.start() - 80:m.start() + 160] for m in re.finditer(w, body)][:3])
+            except Exception as e:
+                logger.info("AH-kies GET %s fout %r", url, e)
 
 
 async def _log_product_counts(wait: int = 15):
