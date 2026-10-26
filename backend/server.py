@@ -1427,7 +1427,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     dishes = [d for d in dishes if d["dish_id"] not in exclude and d.get("ingredients")]
     pids = list({i["product_id"] for d in dishes for i in d["ingredients"] if i.get("product_id")})
     on_promo = set()
-    async for p in db.products.find({"product_id": {"$in": pids}, "deleted_at": None}, {"_id": 0}):
+    async for p in db.products.find(_live({"product_id": {"$in": pids}}), {"_id": 0}):
         if _hist_now(p)[1] is not None:
             on_promo.add(p["product_id"])
 
@@ -1732,7 +1732,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
             if it.get("product_id") in swaps:
                 it["product_id"] = swaps[it["product_id"]]
     pids = {it.get("product_id") for b in by_store + general + [x for d in per_day for x in d["by_store"]] for it in b["flat"] if it.get("product_id")}
-    prods = {p["product_id"]: p for p in await db.products.find({"product_id": {"$in": list(pids)}}, {"_id": 0}).to_list(5000)} if pids else {}
+    prods = {p["product_id"]: p for p in await db.products.find(_live({"product_id": {"$in": list(pids)}}), {"_id": 0}).to_list(5000)} if pids else {}
     piece_ids = {it.get("product_id") for b in by_store + general for it in b["flat"] if (it.get("unit") or "").lower().strip() in ("", "stuks", "stuk", "st")}
     await _learn_pack_counts([prods[x] for x in piece_ids if x in prods], 4)
 
@@ -1964,13 +1964,13 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
     for ex in camp.get("general", []):
         if ex.get("product_id"):
             prod_ids.add(ex["product_id"])
-    prod_docs = await db.products.find({"product_id": {"$in": list(prod_ids)}}, {"_id": 0}).to_list(5000)
+    prod_docs = await db.products.find(_live({"product_id": {"$in": list(prod_ids)}}), {"_id": 0}).to_list(5000)
     products_by_id = {p["product_id"]: p for p in prod_docs}
 
     swaps = camp.get("product_swaps") or {}
     extra_ids = [v for v in swaps.values() if v not in products_by_id]
     if extra_ids:
-        products_by_id.update({p["product_id"]: p for p in await db.products.find({"product_id": {"$in": extra_ids}}, {"_id": 0}).to_list(500)})
+        products_by_id.update({p["product_id"]: p for p in await db.products.find(_live({"product_id": {"$in": extra_ids}}), {"_id": 0}).to_list(500)})
 
     def unit_price(item: dict, store: str) -> float:
         # Prijs per eenheid van het ingrediënt: 150 gram van een pak van 500 gram is 0,3 pak, niet 150 pakken
@@ -2531,6 +2531,30 @@ def _prep_product(d: dict, known_brands: list) -> None:
     d["_up"] = _unit_value(price, d.get("unit") or "")
 
 
+def _live(q: dict) -> dict:
+    # Alleen producten die nog verkocht worden: wat de winkel niet meer heeft, laten we gewoon niet meer zien
+    cutoff = now_utc() - timedelta(days=ASSORTMENT_GRACE_DAYS)
+    return {**q, "deleted_at": None, "$or": [{"missing_since": None}, {"missing_since": {"$gt": cutoff}}]}
+
+
+_HOUSE_BRAND = {"Albert Heijn": "AH", "Jumbo": "Jumbo", "Dirk": "Dirk"}
+
+
+def _fill_brands(docs: list) -> None:
+    # Producten zonder merk: eerst hetzelfde product (barcode) bij een andere winkel, anders is los groente en fruit
+    # (en wat Dirk zonder merk verkoopt) gewoon het huismerk van de winkel
+    by_ean = {d["barcode"]: d["brand"] for d in docs if d.get("barcode") and (d.get("brand") or "").strip()}
+    for d in docs:
+        if (d.get("brand") or "").strip():
+            continue
+        b = by_ean.get(d.get("barcode")) if d.get("barcode") else None
+        if not b and d.get("_src") in _HOUSE_BRAND and (d["_src"] == "Dirk" or d.get("aisle") == "Aardappelen, groente & fruit"):
+            b = _HOUSE_BRAND[d["_src"]]
+        if b:
+            d["brand"] = sys.intern(b)
+            d["_bio"] = d.get("_bio") or bool(_BIO_RE.search(_norm_text(b)))
+
+
 async def _load_products() -> None:
     try:
         cutoff = now_utc() - timedelta(days=ASSORTMENT_GRACE_DAYS)
@@ -2565,6 +2589,7 @@ async def _load_products() -> None:
         _search_cache.clear()
         import gc
         gc.collect()  # de vorige lijst meteen opruimen, anders staan er twee in het geheugen
+        _fill_brands(docs)
         missing: Dict[str, list] = {}
         for d in docs:
             if not d.get("brand"):
@@ -2893,7 +2918,7 @@ async def pack_plans(body: PackPlanInput, user: dict = Depends(get_current_user)
     await _global_products()
     by_pid = _product_cache.get("by_pid") or {}
     missing = [i.product_id for i in body.items if i.product_id not in by_pid]
-    extra = {d["product_id"]: d for d in await db.products.find({"product_id": {"$in": missing}}, {"_id": 0}).to_list(200)} if missing else {}
+    extra = {d["product_id"]: d for d in await db.products.find(_live({"product_id": {"$in": missing}}), {"_id": 0}).to_list(200)} if missing else {}
     pieces = [by_pid.get(i.product_id) or extra.get(i.product_id) for i in body.items if (i.unit or "").lower().strip() in ("", "stuks", "stuk", "st") and not i.packs]
     await _learn_pack_counts([p for p in pieces if p])
 
@@ -7157,7 +7182,7 @@ def _alert_public(alert: dict, prod: Optional[dict]) -> dict:
 async def list_price_alerts(user: dict = Depends(get_current_user)):
     await require_premium(user)
     alerts = await db.price_alerts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
-    prods = {p["product_id"]: p async for p in db.products.find({"product_id": {"$in": [a["product_id"] for a in alerts]}, "deleted_at": None}, {"_id": 0})}
+    prods = {p["product_id"]: p async for p in db.products.find(_live({"product_id": {"$in": [a["product_id"] for a in alerts]}}), {"_id": 0})}
     out = [_alert_public(a, prods.get(a["product_id"])) for a in alerts]
     out.sort(key=lambda x: not x["hit"])
     return {"alerts": out}
@@ -7202,7 +7227,7 @@ async def _check_price_alerts() -> int:
     alerts = await db.price_alerts.find({}, {"_id": 0}).to_list(None)
     if not alerts:
         return 0
-    prods = {p["product_id"]: p async for p in db.products.find({"product_id": {"$in": list({a["product_id"] for a in alerts})}, "deleted_at": None}, {"_id": 0})}
+    prods = {p["product_id"]: p async for p in db.products.find(_live({"product_id": {"$in": list({a["product_id"] for a in alerts})}}), {"_id": 0})}
     for a in alerts:
         prod = prods.get(a["product_id"])
         st = _alert_state(a, prod)
