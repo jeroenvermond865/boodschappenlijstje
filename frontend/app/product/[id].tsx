@@ -11,6 +11,7 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { euro } from "@/src/search";
 import { PriceAlertCard, PriceHistory } from "@/src/PriceTools";
 import { PremiumLock, usePremium } from "@/src/premium";
+import { sliceInfo } from "@/src/slices";
 import { AddProductButtons } from "@/src/AddProductSheet";
 import { BarcodeLink } from "@/src/ShopSwap";
 import type { Product, Promo } from "@/app/(tabs)/products";
@@ -110,6 +111,19 @@ export default function ProductScreen() {
               {p.subcategory ? ` › ${p.subcategory}` : ""}
             </Text>
           </View>
+
+          {(() => {
+            const si = sliceInfo(p.name, p.unit);
+            return si ? (
+              <View style={styles.sliceCard}>
+                <Icon name="bread-slice-outline" size={20} color={colors.brandPrimary} />
+                <Text style={styles.sliceText}>
+                  Hier snijd je ongeveer {si.slices} plakjes van ({si.kind === "kaas" ? "20" : "15"} gram per plakje). Genoeg voor zo'n {si.sandwiches} broodjes met 1 plakje, of{" "}
+                  {Math.floor(si.slices / 2)} met 2 plakjes.
+                </Text>
+              </View>
+            ) : null;
+          })()}
 
           <View style={styles.priceRow}>
             {p.promo?.regular && p.promo.regular > (p.promo.price ?? p.price) ? (
@@ -417,4 +431,6 @@ const useStyles = makeStyles((colors) => ({
   extraLabel: { fontSize: 12, fontFamily: fonts.semibold, color: colors.muted },
   siteBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: colors.brandPrimary },
   siteText: { fontSize: 15, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  sliceCard: { flexDirection: "row", gap: 10, alignItems: "flex-start", backgroundColor: colors.surfaceSecondary, borderRadius: 14, padding: 12, borderWidth: 1, borderColor: colors.border },
+  sliceText: { flex: 1, fontSize: 13, lineHeight: 19, fontFamily: fonts.regular, color: colors.onSurfaceSecondary },
 }));

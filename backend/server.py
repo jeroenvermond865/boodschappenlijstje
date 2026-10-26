@@ -6369,11 +6369,24 @@ def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False)
 
 def _cheapest_good(pool: list, name: str, store: str) -> Optional[dict]:
     # Het best passende product; zijn er een paar even goede, dan de voordeligste per kilo of liter
-    hits = _best_matches(pool, name, 5, with_pen=True)
+    hits = _best_matches(pool, name, 12, with_pen=True)
     if not hits:
         return None
     top = hits[0][0]
     good = [d for pen, d in hits if pen <= top + 1.0]
+    # Alle woorden moeten kloppen: "halfvolle melk" is geen magere melk, "bruine bolletjes" geen soepbolletjes
+    want = [w for w in _alt_terms(re.sub(r"\([^)]*\)", " ", name), None).split() if len(w) >= 3 and w not in _PREPS]
+
+    def has_all(d):
+        n = d.get("_norm") or ""
+        return all(w in n or (len(w) > 4 and w[:-1] in n) or any(st in n for st in _stems(w) if len(st) >= 4) for w in want)
+    full = [d for pen, d in hits if pen <= top + 3.0 and has_all(d)]
+    if len(want) > 1 and full and not any(has_all(d) for d in good):
+        good = full
+    elif len(want) > 1:
+        good = [d for d in good if has_all(d)] or good
+    if good[0] is not hits[0][1]:
+        hits = [(0, good[0])] + hits
     if len(good) < 2:
         return hits[0][1]
 
@@ -6525,6 +6538,13 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     # "verse peterselie" is geen potje gedroogde kruiden
     if any(q in ("vers", "verse") for q in words) and (re.search(r"gedroogd|gemalen|strooibus", full) or brand_of(d) in _DRIED_BRANDS):
         pen += 4
+    # Speciale soorten alleen als je erom vraagt: glutenvrij, lactosevrij, voor kinderen
+    if re.search(r"\b(glutenvrij|glutenvrije|lactosevrij|lactosevrije|suikervrij|suikervrije|kids|kinder\w*|baby\w*)\b", d["_norm"]) and not any(
+            re.search(r"glutenvrij|lactosevrij|suikervrij|kids|kind|baby", q) for q in words):
+        pen += 2
+    # Bakmix van Koopmans is geen brood
+    if (brand_of(d) == "koopmans" or d["_norm"].startswith("koopmans ")) and not any(q in ("mix", "bakmix", "meel", "bloem") for q in words):
+        pen += 6
     # "Vrolijkveld pastel + prosecco": een cadeau met iets erbij, niet het product zelf
     if " + " in (d.get("name") or "") and not any(q in ("pakket", "set", "combi") for q in words):
         pen += 6

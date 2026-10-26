@@ -14,6 +14,7 @@ import { api } from "@/src/api";
 import { cachedApi, offlineText } from "@/src/offline";
 import { BetterPack, PackBetter, packText } from "@/src/packs";
 import { ShopSwapSheet } from "@/src/ShopSwap";
+import { sliceInfo } from "@/src/slices";
 import { AISLE_ICONS, formatQty } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
@@ -679,6 +680,15 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
             {packText(item.packs, item.pack_unit)}
           </Text>
         ) : null}
+        {(() => {
+          // Stuk kaas of vleeswaren: hoeveel plakjes en broodjes
+          const si = item.product && item.pack_unit ? sliceInfo(item.product, item.pack_unit) : null;
+          return si && !checked ? (
+            <Text style={styles.itemPack} numberOfLines={2}>
+              ± {si.slices * (item.packs ?? 1)} plakjes{item.unit.startsWith("plak") ? `, je hebt er ${formatQty(item.qty)} nodig` : ""} · genoeg voor ± {si.sandwiches * (item.packs ?? 1)} broodjes
+            </Text>
+          ) : null;
+        })()}
         {item.choose && !checked ? (
           <Pressable onPress={() => setSwapOpen(true)} hitSlop={4} style={[styles.choosePill, item.choose === "auto" && styles.choosePillAuto]} testID={`item-choose-${item.name.toLowerCase()}`}>
             <Icon name={item.choose === "auto" ? "auto-fix" : "gesture-tap"} size={13} color={item.choose === "auto" ? colors.muted : colors.onBrandSecondary} />
