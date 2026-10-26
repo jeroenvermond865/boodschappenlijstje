@@ -182,19 +182,6 @@ export default function BudgetScreen() {
             </View>
           </View>
 
-          <View>
-            <Text style={styles.sectionLabel}>Producten</Text>
-            <View style={styles.card}>
-              {data.items.map((i, idx) => (
-                <View key={`${i.name}-${i.unit}`} style={[styles.row, idx < data.items.length - 1 && styles.rowBorder]}>
-                  <Text style={styles.rowName} numberOfLines={1}>
-                    {i.name} · {formatQty(i.qty)} {i.unit}
-                  </Text>
-                  <Text style={styles.rowCost}>{euro(i.cost)}</Text>
-                </View>
-              ))}
-            </View>
-          </View>
           </>
           ) : null}
         </ScrollView>

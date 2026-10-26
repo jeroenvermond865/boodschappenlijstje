@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Image, Platform, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -15,6 +15,7 @@ import { usesNativeTabs } from "@/src/navigation";
 import { euro } from "@/src/search";
 import { STORE_LABEL, type RecipeTile } from "@/src/OnlineRecipes";
 import { RestockCard } from "@/src/RestockCard";
+import { DayMenuSheet, MEAL_WORD, dayWord, type SoonDay } from "@/src/DayMenuSheet";
 import { SHORT, type CompareStore } from "@/src/CompareCard";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -30,7 +31,7 @@ type Home = {
     products: number;
     other_camps: number;
     start_date?: string | null;
-    soon?: { date: string; index: number; meals: { meal: string; dish_id: string; name: string; image?: string | null }[] }[];
+    soon?: SoonDay[];
     deals?: { name: string; product_id: string; product: string; store: string; image?: string | null; label?: string; price?: number | null; regular?: number }[];
   } | null;
   compare: CompareStore[] | null;
@@ -66,6 +67,7 @@ export default function HomeScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const [dayOpen, setDayOpen] = useState<number | null>(null);
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
 
   // Verversen (omlaag trekken): andere recepten en acties die nog steeds bij je passen
@@ -304,15 +306,15 @@ export default function HomeScreen() {
       ) : null}
 
       {data?.camp?.soon?.length ? (
-        // Wat eet je vandaag en morgen: één tik naar die dag in je lijstje
+        // Wat eet je vandaag en morgen: tik voor die dag (gerechten, bereiding en het lijstje van die dag)
         <View style={styles.pad}>
           <Text style={styles.soonTitle}>Op het menu</Text>
           <View style={{ flexDirection: "row", gap: 10 }}>
-            {data.camp.soon.map((d) => (
+            {data.camp.soon.slice(0, 2).map((d, k) => (
               <Pressable
                 key={d.date}
                 testID={`home-soon-${d.date}`}
-                onPress={() => router.push({ pathname: "/camp/[id]", params: { id: data.camp!.id, day: String(d.index) } })}
+                onPress={() => setDayOpen(k)}
                 style={[styles.soonCard, { flex: 1 }]}
               >
                 <View style={styles.soonHead}>
@@ -338,6 +340,9 @@ export default function HomeScreen() {
             ))}
           </View>
         </View>
+      ) : null}
+      {data?.camp?.soon?.length ? (
+        <DayMenuSheet campId={data.camp.id} days={data.camp.soon} start={dayOpen} onClose={() => setDayOpen(null)} />
       ) : null}
       {data?.camp?.deals?.length ? (
         // Compact: wat op je lijstje staat en nu in de aanbieding is
@@ -370,18 +375,6 @@ export default function HomeScreen() {
       <AdSlot place="home" />
     </ScrollView>
   );
-}
-
-const MEAL_WORD: Record<string, string> = { ontbijt: "Ontbijt", lunch: "Lunch", avondeten: "Avondeten", snacks: "Tussendoor" };
-
-function dayWord(iso: string) {
-  const d = new Date(`${iso}T12:00:00`);
-  const t = new Date();
-  t.setHours(12, 0, 0, 0);
-  const diff = Math.round((d.getTime() - t.getTime()) / 86400000);
-  if (diff === 0) return "Vandaag";
-  if (diff === 1) return "Morgen";
-  return d.toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
 }
 
 function Stat({ n, label }: { n: number; label: string }) {

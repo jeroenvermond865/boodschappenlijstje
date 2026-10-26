@@ -5,6 +5,16 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-26-s",
+    date: "26 oktober 2026",
+    title: "Dag-menu en rustiger budget",
+    changes: [
+      { kind: "nieuw", text: "Tik op Home bij 'Op het menu' op een dag: je ziet de gerechten van die dag met ingrediënten en bereiding, en met één knop het boodschappenlijstje van alleen die dag, op looproute om af te vinken." },
+      { kind: "beter", text: "Per dag in je boodschappenlijst staat nu per afdeling, net als het totaal." },
+      { kind: "beter", text: "Budget: geen lange lijst met losse producten meer (die zie je in je boodschappenlijst). Per dag laat nu zien wat je lijstje van die dag kost." },
+    ],
+  },
+  {
     id: "2026-10-26-r",
     date: "26 oktober 2026",
     title: "Echte PDF en product als venster",

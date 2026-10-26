@@ -44,10 +44,12 @@ export default function ShoppingScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const qc = useQueryClient();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, day } = useLocalSearchParams<{ id: string; day?: string }>();
   const router = useRouter();
 
-  const [tab, setTab] = useState<"total" | "perday">("total");
+  // Vanaf "Op het menu": meteen alleen het lijstje van die dag, op looproute
+  const [onlyDay, setOnlyDay] = useState<number | null>(day != null && day !== "" && !isNaN(Number(day)) ? Number(day) : null);
+  const [tab, setTab] = useState<"total" | "perday">(onlyDay != null ? "perday" : "total");
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [shareOpen, setShareOpen] = useState(false);
   const [onlyOpen, setOnlyOpen] = useState(false);
@@ -584,37 +586,53 @@ export default function ShoppingScreen() {
                   ))}
                 </View>
               ))
-            : (data?.per_day ?? []).map((d) => (
-                <View key={d.index} style={styles.dayBlock}>
-                  <View style={styles.dayHeader}>
-                    <Text style={styles.dayTitle}>Dag {d.index + 1}</Text>
-                    <Text style={styles.dayMeta}>
-                      {d.adults} volw · {d.children} kind
-                    </Text>
-                  </View>
-                  {d.by_store.length === 0 ? (
-                    <Text style={styles.emptyDay}>Geen producten voor deze dag</Text>
-                  ) : (
-                    d.by_store.map((b) => (
-                      <View key={`${d.index}-${b.store}`} style={{ gap: 8 }}>
-                        {multi ? <Text style={styles.dayStore}>{b.store}</Text> : null}
-                        <View style={styles.card}>
-                          {b.flat.map((i, idx) => (
-                            <ItemRow
-                              key={`day${d.index}-${key(b.store, i)}`}
-                              item={i}
-                              checked={shown.has(`day${d.index}-${key(b.store, i)}`)}
-                              onToggle={() => toggle(`day${d.index}-${key(b.store, i)}`)}
-                              last={idx === b.flat.length - 1}
-                              store={b.store}
-                            />
-                          ))}
+            : (
+                <>
+                  {onlyDay != null ? (
+                    <Pressable onPress={() => setOnlyDay(null)} style={styles.onlyDayBar} testID="only-day-bar">
+                      <Icon name="calendar-today" size={18} color={colors.brandPrimary} />
+                      <Text style={styles.onlyDayText}>Alleen dag {onlyDay + 1}</Text>
+                      <Text style={styles.onlyDayLink}>Alle dagen tonen</Text>
+                    </Pressable>
+                  ) : null}
+                  {onlyDay != null && !(data?.per_day ?? []).some((d) => d.index === onlyDay) ? (
+                    <Text style={styles.emptyDay}>Voor deze dag staat "Boodschappen deze dag" uit, of alles wordt op een eerdere dag al gekocht.</Text>
+                  ) : null}
+                  {(data?.per_day ?? [])
+                    .filter((d) => onlyDay == null || d.index === onlyDay)
+                    .map((d) => (
+                      <View key={d.index} style={styles.dayBlock}>
+                        <View style={styles.dayHeader}>
+                          <Text style={styles.dayTitle}>Dag {d.index + 1}</Text>
+                          <Text style={styles.dayMeta}>
+                            {d.adults} volw · {d.children} kind
+                          </Text>
                         </View>
+                        {d.by_store.length === 0 ? (
+                          <Text style={styles.emptyDay}>Geen producten voor deze dag</Text>
+                        ) : (
+                          // Per afdeling (en op jouw looproute), zodat je de dag in de winkel kunt aflopen en afvinken
+                          d.by_store.map((b) => (
+                            <View key={`${d.index}-${b.store}`} style={{ gap: 8 }}>
+                              {multi ? <Text style={styles.dayStore}>{b.store}</Text> : null}
+                              {(onRoute ? route.sort(b.store, b.grouped) : b.grouped).map((g) => (
+                                <AisleSection
+                                  key={`day${d.index}-${b.store}-${g.aisle}`}
+                                  store={`day${d.index}-${b.store}`}
+                                  shop={b.store}
+                                  aisle={g.aisle}
+                                  items={g.items}
+                                  checked={shown}
+                                  onToggle={toggle}
+                                />
+                              ))}
+                            </View>
+                          ))
+                        )}
                       </View>
-                    ))
-                  )}
-                </View>
-              ))}
+                    ))}
+                </>
+              )}
         </ScrollView>
       )}
       </View>
@@ -707,6 +725,7 @@ function ShareOption({ icon, label, onPress, testID }: { icon: string; label: st
 
 function AisleSection({
   store,
+  shop,
   aisle,
   items,
   checked,
@@ -714,6 +733,7 @@ function AisleSection({
   by,
 }: {
   store: string;
+  shop?: string; // de echte winkel als store een afvink-voorvoegsel heeft (per dag)
   aisle: string;
   items: Item[];
   checked: Set<string>;
@@ -738,7 +758,7 @@ function AisleSection({
             onToggle={() => onToggle(key(store, i))}
             last={idx === sorted.length - 1}
             by={checked.has(key(store, i)) ? by?.[key(store, i)] : undefined}
-            store={store}
+            store={shop ?? store}
           />
         ))}
       </View>
@@ -921,6 +941,9 @@ const useStyles = makeStyles((colors) => ({
   itemNameChecked: { color: colors.muted, textDecorationLine: "line-through" },
   itemQty: { fontSize: 15, fontFamily: fonts.semibold, color: colors.brandPrimary },
   itemQtyChecked: { color: colors.muted, textDecorationLine: "line-through" },
+  onlyDayBar: { flexDirection: "row", alignItems: "center", gap: 8, padding: 12, borderRadius: 14, backgroundColor: colors.brandTertiary },
+  onlyDayText: { flex: 1, fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface },
+  onlyDayLink: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
   dayBlock: { gap: 10 },
   dayHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 4 },
   dayTitle: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },

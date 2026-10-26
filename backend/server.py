@@ -1121,6 +1121,19 @@ async def list_dishes(user: dict = Depends(get_current_user)):
     return {"dishes": [dish_public(d) for d in docs]}
 
 
+@api_router.get("/dishes/{dish_id}")
+async def get_dish(dish_id: str, user: dict = Depends(get_current_user)):
+    # Eén gerecht (bijv. vanuit "Op het menu" op Home): standaard, van jezelf, of in een lijstje waar je bij hoort
+    doc = await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Gerecht niet gevonden")
+    if not doc.get("is_standard") and doc.get("owner_id") != user["user_id"]:
+        used = await db.camps.find_one({"$and": [camp_access_filter(user["user_id"]), {"$or": [{f"days.meals.{c}": dish_id} for c in MEAL_CATEGORIES]}]}, {"_id": 1})
+        if not used:
+            raise HTTPException(status_code=404, detail="Gerecht niet gevonden")
+    return dish_public(doc)
+
+
 @api_router.post("/dishes")
 async def create_dish(data: DishInput, user: dict = Depends(get_current_user)):
     if data.category not in MEAL_CATEGORIES:
@@ -3194,11 +3207,15 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
         sl = await shopping_list(camp_id, user)
         blocks = sl.get("by_store") or []
         list_total = sum(float(b.get("total") or 0) for b in blocks)
+        list_days = {d.get("index"): sum(float(b.get("total") or 0) for b in d.get("by_store") or []) for d in sl.get("per_day") or []}
     except HTTPException:
-        blocks, list_total = [], 0.0
+        blocks, list_total, list_days = [], 0.0, {}
     if list_total > 0:
-        f = list_total / total_cost if total_cost > 0 else 0.0
-        per_day = [{**d, "cost": round_qty(d["cost"] * f), "per_person": round_qty(d["per_person"] * f)} for d in per_day]
+        # Per dag: wat de lijst van die dag kost (per dag afgerond op hele pakken, dus herschaald naar het echte totaal)
+        days_sum = sum(list_days.values())
+        f = list_total / days_sum if days_sum > 0 else 0.0
+        per_day = [{**d, "cost": round_qty(list_days.get(d["index"], 0) * f),
+                    "per_person": round_qty(list_days.get(d["index"], 0) * f / d["people"]) if d["people"] else 0} for d in per_day]
         aisle_cost, store_cost, rows = {}, {}, []
         for b in blocks:
             st = b.get("store") or ""
@@ -8155,12 +8172,12 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
         if start:
             for k, day in enumerate(days):
                 dt = (start + timedelta(days=k)).date().isoformat()
-                if dt < today or len(soon) >= 2:
+                if dt < today or len(soon) >= 7:
                     continue
                 meals = [{"meal": cat, "dish_id": did, "name": dish_by[did].get("name"), "image": dish_by[did].get("photo") or (dish_by[did].get("source") or {}).get("image") or dish_by[did].get("image")}
                          for cat in MEAL_CATEGORIES for did in (day.get("meals") or {}).get(cat, []) if did in dish_by]
                 if meals:
-                    soon.append({"date": dt, "index": k, "meals": meals})
+                    soon.append({"date": dt, "index": k, "meals": meals, "in_list": bool(day.get("is_shopping_day"))})
         camp["soon"] = soon
         # Wat op je lijstje staat en nu in de aanbieding is (bij de winkel van dat product)
         by_pid = _product_cache.get("by_pid") or {}
