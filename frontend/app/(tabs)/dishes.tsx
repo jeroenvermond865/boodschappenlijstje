@@ -33,9 +33,9 @@ export type Dish = {
 export const isOwnDish = (d: Dish, me?: string) => !d.online && !d.camp_id && (d.is_standard || !d.owner_id || d.owner_id === me);
 
 const TABS = [
-  { key: "app", label: "App-gerechten" },
-  { key: "own", label: "Eigen" },
+  { key: "app", label: "App" },
   { key: "online", label: "Online" },
+  { key: "own", label: "Eigen" },
   { key: "packages", label: "Pakketten" },
 ] as const;
 
