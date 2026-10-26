@@ -478,6 +478,7 @@ class ExtraItem(BaseModel):
     product_id: Optional[str] = None
     store: Optional[str] = None
     meal: Optional[str] = None  # bij welke maaltijd van de dag (ontbijt, lunch, ...); leeg = los voor de dag
+    auto: bool = False  # door "menu automatisch invullen" gezet (brood met beleg); wordt bij opnieuw invullen vervangen
 
 
 class DayInput(BaseModel):
@@ -487,6 +488,7 @@ class DayInput(BaseModel):
     meals: Dict[str, List[str]] = Field(default_factory=dict)
     extras: List[ExtraItem] = Field(default_factory=list)
     leftovers: Dict[str, int] = Field(default_factory=dict)  # maaltijd -> dag waarop je dit al kookte (restje)
+    meal_names: Dict[str, str] = Field(default_factory=dict)  # maaltijd -> naam voor losse producten ("Brood met kaas en jam")
 
 
 class CampCreate(BaseModel):
@@ -1337,6 +1339,7 @@ def _build_days(day_inputs) -> list:
             "meals": meals,
             "extras": [e.model_dump() for e in d.extras],
             "leftovers": {c: v for c, v in (d.leftovers or {}).items() if c in MEAL_CATEGORIES and 0 <= v < idx},
+            "meal_names": {c: v[:80] for c, v in (d.meal_names or {}).items() if c in MEAL_CATEGORIES and v},
         })
     return days
 
@@ -1554,7 +1557,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
 
     def replaced(idx, day, cat):
         # Wordt deze maaltijd nu (opnieuw) ingevuld?
-        return cat_on(day.get("index", idx), cat) and (only_days is None or day.get("index", idx) in only_days) and (data.overwrite or not (day.get("meals") or {}).get(cat))
+        return cat_on(day.get("index", idx), cat) and (only_days is None or day.get("index", idx) in only_days) and (data.overwrite or not _meal_filled(day, cat))
     # Wat blijft staan in dit lijstje: dat liever niet nog eens kiezen (wat we nu vervangen telt niet mee)
     keep = {did for idx, day in enumerate(days_all) for cat, ids in (day.get("meals") or {}).items()
             if not replaced(idx, day, cat) for did in ids}
@@ -1657,6 +1660,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         return s + random.random() * 0.9  # bij gelijke stand wat afwisseling
 
     used = set(keep)
+    bread_n: Dict[str, int] = {}  # welk beleg is aan de beurt (per maaltijd)
     filled, promo_dishes, twice = 0, set(), 0
     days = camp.get("days", [])
     only = set(data.days) if data.days else None
@@ -1677,13 +1681,16 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
             if (only is not None and day.get("index", idx) not in only) or not cat_on(day.get("index", idx), cat):
                 continue
             meals = day.setdefault("meals", {})
-            if meals.get(cat) and not data.overwrite:
+            if _meal_filled(day, cat) and not data.overwrite:
                 prev = None
                 continue
             di = day.get("index", idx)
             left = day.setdefault("leftovers", {})
             left.pop(cat, None)
-            if data.cook_twice and small and cat in ("lunch", "avondeten") and prev and prev[0] == di - 1:
+            # Wat het menu eerder als losse producten zette (brood met beleg) gaat eruit
+            day["extras"] = [e for e in day.get("extras") or [] if not (e.get("auto") and e.get("meal") == cat)]
+            (day.get("meal_names") or {}).pop(cat, None)
+            if data.cook_twice and small and cat in ("lunch", "avondeten") and prev and prev[0] == di - 1 and not prev[1].get("bread"):
                 # Restje van gisteren: zelfde gerecht, niets extra kopen
                 meals[cat] = [prev[1]["dish_id"]]
                 left[cat] = prev[0]
@@ -1692,13 +1699,23 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
                 twice += 1
                 continue
             # Eerst wat nog niet in het lijstje staat, daarna pas herhalen (nooit één gerecht voor alle dagen als er meer zijn)
-            unused = [d for d in pool if d["dish_id"] not in used]
+            # Brood met beleg mag vaker, maar niet twee dagen achter elkaar
+            unused = [d for d in pool if (d.get("bread") and not (prev and prev[1].get("bread"))) or d["dish_id"] not in used]
             if unused:
                 cand = unused[:6]
                 pick = max(cand, key=lambda d: overlap(d) * 0.8 - cand.index(d) * 0.3) if small else cand[0]
             else:
                 pick = pool[k % len(pool)]
                 k += 1
+            if pick.get("bread"):
+                # Geen apart gerecht, maar brood, boter en wisselend beleg als losse producten bij deze maaltijd
+                bread_n[cat] = bread_n.get(cat, 0)
+                names = _bread_meal(day, cat, pick, picks, avoid, bread_n)
+                meals[cat] = []
+                day.setdefault("meal_names", {})[cat] = names
+                prev = (di, pick)
+                filled += 1
+                continue
             meals[cat] = [pick["dish_id"]]
             used.add(pick["dish_id"])
             chosen_pids.update(i.get("product_id") for i in pick["ingredients"] if i.get("product_id"))
@@ -1710,6 +1727,31 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {"days": days}})
     updated = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0})
     return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes), "pool": len(dishes), "added_online": added_online, "twice": twice}
+
+
+def _meal_filled(day: dict, cat: str) -> bool:
+    # Al iets gekozen voor deze maaltijd: een gerecht of losse producten
+    return bool((day.get("meals") or {}).get(cat)) or any(e.get("meal") == cat for e in day.get("extras") or [])
+
+
+def _bread_meal(day: dict, cat: str, dish: dict, picks: set, avoid: list, counter: dict) -> str:
+    # Brood met beleg als losse producten bij de maaltijd; elke keer twee andere soorten beleg
+    a, c = day.get("adults", 0), day.get("children", 0)
+    tops = [t for t in _TOPPINGS.get(cat) or _TOPPINGS["ontbijt"]
+            if not any(w in _norm_text(t[0]) for w in avoid)
+            and not (picks & {"vega", "vegan"} and _MEAT_RE.search(_norm_text(t[0])))
+            and not ("vegan" in picks and not ("vega" in picks) and t[5] in ("kaas", "smeerkaas", "hagelslag", "chocopasta", "ei"))]
+    chosen = [tops[(counter[cat] + k) % len(tops)] for k in range(min(2, len(tops)))] if tops else []
+    counter[cat] += 2
+    items = [(i["name"], i.get("unit") or "stuks", i.get("qty_adult") or 0, i.get("qty_child") or 0, i.get("aisle") or "Overig")
+             for i in dish.get("ingredients") or []] + [t[:5] for t in chosen]
+    extras = day.setdefault("extras", [])
+    for name, unit, qa, qc, aisle in items:
+        qty = round_qty(qa * a + qc * c)
+        if qty > 0:
+            extras.append({"name": name, "unit": unit, "qty": qty, "aisle": aisle, "product_id": None, "store": None, "meal": cat, "auto": True})
+    labels = [t[5] for t in chosen]
+    return "Brood met " + " en ".join(labels) if labels else "Brood met beleg"
 
 
 MENU_MAX_DIFFERENT = 14  # zoveel verschillende gerechten per maaltijd; bij langere activiteiten komen ze na twee weken terug
@@ -6848,6 +6890,25 @@ class SuggestIn(BaseModel):
     ingredients: List[Dict] = []
 
 
+class DishMatchInput(BaseModel):
+    names: List[str] = []
+
+
+@api_router.post("/dishes/match")
+async def dish_match(data: DishMatchInput, user: dict = Depends(get_current_user)):
+    # Ingrediënten zonder product (bijv. app-gerechten): meteen het best passende product in jouw winkel
+    store = user.get("store") if user.get("store") in COMPARE_STORES else DEFAULT_STORE
+    docs = await _global_products()
+    names = [n for n in data.names[:40]]
+
+    def run():
+        pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
+        return [_cheapest_good(pool, n, store) if n.strip() and pool else None for n in names]
+    hits = await asyncio.to_thread(run)
+    favs = set(user.get("favorite_products") or [])
+    return {"matches": [product_public(_clean(d), store, user["user_id"], favs) if d else None for d in hits]}
+
+
 @api_router.post("/dishes/suggestions")
 async def dish_suggestions(data: SuggestIn, user: dict = Depends(get_current_user)):
     # Per gekoppeld ingrediënt: is hetzelfde soort product bij een andere winkel duidelijk goedkoper?
@@ -8826,18 +8887,15 @@ _AF, _AV, _AB, _AZ, _AM, _AD = "Aardappelen, groente & fruit", "Voorraadkast", "
 _BROOD = ("Volkoren brood", "gram", 105, 70, _AB)  # 3 of 2 boterhammen
 _BOTER = ("Roomboter", "gram", 10, 7, _AZ)
 BASIC_DISHES = [
-    ("Boterham met kaas", "ontbijt", [_BROOD, _BOTER, ("Jong belegen kaas plakken", "plak", 2, 1, _AZ)]),
-    ("Boterham met hagelslag", "ontbijt", [_BROOD, _BOTER, ("Hagelslag melk", "gram", 25, 20, _AB)]),
-    ("Boterham met chocoladepasta", "ontbijt", [_BROOD, ("Chocoladepasta", "gram", 25, 20, _AB)]),
-    ("Boterham met pindakaas", "ontbijt", [_BROOD, ("Pindakaas", "gram", 20, 15, _AB)]),
-    ("Boterham met jam", "ontbijt", [_BROOD, _BOTER, ("Aardbeienjam", "gram", 25, 20, _AB)]),
+    # Brood met beleg: het menu zet brood, boter en wisselend beleg als losse producten bij de maaltijd (zie _bread_meal)
+    ("Brood met beleg", "ontbijt", [_BROOD, _BOTER]),
     ("Yoghurt met muesli", "ontbijt", [("Halfvolle yoghurt", "ml", 200, 150, _AZ), ("Muesli", "gram", 50, 35, _AV)]),
     ("Havermout met banaan", "ontbijt", [("Havermout", "gram", 50, 35, _AV), ("Halfvolle melk", "ml", 250, 200, _AZ), ("Bananen", "stuks", 0.5, 0.5, _AF)]),
     ("Krentenbollen met boter", "ontbijt", [("Krentenbollen", "stuks", 2, 1, _AB), _BOTER]),
     ("Cornflakes met melk", "ontbijt", [("Cornflakes", "gram", 40, 30, _AV), ("Halfvolle melk", "ml", 200, 150, _AZ)]),
     ("Broodje ham-kaas", "lunch", [("Bruine bolletjes", "stuks", 2, 1, _AB), _BOTER, ("Achterham", "plak", 2, 1, _AM),
                                    ("Jong belegen kaas plakken", "plak", 2, 1, _AZ)]),
-    ("Boterham met kipfilet", "lunch", [_BROOD, _BOTER, ("Gerookte kipfilet", "plak", 3, 2, _AM)]),
+    ("Brood met beleg", "lunch", [_BROOD, _BOTER]),
     ("Tosti ham-kaas", "lunch", [("Volkoren brood", "gram", 70, 70, _AB), ("Achterham", "plak", 1, 1, _AM),
                                  ("Jong belegen kaas plakken", "plak", 2, 1, _AZ)]),
     ("Broodje gezond", "lunch", [("Bruine bolletjes", "stuks", 2, 1, _AB), ("Jong belegen kaas plakken", "plak", 2, 1, _AZ),
@@ -8883,6 +8941,19 @@ BASIC_DISHES = [
     ("Groentelasagne", "avondeten", [("Lasagnebladen", "gram", 75, 50, _AV), ("Pastasaus", "ml", 150, 100, _AV),
                                      ("Courgette", "stuks", 0.3, 0.2, _AF), ("Geraspte kaas", "gram", 40, 25, _AZ)]),
 ]
+
+
+# Beleg dat per dag wisselt (2 soorten per keer): (product, eenheid, per volwassene, per kind, afdeling, kort)
+_TOPPINGS = {
+    "ontbijt": [("Jong belegen kaas plakken", "plak", 1, 1, _AZ, "kaas"), ("Hagelslag melk", "gram", 15, 15, _AB, "hagelslag"),
+                ("Aardbeienjam", "gram", 15, 15, _AB, "jam"), ("Chocoladepasta", "gram", 15, 15, _AB, "chocopasta"),
+                ("Pindakaas", "gram", 15, 10, _AB, "pindakaas"), ("Smeerkaas", "gram", 15, 10, _AZ, "smeerkaas")],
+    "lunch": [("Jong belegen kaas plakken", "plak", 2, 1, _AZ, "kaas"), ("Achterham", "plak", 2, 1, _AM, "ham"),
+              ("Gerookte kipfilet", "plak", 2, 1, _AM, "kipfilet"), ("Smeerkaas", "gram", 20, 15, _AZ, "smeerkaas"),
+              ("Pindakaas", "gram", 15, 10, _AB, "pindakaas"), ("Eieren", "stuks", 1, 1, _AZ, "ei")],
+}
+_OLD_BREAD_DISHES = ["Boterham met kaas", "Boterham met hagelslag", "Boterham met chocoladepasta", "Boterham met pindakaas",
+                     "Boterham met jam", "Boterham met kipfilet"]
 
 
 STANDARD_DISHES = [
@@ -9118,14 +9189,17 @@ async def startup():
         logger.info("Seeded %d standard dishes", len(docs))
 
     # Gewone, betaalbare gerechten voor iedereen (eenmalig; producten zoekt de boodschappenlijst per winkel op naam)
-    if not await db.settings.find_one({"key": "basic_dishes_v1"}):
-        have = {d["name"] async for d in db.dishes.find({"basic": True}, {"_id": 0, "name": 1})}
+    if not await db.settings.find_one({"key": "basic_dishes_v2"}):
+        # v2: de losse boterham-gerechten worden één "Brood met beleg" (beleg wisselt per dag)
+        await db.dishes.update_many({"basic": True, "name": {"$in": _OLD_BREAD_DISHES}, "deleted_at": None}, {"$set": {"deleted_at": now_utc()}})
+        have = {(d["name"], d["category"]) async for d in db.dishes.find({"basic": True, "deleted_at": None}, {"_id": 0, "name": 1, "category": 1})}
         docs = [{"dish_id": f"dish_{uuid.uuid4().hex[:12]}", "name": name, "category": category, "is_standard": True, "basic": True,
-                 "owner_id": None, "ingredients": [{"name": n, "unit": u, "qty_adult": a, "qty_child": c, "aisle": ai} for (n, u, a, c, ai) in ings],
-                 "deleted_at": None, "created_at": now_utc()} for name, category, ings in BASIC_DISHES if name not in have]
+                 "bread": name == "Brood met beleg", "owner_id": None,
+                 "ingredients": [{"name": n, "unit": u, "qty_adult": a, "qty_child": c, "aisle": ai} for (n, u, a, c, ai) in ings],
+                 "deleted_at": None, "created_at": now_utc()} for name, category, ings in BASIC_DISHES if (name, category) not in have]
         if docs:
             await db.dishes.insert_many(docs)
-        await db.settings.update_one({"key": "basic_dishes_v1"}, {"$set": {"value": True, "at": now_utc()}}, upsert=True)
+        await db.settings.update_one({"key": "basic_dishes_v2"}, {"$set": {"value": True, "at": now_utc()}}, upsert=True)
         logger.info("%d gewone gerechten toegevoegd", len(docs))
 
     await db.products.create_index("product_id", unique=True)

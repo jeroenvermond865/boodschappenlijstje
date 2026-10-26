@@ -34,6 +34,7 @@ type Day = {
   meals: Record<MealCategory, string[]>;
   extras?: Extra[];
   leftovers?: Partial<Record<MealCategory, number>>; // restje van deze dag (één keer koken voor twee dagen)
+  meal_names?: Partial<Record<MealCategory, string>>;
 };
 type Camp = {
   id: string;
@@ -461,6 +462,12 @@ export default function CampDetailScreen() {
 
               {(day.extras ?? []).some((ex) => ex.meal === cat) ? (
                 <View style={{ gap: 8, marginTop: 10 }}>
+                  {day.meal_names?.[cat] ? (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <Icon name="bread-slice-outline" size={16} color={colors.brandPrimary} />
+                      <Text style={[styles.dishName, { flex: 1 }]} numberOfLines={1}>{day.meal_names[cat]}</Text>
+                    </View>
+                  ) : null}
                   {(day.extras ?? []).map((ex, i) =>
                     ex.meal === cat ? (
                       <View key={`${ex.name}-${i}`} style={styles.dishRow}>

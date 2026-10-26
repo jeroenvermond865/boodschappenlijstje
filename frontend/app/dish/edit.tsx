@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Image, Modal, Pressable, ScrollView, Share, Text, TextInput, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -142,6 +142,25 @@ export default function DishEditScreen() {
     placeholderData: (prev) => prev,
   });
   const [dismissed, setDismissed] = useState<Record<string, boolean>>({});
+
+  // Ingrediënten zonder product (bijv. app-gerechten): meteen het best passende product in jouw winkel erbij zoeken
+  const matched = useRef(false);
+  useEffect(() => {
+    if (matched.current || !ings.length) return;
+    matched.current = true;
+    const missing = ings.map((i, k) => (!i.productId && i.name.trim() ? k : -1)).filter((k) => k >= 0);
+    if (!missing.length) return;
+    api<{ matches: (Product | null)[] }>("/dishes/match", { method: "POST", body: { names: missing.map((k) => ings[k].name) } })
+      .then((r) =>
+        setIngs((prev) =>
+          prev.map((it, k) => {
+            const p = missing.includes(k) ? r.matches[missing.indexOf(k)] : null;
+            return p && !it.productId ? { ...it, productId: p.id, store: p.source ?? null } : it;
+          }),
+        ),
+      )
+      .catch(() => {});
+  }, [ings]);
 
   const toBody = (i: Ing) => ({
     name: i.name.trim(),
@@ -711,9 +730,14 @@ function SwapSheet({ ing, onClose, onPick }: { ing: Ing | null; onClose: () => v
             />
           </View>
           {searching ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }} style={{ flexGrow: 0 }}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 8, alignItems: "center", paddingVertical: 2 }}
+              style={{ flexGrow: 0, flexShrink: 0, minHeight: 40 }}
+            >
               {["", "Albert Heijn", "Jumbo", "Dirk"].map((s) => (
-                <Pressable key={s || "all"} onPress={() => setSrc(s)} style={[styles.chip, { height: 32 }, src === s && styles.chipActive]}>
+                <Pressable key={s || "all"} onPress={() => setSrc(s)} style={[styles.chip, { minHeight: 34, justifyContent: "center" }, src === s && styles.chipActive]}>
                   <Text style={[styles.chipText, src === s && styles.chipTextActive]}>{s ? STORE_SHORT[s] : "Alle winkels"}</Text>
                 </Pressable>
               ))}
