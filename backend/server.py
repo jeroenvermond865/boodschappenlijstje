@@ -850,6 +850,7 @@ async def _erase_user(user: dict) -> None:
     await db.feedback.delete_many({"user_id": uid})
     await db.store_requests.delete_many({"requested_by": uid})
     await db.premium_requests.delete_many({"user_id": uid})
+    await db.pantry.delete_many({"user_id": uid})
     if user.get("email"):
         for coll in (db.email_prefs, db.password_resets, db.invitations):
             await coll.delete_many({"email": user["email"]})
@@ -1698,13 +1699,119 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
         for d in per_day:
             priced(d["by_store"])
     await asyncio.to_thread(price_all)
+    # Premium: wat je al in je voorraadkast hebt, zetten we erbij
+    has_pantry = False
+    if user.get("premium"):
+        pantry = await _pantry_index(user["user_id"])
+        if pantry:
+            for b in by_store + general + [x for d in per_day for x in d["by_store"]]:
+                for it in b["flat"]:
+                    have = _pantry_have(pantry, it["name"], it.get("unit") or "")
+                    if have:
+                        it["in_pantry"] = round(have, 2)
+                        has_pantry = True
     return {
         "by_store": by_store,
         "general": general,
         "per_day": per_day,
         "stores": stores,
         "multi_store": len(stores) > 1,
+        "has_pantry": has_pantry,
     }
+
+
+# ---------------------------------------------------------------------------
+# Voorraadkast (Premium): wat je al in huis hebt
+# ---------------------------------------------------------------------------
+_UNIT_BASE = {"g": ("g", 1), "gr": ("g", 1), "gram": ("g", 1), "kg": ("g", 1000), "kilo": ("g", 1000),
+              "ml": ("ml", 1), "cl": ("ml", 10), "dl": ("ml", 100), "l": ("ml", 1000), "liter": ("ml", 1000),
+              "st": ("stuks", 1), "stuk": ("stuks", 1), "stuks": ("stuks", 1), "": ("stuks", 1)}
+
+
+def _unit_base(unit: str):
+    u = (unit or "").lower().strip().rstrip(".")
+    return _UNIT_BASE.get(u, (u, 1))
+
+
+async def _pantry_index(user_id: str) -> dict:
+    out: dict = {}
+    async for p in db.pantry.find({"user_id": user_id}, {"_id": 0}):
+        base, f = _unit_base(p.get("unit") or "")
+        k = (_norm_text(p.get("name") or ""), base)
+        out[k] = out.get(k, 0) + float(p.get("qty") or 0) * f
+    return out
+
+
+def _pantry_have(index: dict, name: str, unit: str) -> float:
+    # Hoeveel van dit product je in huis hebt, in de eenheid van de boodschappenlijst
+    base, f = _unit_base(unit)
+    have = index.get((_norm_text(name), base), 0)
+    return have / f if have > 0 else 0
+
+
+async def require_premium(user: dict):
+    if not user.get("premium"):
+        raise HTTPException(status_code=403, detail="Dit is een Premium-functie")
+
+
+class PantryInput(BaseModel):
+    name: str
+    qty: float = 1
+    unit: str = "stuks"
+
+
+def _pantry_public(p: dict) -> dict:
+    return {"id": p["item_id"], "name": p["name"], "qty": p.get("qty", 0), "unit": p.get("unit") or "stuks", "updated_at": p.get("updated_at")}
+
+
+@api_router.get("/pantry")
+async def list_pantry(user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    items = await db.pantry.find({"user_id": user["user_id"]}, {"_id": 0}).sort("name_l", 1).to_list(1000)
+    return {"items": [_pantry_public(p) for p in items]}
+
+
+def _pantry_clean(data: PantryInput) -> dict:
+    name = (data.name or "").strip()[:80]
+    if not name:
+        raise HTTPException(status_code=400, detail="Vul een productnaam in")
+    qty = max(0.0, min(float(data.qty or 0), 100000))
+    return {"name": name, "name_l": name.lower(), "qty": round(qty, 2), "unit": (data.unit or "stuks").strip()[:20], "updated_at": now_utc()}
+
+
+@api_router.post("/pantry")
+async def add_pantry(data: PantryInput, user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    clean = _pantry_clean(data)
+    same = await db.pantry.find_one({"user_id": user["user_id"], "name_l": clean["name_l"], "unit": clean["unit"]})
+    if same:
+        # Zelfde product en eenheid: optellen in plaats van een tweede regel
+        clean["qty"] = round(float(same.get("qty") or 0) + clean["qty"], 2)
+        clean["name"] = same["name"]
+        await db.pantry.update_one({"item_id": same["item_id"]}, {"$set": clean})
+        return {"item": _pantry_public({**same, **clean})}
+    if await db.pantry.count_documents({"user_id": user["user_id"]}) >= 500:
+        raise HTTPException(status_code=400, detail="Je voorraadkast is vol (maximaal 500 producten)")
+    doc = {"item_id": f"pan_{uuid.uuid4().hex[:12]}", "user_id": user["user_id"], **clean}
+    await db.pantry.insert_one(doc)
+    return {"item": _pantry_public(doc)}
+
+
+@api_router.put("/pantry/{item_id}")
+async def update_pantry(item_id: str, data: PantryInput, user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    clean = _pantry_clean(data)
+    res = await db.pantry.update_one({"item_id": item_id, "user_id": user["user_id"]}, {"$set": clean})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Niet gevonden")
+    return {"ok": True}
+
+
+@api_router.delete("/pantry/{item_id}")
+async def delete_pantry(item_id: str, user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    await db.pantry.delete_one({"item_id": item_id, "user_id": user["user_id"]})
+    return {"ok": True}
 
 
 @api_router.get("/camps/{camp_id}/budget")
@@ -7388,6 +7495,7 @@ async def startup():
     # Seed dynamic stores collection (incl. Dirk) + backfill any missing prices
     await db.store_requests.create_index("req_id", unique=True)
     await db.premium_requests.create_index("req_id", unique=True)
+    await db.pantry.create_index([("user_id", 1), ("name_l", 1)])
     await db.premium_requests.create_index([("user_id", 1), ("created_at", -1)])
     for i, s in enumerate(STORES):
         await db.stores.update_one(

@@ -16,13 +16,13 @@ import { useToast } from "@/src/toast";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; better?: PackBetter | null };
+type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; better?: PackBetter | null; in_pantry?: number };
 type Grouped = { aisle: string; items: Item[] };
 type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number };
 
 const euro = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
 type PerDay = { index: number; adults: number; children: number; by_store: StoreBlock[] };
-type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean };
+type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean };
 
 const key = (store: string, i: Item) => `${store}|${i.name.toLowerCase()}|${i.unit}`;
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -129,6 +129,19 @@ export default function ShoppingScreen() {
     }
     setChecked(next);
     storage.setItem(storageKey, Array.from(next));
+  };
+
+  // Voorraadkast (Premium): alles wat je al genoeg in huis hebt in één keer afvinken
+  const covered = allItems.filter((x) => (x.item.in_pantry ?? 0) >= x.item.qty && !shown.has(key(x.store, x.item)));
+  const checkPantry = () => {
+    const next = new Set(checked);
+    covered.forEach((x) => {
+      const t = key(x.store, x.item);
+      [t, ...(parts.byTotal.get(t) ?? [])].forEach((k) => next.add(k));
+    });
+    setChecked(next);
+    storage.setItem(storageKey, Array.from(next));
+    toast.show(`${covered.length} ${covered.length === 1 ? "product" : "producten"} afgevinkt`, "success");
   };
 
   const isDone = (store: string, i: Item) => shown.has(key(store, i));
@@ -279,6 +292,14 @@ export default function ShoppingScreen() {
               <Icon name="storefront-outline" size={16} color={colors.onBrandTertiary} />
               <Text style={styles.multiText}>Meerdere winkels — elk lijstje staat apart.</Text>
             </View>
+          ) : null}
+          {data?.has_pantry && covered.length ? (
+            <Pressable style={styles.multiBanner} onPress={checkPantry} testID="pantry-check">
+              <Icon name="fridge-outline" size={18} color={colors.onBrandTertiary} />
+              <Text style={styles.multiText}>
+                {covered.length} {covered.length === 1 ? "product heb" : "producten heb"} je al genoeg in huis. Tik om af te vinken.
+              </Text>
+            </Pressable>
           ) : null}
           {tab === "total" && grandTotal > 0 ? (
             <View style={styles.totalCard}>
@@ -433,6 +454,12 @@ function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boole
             {packText(item.packs, item.pack_unit)}
           </Text>
         ) : null}
+        {item.in_pantry ? (
+          <Text style={styles.itemPantry} numberOfLines={1}>
+            In je voorraadkast: {formatQty(item.in_pantry)} {item.unit}
+            {item.in_pantry >= item.qty ? " (genoeg)" : ""}
+          </Text>
+        ) : null}
       </View>
       <View style={{ alignItems: "flex-end" }}>
         <Text style={[styles.itemQty, checked && styles.itemQtyChecked]}>
@@ -451,6 +478,7 @@ function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boole
 }
 
 const useStyles = makeStyles((colors) => ({
+  itemPantry: { fontSize: 12, fontFamily: fonts.semibold, color: colors.success, marginTop: 1 },
   itemPack: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
   itemPrice: { fontSize: 12, fontFamily: fonts.semibold, color: colors.onSurfaceSecondary, marginTop: 1 },
   totalCard: { borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 2, backgroundColor: colors.surfaceSecondary },

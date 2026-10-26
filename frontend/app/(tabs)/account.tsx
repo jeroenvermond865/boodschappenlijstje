@@ -137,6 +137,12 @@ export default function AccountScreen() {
           onPress={() => router.push("/account/profile")}
         />
         <AdminRow
+          testID="pantry-link"
+          icon="fridge-outline"
+          label={user?.premium ? "Voorraadkast" : "Voorraadkast ⭐"}
+          onPress={() => router.push("/pantry")}
+        />
+        <AdminRow
           testID="diet-link"
           icon="food-off-outline"
           label="Allergieën & dieet"

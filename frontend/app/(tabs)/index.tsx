@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Icon } from "@/src/components/ui";
 import { niceDate } from "@/src/DateField";
 import { api } from "@/src/api";
+import { AdSlot } from "@/src/premium";
 import { useTerms } from "@/src/settings";
 import { usesNativeTabs } from "@/src/navigation";
 import { euro } from "@/src/search";
@@ -391,6 +392,7 @@ export default function HomeScreen() {
           </View>
         </View>
       ) : null}
+      <AdSlot place="home" />
     </ScrollView>
   );
 }

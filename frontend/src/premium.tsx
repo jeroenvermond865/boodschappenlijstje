@@ -3,6 +3,7 @@ import { useRouter } from "expo-router";
 
 import { Icon } from "@/src/components/ui";
 import { useAuth } from "@/src/auth";
+import { useAppSettings } from "@/src/settings";
 import { fonts, makeStyles } from "@/src/theme";
 
 export const GOLD = { bg: "#FBF1DC", border: "#E8C77A", text: "#7A5212", icon: "#B07A1E" };
@@ -19,6 +20,25 @@ export const PREMIUM_FEATURES: { icon: string; title: string; text: string }[] =
 export function usePremium() {
   const { user } = useAuth();
   return !!user?.premium;
+}
+
+// Advertenties: staan nog uit (ads_enabled in de app-instellingen). Premium ziet ze nooit.
+export function useShowAds() {
+  const premium = usePremium();
+  const s = useAppSettings() as { ads_enabled?: boolean };
+  return !premium && !!s.ads_enabled;
+}
+
+// Vaste plek voor een advertentie; hier komt later de code van de advertentiepartij
+export function AdSlot({ place }: { place: string }) {
+  const show = useShowAds();
+  const styles = useStyles();
+  if (!show) return null;
+  return (
+    <View style={styles.ad} testID={`ad-${place}`}>
+      <Text style={styles.adText}>Advertentie</Text>
+    </View>
+  );
 }
 
 // Wat je ziet bij een Premium-functie als je nog geen Premium hebt
@@ -43,5 +63,7 @@ const useStyles = makeStyles(() => ({
   lock: { flexDirection: "row", gap: 12, backgroundColor: GOLD.bg, borderColor: GOLD.border, borderWidth: 1, borderRadius: 16, padding: 14 },
   lockTitle: { fontSize: 15, fontFamily: fonts.bold, color: GOLD.text },
   lockText: { fontSize: 13, lineHeight: 18, fontFamily: fonts.regular, color: GOLD.text },
+  ad: { minHeight: 60, borderRadius: 12, borderWidth: 1, borderColor: "#ddd", alignItems: "center", justifyContent: "center" },
+  adText: { fontSize: 11, fontFamily: fonts.regular, color: "#999" },
   lockLink: { fontSize: 13, fontFamily: fonts.semibold, color: GOLD.icon, marginTop: 4, textDecorationLine: "underline" },
 }));
