@@ -8,12 +8,12 @@ import { fonts, makeStyles } from "@/src/theme";
 
 export const GOLD = { bg: "#FBF1DC", border: "#E8C77A", text: "#7A5212", icon: "#B07A1E" };
 
-export const PREMIUM_FEATURES: { icon: string; title: string; text: string }[] = [
-  { icon: "bell-ring-outline", title: "Prijsalarm", text: "Een seintje als een favoriet product in de aanbieding is of onder jouw prijs zakt." },
-  { icon: "chart-line", title: "Prijsgeschiedenis", text: "Zie hoe de prijs van een product zich ontwikkelt, zodat je weet of een aanbieding echt goed is." },
-  { icon: "piggy-bank-outline", title: "Bespaaroverzicht", text: "Hoeveel je per maand bespaart door slim te kiezen." },
-  { icon: "calendar-star", title: "Automatisch weekmenu", text: "Een weekmenu met gerechten waarvan de ingrediënten nu in de aanbieding zijn." },
-  { icon: "fridge-outline", title: "Voorraadkast", text: "Houd bij wat je al in huis hebt, dan gaat dat van je boodschappenlijst af." },
+export const PREMIUM_FEATURES: { icon: string; title: string; text: string; to?: string; where?: string }[] = [
+  { icon: "bell-ring-outline", title: "Prijsalarm", text: "Een seintje als een favoriet product in de aanbieding is of onder jouw prijs zakt.", to: "/alerts", where: "Bij Producten en bij elk product" },
+  { icon: "chart-line", title: "Prijsgeschiedenis", text: "Zie hoe de prijs van een product zich ontwikkelt, zodat je weet of een aanbieding echt goed is.", to: "/products", where: "Open een product bij Producten" },
+  { icon: "piggy-bank-outline", title: "Bespaaroverzicht", text: "Hoeveel je per maand bespaart door slim te kiezen.", to: "/savings", where: "Op Home en bij je boodschappenlijst" },
+  { icon: "calendar-star", title: "Automatisch weekmenu", text: "Een weekmenu met gerechten waarvan de ingrediënten nu in de aanbieding zijn.", to: "/camps", where: "Bovenaan in je planning" },
+  { icon: "fridge-outline", title: "Voorraadkast", text: "Houd bij wat je al in huis hebt, dan gaat dat van je boodschappenlijst af.", to: "/pantry", where: "Op Home en bij je boodschappenlijst" },
   { icon: "cancel", title: "Geen advertenties", text: "Als er later advertenties komen, zie jij ze niet." },
 ];
 

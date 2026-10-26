@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "expo-router";
 
 import { Button, Field, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
@@ -21,6 +22,7 @@ export default function PremiumScreen() {
   const { user } = useAuth();
   const toast = useToast();
   const qc = useQueryClient();
+  const router = useRouter();
   const [org, setOrg] = useState("");
   const [msg, setMsg] = useState("");
   const [sending, setSending] = useState(false);
@@ -69,13 +71,21 @@ export default function PremiumScreen() {
 
         <View style={{ gap: 12 }}>
           {PREMIUM_FEATURES.map((f) => (
-            <View key={f.title} style={styles.feature}>
+            <Pressable
+              key={f.title}
+              style={styles.feature}
+              disabled={!user?.premium || !f.to}
+              onPress={() => f.to && router.push(f.to as any)}
+              testID={`premium-feature-${f.icon}`}
+            >
               <Icon name={f.icon} size={22} color={GOLD.icon} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.featureTitle}>{f.title}</Text>
                 <Text style={styles.featureText}>{f.text}</Text>
+                {f.where ? <Text style={styles.featureWhere}>{f.where}</Text> : null}
               </View>
-            </View>
+              {user?.premium && f.to ? <Icon name="chevron-right" size={20} color={colors.muted} /> : null}
+            </Pressable>
           ))}
         </View>
 
@@ -135,6 +145,7 @@ const useStyles = makeStyles((colors) => ({
   heroText: { fontSize: 14, lineHeight: 20, fontFamily: fonts.regular, color: GOLD.text, textAlign: "center" },
   feature: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
   featureTitle: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
+  featureWhere: { fontSize: 12, fontFamily: fonts.semibold, color: GOLD.icon, marginTop: 2 },
   featureText: { fontSize: 13, lineHeight: 18, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
   section: { gap: 12, borderTopWidth: 1, borderTopColor: colors.divider, paddingTop: 18 },
   sectionTitle: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },

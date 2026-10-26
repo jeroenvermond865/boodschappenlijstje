@@ -137,30 +137,6 @@ export default function AccountScreen() {
           onPress={() => router.push("/account/profile")}
         />
         <AdminRow
-          testID="savings-link"
-          icon="piggy-bank-outline"
-          label={user?.premium ? "Bespaaroverzicht" : "Bespaaroverzicht ⭐"}
-          onPress={() => router.push("/savings")}
-        />
-        <AdminRow
-          testID="alerts-link"
-          icon="bell-ring-outline"
-          label={user?.premium ? "Prijsalarmen" : "Prijsalarmen ⭐"}
-          onPress={() => router.push("/alerts")}
-        />
-        <AdminRow
-          testID="pantry-link"
-          icon="fridge-outline"
-          label={user?.premium ? "Voorraadkast" : "Voorraadkast ⭐"}
-          onPress={() => router.push("/pantry")}
-        />
-        <AdminRow
-          testID="diet-link"
-          icon="food-off-outline"
-          label="Allergieën & dieet"
-          onPress={() => router.push("/account/diet")}
-        />
-        <AdminRow
           testID="trash-link"
           icon="delete-restore"
           label="Recent verwijderd"

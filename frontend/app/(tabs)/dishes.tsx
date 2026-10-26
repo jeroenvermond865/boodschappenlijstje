@@ -85,8 +85,16 @@ export default function DishesScreen() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Text style={styles.title}>{s.tab_dishes}</Text>
-        <Text style={styles.subtitle}>{s.sub_dishes}</Text>
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>{s.tab_dishes}</Text>
+            <Text style={styles.subtitle}>{s.sub_dishes}</Text>
+          </View>
+          <Pressable testID="diet-button" onPress={() => router.push("/account/diet")} hitSlop={8} style={styles.headBtn}>
+            <Icon name="food-off-outline" size={22} color={colors.brandPrimary} />
+            <Text style={styles.headBtnText}>Allergieën</Text>
+          </Pressable>
+        </View>
         <View style={styles.segment}>
           {TABS.map((t) => (
             <Pressable
@@ -120,12 +128,12 @@ export default function DishesScreen() {
           contentContainerStyle={styles.chipRow}
           style={styles.chipScroll}
         >
-          {diet.length ? (
-            <Pressable testID="diet-chip" onPress={() => setFitsOnly((v) => !v)} style={[styles.chip, styles.dietChip, fitsOnly && styles.chipActive]}>
+          {(
+            <Pressable testID="diet-chip" onPress={() => (diet.length ? setFitsOnly((v) => !v) : router.push("/account/diet"))} style={[styles.chip, styles.dietChip, fitsOnly && styles.chipActive]}>
               <Icon name="food-off-outline" size={16} color={fitsOnly ? colors.onBrandPrimary : colors.onSurfaceTertiary} />
               <Text style={[styles.chipText, fitsOnly && styles.chipTextActive]}>Past bij mij</Text>
             </Pressable>
-          ) : null}
+          )}
           {chips.map((c) => {
             const active = cat === c.key;
             return (
@@ -293,6 +301,8 @@ const useStyles = makeStyles((colors) => ({
     borderColor: colors.border,
     justifyContent: "center",
   },
+  headBtn: { alignItems: "center", gap: 2, paddingTop: 8, paddingHorizontal: 4 },
+  headBtnText: { fontSize: 11, fontFamily: fonts.semibold, color: colors.brandPrimary },
   dietChip: { flexDirection: "row", alignItems: "center", gap: 6 },
   warnText: { fontSize: 12, fontFamily: fonts.semibold, color: colors.error, marginTop: 2 },
   chipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },

@@ -50,6 +50,7 @@ function useSteps(): Step[] {
       text: [
         "Hier staan standaardgerechten voor iedereen en je eigen gerechten. Je kunt ook online recepten zoeken en die in één keer als gerecht overnemen.",
         "Met pakketten maak je een vaste set producten, zoals 'ontbijt en lunch basis', die je snel aan een dag toevoegt.",
+        "Heb je een allergie of eet je vegetarisch? Stel dat in via Allergieën, rechtsboven. Dan zie je bij elk gerecht of het past.",
       ],
     },
     {
@@ -57,6 +58,7 @@ function useSteps(): Step[] {
       title: s.tab_products,
       text: [
         "Zoek producten en vergelijk prijzen van verschillende supermarkten. In de folders zie je wat er deze week in de aanbieding is. Favoriete producten bewaar je met het hartje.",
+        "Met Premium zet je een prijsalarm op een product. Dan krijg je een mail als het in de aanbieding is.",
       ],
     },
     {

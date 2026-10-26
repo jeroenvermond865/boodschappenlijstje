@@ -7,7 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Icon } from "@/src/components/ui";
 import { niceDate } from "@/src/DateField";
 import { api } from "@/src/api";
-import { AdSlot } from "@/src/premium";
+import { AdSlot, GOLD, usePremium } from "@/src/premium";
 import { useTerms } from "@/src/settings";
 import { usesNativeTabs } from "@/src/navigation";
 import { euro } from "@/src/search";
@@ -111,6 +111,7 @@ export default function HomeScreen() {
   });
   const [openStore, setOpenStore] = useState<string | null>(null);
 
+  const premium = usePremium();
   const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
   const actions = [
     { icon: "tent", label: `${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`, onPress: () => router.push("/camp/new") },
@@ -209,6 +210,24 @@ export default function HomeScreen() {
           </Pressable>
         ))}
       </View>
+
+      {/* Premium: voorraad en besparing */}
+      {premium ? (
+        <View style={[styles.pad, styles.actions]}>
+          <Pressable testID="home-pantry" onPress={() => router.push("/pantry")} style={styles.premTile}>
+            <Icon name="fridge-outline" size={22} color={GOLD.icon} />
+            <Text style={styles.premTileText}>Voorraadkast</Text>
+          </Pressable>
+          <Pressable testID="home-savings" onPress={() => router.push("/savings")} style={styles.premTile}>
+            <Icon name="piggy-bank-outline" size={22} color={GOLD.icon} />
+            <Text style={styles.premTileText}>Bespaaroverzicht</Text>
+          </Pressable>
+          <Pressable testID="home-alerts" onPress={() => router.push("/alerts")} style={styles.premTile}>
+            <Icon name="bell-ring-outline" size={22} color={GOLD.icon} />
+            <Text style={styles.premTileText}>Prijsalarmen</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {/* Admin-taken */}
       {todoRows.length ? (
@@ -451,6 +470,8 @@ const useStyles = makeStyles((colors) => ({
   campBtnGhostText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onBrandPrimary },
   emptyCamp: { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.brandTertiary },
   actions: { flexDirection: "row", gap: 10 },
+  premTile: { flex: 1, alignItems: "center", gap: 6, paddingVertical: 12, borderRadius: 14, backgroundColor: GOLD.bg, borderWidth: 1, borderColor: GOLD.border },
+  premTileText: { fontSize: 12, fontFamily: fonts.semibold, color: GOLD.text, textAlign: "center" },
   action: { flex: 1, alignItems: "center", gap: 6, paddingVertical: 12, paddingHorizontal: 4, borderRadius: 16, borderWidth: 1, borderColor: colors.border },
   actionIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
   actionText: { fontSize: 12, fontFamily: fonts.medium, color: colors.onSurface, textAlign: "center" },

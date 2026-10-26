@@ -25,7 +25,7 @@ export default function DietScreen() {
   return (
     <View style={styles.root}>
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
-        <Pressable testID="back-button" onPress={() => goBack("/account")} hitSlop={10} style={styles.headerBtn}>
+        <Pressable testID="back-button" onPress={() => goBack("/dishes")} hitSlop={10} style={styles.headerBtn}>
           <Icon name="chevron-left" size={28} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.headerTitle}>Allergieën & dieet</Text>

@@ -297,6 +297,12 @@ export default function ShoppingScreen() {
               <Text style={styles.multiText}>Meerdere winkels — elk lijstje staat apart.</Text>
             </View>
           ) : null}
+          {premium && !(data?.has_pantry && covered.length) ? (
+            <Pressable style={styles.pantryLink} onPress={() => router.push("/pantry")} testID="shopping-pantry-link">
+              <Icon name="fridge-outline" size={16} color={colors.brandPrimary} />
+              <Text style={styles.pantryLinkText}>Al iets in huis? Zet het in je voorraadkast</Text>
+            </Pressable>
+          ) : null}
           {data?.has_pantry && covered.length ? (
             <Pressable style={styles.multiBanner} onPress={checkPantry} testID="pantry-check">
               <Icon name="fridge-outline" size={18} color={colors.onBrandTertiary} />
@@ -493,6 +499,8 @@ const useStyles = makeStyles((colors) => ({
   totalCard: { borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 2, backgroundColor: colors.surfaceSecondary },
   totalLabel: { fontSize: 13, fontFamily: fonts.medium, color: colors.muted },
   totalValue: { fontSize: 26, fontFamily: fonts.bold, color: colors.onSurface },
+  pantryLink: { flexDirection: "row", alignItems: "center", gap: 6 },
+  pantryLinkText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
   savingText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.success, marginTop: 6 },
   totalHint: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },
   root: { flex: 1, backgroundColor: colors.surface },
