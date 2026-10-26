@@ -86,7 +86,7 @@ export function MenuWizard({
     setBusy(true);
     try {
       const exclude = dishes.filter((d) => dietConflicts(d.ingredients, diet).length).map((d) => d.id);
-      const res = await api<{ filled: number; promo_dishes: string[]; pool: number }>(`/camps/${campId}/auto-menu`, {
+      const res = await api<{ filled: number; promo_dishes: string[]; pool: number; added_online?: number }>(`/camps/${campId}/auto-menu`, {
         method: "POST",
         body: {
           categories: cats,
@@ -107,9 +107,9 @@ export function MenuWizard({
       onClose();
       toast.show(
         res.filled
-          ? `${res.filled} maaltijden ingevuld${res.promo_dishes.length ? `, ${res.promo_dishes.length} met aanbiedingen` : ""}`
+          ? `${res.filled} maaltijden ingevuld${res.promo_dishes.length ? `, ${res.promo_dishes.length} met aanbiedingen` : ""}${res.added_online ? ` (${res.added_online} nieuwe recepten van AH, Jumbo en Dirk)` : ""}`
           : res.pool
-            ? "Er was niets leeg om in te vullen"
+            ? "Alle maaltijden waren al gekozen. Vink 'Ook maaltijden vervangen' aan om ze te vervangen."
             : "Geen gerechten gevonden die bij je keuzes passen",
         res.filled ? "success" : "info",
       );

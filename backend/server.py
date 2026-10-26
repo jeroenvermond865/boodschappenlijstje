@@ -1460,18 +1460,64 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         prefs = {k: getattr(data, k) for k in _MENU_PREF_KEYS}
         await db.users.update_one({"user_id": uid}, {"$set": {"menu_prefs": prefs}})
     exclude = set(data.exclude[:2000])
-    dishes = await db.dishes.find({"deleted_at": None, "category": {"$in": cats}, "online": {"$ne": True}, "camp_id": None,
-                                   "$or": [{"is_standard": True}, {"owner_id": uid}]}, {"_id": 0}).to_list(2000)
-    dishes = [d for d in dishes if d["dish_id"] not in exclude and d.get("ingredients")]
+    # Standaardgerechten, je eigen gerechten en de recepten (AH, Jumbo, Dirk) die je eerder in een lijstje zette
+    dishes = await db.dishes.find({"deleted_at": None, "category": {"$in": cats}, "camp_id": None,
+                                   "$or": [{"is_standard": True, "online": {"$ne": True}}, {"owner_id": uid}]}, {"_id": 0}).to_list(2000)
+    seen_rec: set = set()
+    pool_docs = []
+    for d in dishes:
+        rid = (d.get("source") or {}).get("recipe_id")
+        if d["dish_id"] in exclude or not d.get("ingredients") or (rid and (rid, d["category"]) in seen_rec):
+            continue
+        if rid:
+            seen_rec.add((rid, d["category"]))
+        pool_docs.append(d)
+    dishes = pool_docs
 
     def text_of(d):
         return _norm_text(d["name"] + " " + " ".join(i.get("name") or "" for i in d["ingredients"]))
     avoid = [w for w in (_norm_text(x) for x in data.avoid[:30]) if w]
     prefer = [w for w in (_norm_text(x) for x in data.prefer[:30]) if w]
-    if avoid:
-        dishes = [d for d in dishes if not any(w in text_of(d) for w in avoid)]
-    if data.diet in ("vega", "vegan"):
-        dishes = [d for d in dishes if _diet_of([i.get("name") or "" for i in d["ingredients"]])[1 if data.diet == "vegan" else 0]]
+
+    def fits(d):
+        if avoid and any(w in text_of(d) for w in avoid):
+            return False
+        if data.diet in ("vega", "vegan") and not _diet_of([i.get("name") or "" for i in d["ingredients"]])[1 if data.diet == "vegan" else 0]:
+            return False
+        return True
+    dishes = [d for d in dishes if fits(d)]
+
+    # Te weinig eigen gerechten voor de lege plekken (bijv. een nieuw account)? Vul aan met recepten van AH, Jumbo en Dirk
+    days_all = camp.get("days", [])
+    only_days = set(data.days) if data.days else None
+    added_online = 0
+    for cat in cats:
+        slots = sum(1 for idx, day in enumerate(days_all)
+                    if (only_days is None or day.get("index", idx) in only_days) and (data.overwrite or not (day.get("meals") or {}).get(cat)))
+        have = sum(1 for d in dishes if d["category"] == cat)
+        need = min(slots, 10) - have if data.style != "nieuw" else min(slots, 10) - min(have, slots // 2)
+        if need <= 0:
+            continue
+        try:
+            found = await _menu_recipes(cat, prefer, avoid, need * 3)
+        except Exception as e:
+            logger.warning("Menu aanvullen met recepten: %r", e)
+            found = []
+        have_rec = {(d.get("source") or {}).get("recipe_id") for d in dishes}
+        picks = [r for r in found if r["id"] not in have_rec][: need * 2]
+
+        async def take(r, cat=cat):
+            try:
+                return await _recipe_to_dish(r["id"], cat, user, reuse=True)
+            except Exception as e:
+                logger.warning("Recept %s overnemen: %r", r.get("id"), e)
+                return None
+        got = 0
+        for d in await asyncio.gather(*(take(r) for r in picks)):
+            if d and d.get("ingredients") and fits(d) and got < need:
+                dishes.append(d)
+                got += 1
+        added_online += got
 
     # Geschiedenis van het account: hoe vaak je een gerecht eerder op je lijstje had, en wat je de laatste twee weken at
     hist: Dict[str, int] = {}
@@ -1555,7 +1601,33 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     if filled:
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {"days": days}})
     updated = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0})
-    return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes), "pool": len(dishes)}
+    return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes), "pool": len(dishes), "added_online": added_online}
+
+
+_MENU_COURSE = {"ontbijt": "ontbijt", "lunch": "lunch", "avondeten": "hoofdgerecht", "snacks": "borrel"}
+
+
+async def _menu_recipes(cat: str, prefer: list, avoid: list, n: int) -> list:
+    # Recepten uit de winkels voor één soort maaltijd, passend bij wat je graag (niet) wilt; willekeurig voor afwisseling
+    import json as _json
+    flt = {"gang": [_MENU_COURSE.get(cat, "hoofdgerecht")]}  # vega/vegan controleren we na het overnemen (ingrediënten)
+    out: list = []
+    for q in (prefer[:3] or [""]):
+        try:
+            res = await _search_recipes(q, "all", random.randint(0, 2) if not q else 0, _json.dumps(flt))
+        except HTTPException:
+            continue
+        out += res.get("recipes") or []
+    if not out and prefer:
+        out = (await _search_recipes("", "all", 0, _json.dumps(flt))).get("recipes") or []
+    out = [r for r in out if r.get("id") and not any(w in _norm_text(r.get("title") or "") for w in avoid)]
+    random.shuffle(out)
+    seen, uniq = set(), []
+    for r in out:
+        if r["id"] not in seen:
+            seen.add(r["id"])
+            uniq.append(r)
+    return uniq[:n]
 
 
 @api_router.delete("/camps/{camp_id}")
