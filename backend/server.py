@@ -1409,47 +1409,135 @@ class AutoMenuInput(BaseModel):
     categories: List[str] = ["avondeten"]
     exclude: List[str] = []  # gerechten die niet passen (bijv. allergieën, die kent alleen het apparaat)
     overwrite: bool = False
+    days: Optional[List[int]] = None  # alleen deze dagen (index); leeg = alle dagen
+    style: str = "mix"  # vertrouwd (wat je vaker eet), mix, nieuw (iets nieuws proberen)
+    diet: str = ""  # "", vega, vegan
+    cheap: bool = False  # goedkope gerechten eerst
+    promos: bool = True  # gerechten met aanbiedingen eerst
+    prefer: List[str] = []  # hier hebben we zin in (woorden in gerecht of ingrediënten)
+    avoid: List[str] = []  # liever niet
+    remember: bool = True
+
+
+_MENU_PREF_KEYS = ("categories", "style", "diet", "cheap", "promos", "prefer", "avoid")
+
+
+@api_router.get("/menu-prefs")
+async def get_menu_prefs(user: dict = Depends(get_current_user)):
+    return user.get("menu_prefs") or {}
+
+
+def _dish_cost(d: dict, by_pid: dict) -> Optional[float]:
+    # Ongeveer wat het gerecht per volwassene kost (aandeel van de verpakking), voor "goedkoop eerst"
+    total, found = 0.0, 0
+    for i in d.get("ingredients") or []:
+        p = by_pid.get(i.get("product_id") or "")
+        if not p:
+            continue
+        price = resolve_price(p.get("prices") or {}, p.get("_src") or product_source(p) or DEFAULT_STORE, p.get("unavailable") or [])
+        if price:
+            total += price * _pack_share(i.get("unit") or "stuks", p.get("unit") or "", p.get("name") or "", p.get("pack_count")) * (i.get("qty_adult") or 1)
+            found += 1
+    return total if found else None
 
 
 @api_router.post("/camps/{camp_id}/auto-menu")
 async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_current_user)):
-    # Premium: lege maaltijden vullen met gerechten waarvan nu veel ingrediënten in de aanbieding zijn
+    # Premium: lege maaltijden vullen met gerechten die bij je passen: je voorkeuren, wat je eerder at, en aanbiedingen
     await require_premium(user)
-    camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
+    uid = user["user_id"]
+    camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(uid)}, {"_id": 0})
     if not camp:
         raise HTTPException(status_code=404, detail="Kamp niet gevonden")
     cats = [c for c in data.categories if c in MEAL_CATEGORIES]
     if not cats:
         raise HTTPException(status_code=400, detail="Kies minstens één maaltijd")
+    if data.remember:
+        prefs = {k: getattr(data, k) for k in _MENU_PREF_KEYS}
+        await db.users.update_one({"user_id": uid}, {"$set": {"menu_prefs": prefs}})
     exclude = set(data.exclude[:2000])
     dishes = await db.dishes.find({"deleted_at": None, "category": {"$in": cats}, "online": {"$ne": True}, "camp_id": None,
-                                   "$or": [{"is_standard": True}, {"owner_id": user["user_id"]}]}, {"_id": 0}).to_list(2000)
+                                   "$or": [{"is_standard": True}, {"owner_id": uid}]}, {"_id": 0}).to_list(2000)
     dishes = [d for d in dishes if d["dish_id"] not in exclude and d.get("ingredients")]
+
+    def text_of(d):
+        return _norm_text(d["name"] + " " + " ".join(i.get("name") or "" for i in d["ingredients"]))
+    avoid = [w for w in (_norm_text(x) for x in data.avoid[:30]) if w]
+    prefer = [w for w in (_norm_text(x) for x in data.prefer[:30]) if w]
+    if avoid:
+        dishes = [d for d in dishes if not any(w in text_of(d) for w in avoid)]
+    if data.diet in ("vega", "vegan"):
+        dishes = [d for d in dishes if _diet_of([i.get("name") or "" for i in d["ingredients"]])[1 if data.diet == "vegan" else 0]]
+
+    # Geschiedenis van het account: hoe vaak je een gerecht eerder op je lijstje had, en wat je de laatste twee weken at
+    hist: Dict[str, int] = {}
+    recent: set = set()
+    two_weeks = (now_utc() - timedelta(days=14)).date().isoformat()
+    async for c in db.camps.find({**camp_access_filter(uid), "camp_id": {"$ne": camp_id}}, {"_id": 0, "days.meals": 1, "start_date": 1}):
+        is_recent = str(c.get("start_date") or "")[:10] >= two_weeks
+        for day in c.get("days") or []:
+            for ids in (day.get("meals") or {}).values():
+                for did in ids:
+                    hist[did] = hist.get(did, 0) + 1
+                    if is_recent:
+                        recent.add(did)
+    # Smaak: woorden van recepten en gerechten die je bekijkt of kiest
+    interest = {} if user.get("no_personal") else await db.user_interest.find_one({"user_id": uid}, {"_id": 0, "rwords": 1}) or {}
+    rwords = interest.get("rwords") or {}
+    rtop = max(list(rwords.values()) + [1])
+
     pids = list({i["product_id"] for d in dishes for i in d["ingredients"] if i.get("product_id")})
     on_promo = set()
     # Ga je later boodschappen doen? Dan tellen de aanbiedingen van die dag (ook uit de folder van volgende week)
     shop_day = _first_shop_day(camp)
     later = shop_day if shop_day and shop_day > _iso_day(now_utc().isoformat()) else None
-    if later:
-        await _folders_fresh(wait=False)
-    async for p in db.products.find(_live({"product_id": {"$in": pids}}), {"_id": 0}):
-        if (_promo_on_day(p, later) is not None) if later else (_hist_now(p)[1] is not None):
-            on_promo.add(p["product_id"])
+    if data.promos:
+        if later:
+            await _folders_fresh(wait=False)
+        async for p in db.products.find(_live({"product_id": {"$in": pids}}), {"_id": 0}):
+            if (_promo_on_day(p, later) is not None) if later else (_hist_now(p)[1] is not None):
+                on_promo.add(p["product_id"])
+    costs: Dict[str, Optional[float]] = {}
+    if data.cheap:
+        await _global_products()
+        by_pid = _product_cache.get("by_pid") or {}
+        costs = {d["dish_id"]: _dish_cost(d, by_pid) for d in dishes}
+    known = [v for v in costs.values() if v]
+    lo, hi = (min(known), max(known)) if known else (0, 1)
 
     def score(d):
-        hits = sum(1 for i in d["ingredients"] if i.get("product_id") in on_promo)
-        return hits + random.random() * 0.9  # bij gelijke stand wat afwisseling
+        did = d["dish_id"]
+        n = hist.get(did, 0)
+        s = sum(1 for i in d["ingredients"] if i.get("product_id") in on_promo) * 0.6
+        if data.style == "vertrouwd":
+            s += 2 + min(n, 5) * 0.5 if n else 0
+        elif data.style == "nieuw":
+            s += 3 if not n else -min(n, 3)
+            # Nieuw, maar wel naar je smaak
+            s += min(1.5, sum(rwords.get(_ikey(w), 0) for w in re.findall(r"[a-z]{4,}", _norm_text(d["name"]))) / rtop * 1.5)
+        else:
+            s += 1 if n else 0.5
+        if did in recent:
+            s -= 1.5  # net nog gegeten: liever wat afwisseling
+        if prefer and any(w in text_of(d) for w in prefer):
+            s += 3
+        if data.cheap and costs.get(did):
+            s += 2.5 * (1 - (costs[did] - lo) / ((hi - lo) or 1))
+        return s + random.random() * 0.9  # bij gelijke stand wat afwisseling
 
     used = {did for day in camp.get("days", []) for ids in (day.get("meals") or {}).values() for did in ids}
     filled, promo_dishes = 0, set()
     days = camp.get("days", [])
+    only = set(data.days) if data.days else None
     for cat in cats:
         pool = sorted((d for d in dishes if d["category"] == cat), key=score, reverse=True)
         if not pool:
             continue
         fresh = [d for d in pool if d["dish_id"] not in used] or pool
         k = 0
-        for day in days:
+        for idx, day in enumerate(days):
+            if only is not None and day.get("index", idx) not in only:
+                continue
             meals = day.setdefault("meals", {})
             if meals.get(cat) and not data.overwrite:
                 continue
@@ -1463,7 +1551,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     if filled:
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {"days": days}})
     updated = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0})
-    return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes)}
+    return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes), "pool": len(dishes)}
 
 
 @api_router.delete("/camps/{camp_id}")
