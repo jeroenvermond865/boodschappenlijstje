@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Image, Pressable, RefreshControl, Switch, Text, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, Switch, Text, View } from "react-native";
 import Modal from "@/src/components/Modal";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -170,7 +170,17 @@ export default function PantryScreen() {
                         <View style={{ flex: 1 }}>
                           <Text style={styles.rowName} numberOfLines={1}>{i.name}</Text>
                           <Text style={[styles.rowQty, (i.restock ?? 0) > 0 && { color: colors.warning }]} numberOfLines={1}>{stockText(i)}</Text>
-                          {i.for_dishes === false ? <Text style={styles.rowQty}>Niet voor gerechten</Text> : null}
+                          <Pressable
+                            onPress={() => update.mutate({ ...i, for_dishes: i.for_dishes === false })}
+                            hitSlop={6}
+                            style={[styles.dishChip, i.for_dishes === false && styles.dishChipOff]}
+                            testID={`pantry-dish-${i.id}`}
+                          >
+                            <Icon name={i.for_dishes === false ? "silverware-variant" : "silverware-fork-knife"} size={13} color={i.for_dishes === false ? colors.muted : colors.brandPrimary} />
+                            <Text style={[styles.dishChipText, i.for_dishes === false && { color: colors.muted }]}>
+                              {i.for_dishes === false ? "Niet bij gerechten" : "Telt mee bij gerechten"}
+                            </Text>
+                          </Pressable>
                         </View>
                         <Pressable onPress={() => step(i, -1)} hitSlop={6} style={styles.stepBtn} testID={`pantry-minus-${i.id}`}>
                           <Icon name="minus" size={18} color={colors.onSurface} />
@@ -314,6 +324,16 @@ const useStyles = makeStyles((colors) => ({
   rowBorder: { borderBottomWidth: 1, borderBottomColor: colors.divider },
   rowName: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
   rowQty: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
+  dishChip: { flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "flex-start", marginTop: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.brandPrimary },
+  dishChipOff: { borderColor: colors.border },
+  dishChipText: { fontSize: 11, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  dishBox: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary },
+  seg: { flexDirection: "row", backgroundColor: colors.surfaceTertiary, borderRadius: 10, padding: 3 },
+  segBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: "center" },
+  segOn: { backgroundColor: colors.surface },
+  segText: { fontSize: 13, fontFamily: fonts.medium, color: colors.muted },
+  segTextOn: { color: colors.onSurface, fontFamily: fonts.semibold },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   headerTitle2: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   quick: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceTertiary },
   quickOn: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
@@ -328,7 +348,10 @@ const useStyles = makeStyles((colors) => ({
   stepBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
 }));
 
-// Eén product instellen: hoeveel je hebt, hoeveel je er zelf per week van gebruikt en of het meetelt voor gerechten
+// Eén product instellen: hoeveel je hebt, hoeveel je er zelf per week van gebruikt en of het meetelt voor gerechten.
+// Bijhouden in aantal (8 eieren, 500 gram) of in procent (een fles olie: nog 60%, 10% per week).
+const PCT_STEPS = [5, 10, 20, 25, 50, 100];
+
 function EditSheet({ item, onClose, onSave, onDelete }: { item: PItem | null; onClose: () => void; onSave: (i: PItem) => void; onDelete: (i: PItem) => void }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -348,8 +371,14 @@ function EditSheet({ item, onClose, onSave, onDelete }: { item: PItem | null; on
   }
   if (!item && key !== null) setKey(null);
   const num = (v: string) => parseFloat(v.replace(",", ".")) || 0;
-  const unitText = unit === "%" ? "%" : unit;
+  const pct = unit === "%";
   const w = num(weekly);
+  const setMode = (toPct: boolean) => {
+    if (toPct === pct) return;
+    setUnit(toPct ? "%" : "stuks");
+    setQty(toPct ? "100" : "1");
+    setWeekly("");
+  };
   return (
     <Modal visible={!!item} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
@@ -366,58 +395,106 @@ function EditSheet({ item, onClose, onSave, onDelete }: { item: PItem | null; on
                   <Icon name="close" size={24} color={colors.onSurface} />
                 </Pressable>
               </View>
-              <View style={{ flexDirection: "row", gap: 10 }}>
-                <Field label="Hoeveel heb je nu" value={qty} onChangeText={setQty} keyboardType="decimal-pad" containerStyle={{ flex: 1 }} testID="pantry-edit-qty" />
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Text style={styles.label}>Eenheid</Text>
-                  <Select value={unit} options={UNITS.includes("%") ? UNITS : [...UNITS, "%"]} onChange={setUnit} testID="pantry-edit-unit" />
+              <ScrollView contentContainerStyle={{ gap: 16 }} keyboardShouldPersistTaps="handled">
+                {/* Eerst het belangrijkste: telt het mee voor gerechten */}
+                <View style={styles.dishBox}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowName}>Meerekenen bij gerechten</Text>
+                    <Text style={styles.rowQty}>
+                      {forDishes
+                        ? w
+                          ? "Aan: wat je hebt gaat van je boodschappen af, maar je eigen weekverbruik houden we apart."
+                          : "Aan: wat je hebt, hoef je voor je gerechten niet te kopen."
+                        : "Uit: voor gerechten kopen we het gewoon, ook al heb je het in huis."}
+                    </Text>
+                  </View>
+                  <Switch value={forDishes} onValueChange={setForDishes} testID="pantry-edit-dishes" />
                 </View>
-              </View>
-              <View style={{ gap: 6 }}>
-                <Field
-                  label={`Zelf gebruikt per week (${unitText})`}
-                  value={weekly}
-                  onChangeText={setWeekly}
-                  keyboardType="decimal-pad"
-                  placeholder="Bijv. 8"
-                  testID="pantry-edit-weekly"
-                />
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-                  <Pressable onPress={() => setWeekly("")} style={[styles.quick, !w && styles.quickOn]}>
-                    <Text style={[styles.quickText, !w && styles.quickTextOn]}>Niet bijhouden</Text>
-                  </Pressable>
-                  <Pressable onPress={() => setWeekly(unit === "%" ? "100" : qty || "1")} style={styles.quick} testID="pantry-edit-allweek">
-                    <Text style={styles.quickText}>Elke week helemaal op</Text>
-                  </Pressable>
+
+                <View style={{ gap: 6 }}>
+                  <Text style={styles.label}>Bijhouden in</Text>
+                  <View style={styles.seg}>
+                    <Pressable onPress={() => setMode(false)} style={[styles.segBtn, !pct && styles.segOn]} testID="pantry-mode-qty">
+                      <Text style={[styles.segText, !pct && styles.segTextOn]}>Aantal (stuks, gram…)</Text>
+                    </Pressable>
+                    <Pressable onPress={() => setMode(true)} style={[styles.segBtn, pct && styles.segOn]} testID="pantry-mode-pct">
+                      <Text style={[styles.segText, pct && styles.segTextOn]}>Procent (fles, pot)</Text>
+                    </Pressable>
+                  </View>
                 </View>
+
+                {pct ? (
+                  <>
+                    <View style={{ gap: 6 }}>
+                      <Text style={styles.label}>Hoe vol is het nu? {Math.round(num(qty))}%</Text>
+                      <View style={styles.chips}>
+                        {[100, 75, 50, 25, 10].map((v) => (
+                          <Pressable key={v} onPress={() => setQty(String(v))} style={[styles.quick, num(qty) === v && styles.quickOn]}>
+                            <Text style={[styles.quickText, num(qty) === v && styles.quickTextOn]}>{v === 100 ? "Vol" : `${v}%`}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </View>
+                    <View style={{ gap: 6 }}>
+                      <Text style={styles.label}>Hoeveel % gebruik je per week?</Text>
+                      <View style={styles.chips}>
+                        <Pressable onPress={() => setWeekly("")} style={[styles.quick, !w && styles.quickOn]}>
+                          <Text style={[styles.quickText, !w && styles.quickTextOn]}>Standaard</Text>
+                        </Pressable>
+                        {PCT_STEPS.map((v) => (
+                          <Pressable key={v} onPress={() => setWeekly(String(v))} style={[styles.quick, w === v && styles.quickOn]} testID={`pantry-pct-${v}`}>
+                            <Text style={[styles.quickText, w === v && styles.quickTextOn]}>{v === 100 ? "Elke week op" : `${v}%`}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </View>
+                  </>
+                ) : (
+                  <>
+                    <View style={{ flexDirection: "row", gap: 10 }}>
+                      <Field label="Hoeveel heb je nu" value={qty} onChangeText={setQty} keyboardType="decimal-pad" containerStyle={{ flex: 1 }} testID="pantry-edit-qty" />
+                      <View style={{ flex: 1, gap: 6 }}>
+                        <Text style={styles.label}>Eenheid</Text>
+                        <Select value={unit} options={UNITS} onChange={setUnit} testID="pantry-edit-unit" />
+                      </View>
+                    </View>
+                    <View style={{ gap: 6 }}>
+                      <Field
+                        label={`Zelf gebruikt per week (${unit})`}
+                        value={weekly}
+                        onChangeText={setWeekly}
+                        keyboardType="decimal-pad"
+                        placeholder="Bijv. 8 (leeg = niet bijhouden)"
+                        testID="pantry-edit-weekly"
+                      />
+                      <View style={styles.chips}>
+                        <Pressable onPress={() => setWeekly("")} style={[styles.quick, !w && styles.quickOn]}>
+                          <Text style={[styles.quickText, !w && styles.quickTextOn]}>Niet bijhouden</Text>
+                        </Pressable>
+                        <Pressable onPress={() => setWeekly(qty || "1")} style={styles.quick} testID="pantry-edit-allweek">
+                          <Text style={styles.quickText}>Elke week helemaal op</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  </>
+                )}
                 <Text style={styles.rowQty}>
                   {w
-                    ? `Elke week gaat er ${formatQty(w)} ${unitText} af. Komt het onder één week verbruik, dan stellen we voor om het te kopen.`
-                    : "Gebruik je dit ook buiten je gerechten (zoals eieren bij het ontbijt of een krop sla)? Vul dan in hoeveel per week."}
+                    ? `Elke week gaat er ${formatQty(w)}${pct ? "%" : ` ${unit}`} af. Is het bijna op, dan stellen we voor het te kopen in je volgende boodschappenlijst.`
+                    : pct
+                      ? "Standaard: het percentage dat onderaan je voorraadkast staat."
+                      : "Gebruik je dit ook buiten je gerechten (eieren bij het ontbijt, een krop sla)? Vul dan in hoeveel per week."}
                 </Text>
-              </View>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.rowName}>Telt mee voor gerechten</Text>
-                  <Text style={styles.rowQty}>
-                    {forDishes
-                      ? w
-                        ? `Wat je zelf per week gebruikt houden we apart. Gebruik je ${formatQty(w)} per week en heeft een gerecht er nog 6 nodig, dan zorgen we dat er genoeg is voor allebei.`
-                        : "Wat je hebt, hoef je voor je gerechten niet te kopen."
-                      : "Voor gerechten kopen we het gewoon, ook al heb je het in huis."}
-                  </Text>
-                </View>
-                <Switch value={forDishes} onValueChange={setForDishes} testID="pantry-edit-dishes" />
-              </View>
-              <Button
-                label="Opslaan"
-                onPress={() => onSave({ ...item, qty: num(qty), unit, weekly: w > 0 ? w : null, for_dishes: forDishes })}
-                testID="pantry-edit-save"
-              />
-              <Pressable onPress={() => onDelete(item)} style={{ alignSelf: "center", flexDirection: "row", gap: 6, alignItems: "center" }} testID="pantry-edit-delete">
-                <Icon name="trash-can-outline" size={18} color={colors.error} />
-                <Text style={[styles.rowName, { color: colors.error }]}>Uit je voorraadkast halen</Text>
-              </Pressable>
+                <Button
+                  label="Opslaan"
+                  onPress={() => onSave({ ...item, qty: num(qty), unit, weekly: w > 0 ? w : null, for_dishes: forDishes })}
+                  testID="pantry-edit-save"
+                />
+                <Pressable onPress={() => onDelete(item)} style={{ alignSelf: "center", flexDirection: "row", gap: 6, alignItems: "center" }} testID="pantry-edit-delete">
+                  <Icon name="trash-can-outline" size={18} color={colors.error} />
+                  <Text style={[styles.rowName, { color: colors.error }]}>Uit je voorraadkast halen</Text>
+                </Pressable>
+              </ScrollView>
             </>
           ) : null}
         </Pressable>

@@ -11,6 +11,7 @@ export const CHANGELOG: Release[] = [
     changes: [
       { kind: "nieuw", text: "Bij de voorstellen voor je voorraadkast zoek je ook zelf een product, bijvoorbeeld je eigen afwasmiddel." },
       { kind: "nieuw", text: "Bij wisselen van een product kun je ook zoeken." },
+      { kind: "beter", text: "Per product kies je: bijhouden in aantal of in procent, en hoeveel je per week gebruikt. Of het meetelt bij gerechten zet je met één tik aan of uit." },
       { kind: "beter", text: "Veel meer voorstellen (sauzen, gebakken uitjes, snoep, verzorging) en 'Andere voorstellen' geeft steeds een mix uit alle groepen." },
     ],
   },
