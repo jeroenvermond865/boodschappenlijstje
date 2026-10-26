@@ -1864,6 +1864,37 @@ def _add_item(store_map: dict, store: str, name: str, unit: str, aisle: str, qty
         smap[key]["product_id"] = product_id
 
 
+def _match_missing(blocks: list, docs: list, prods: dict) -> None:
+    # Regels zonder product: zoek op naam in de winkel van die regel, en zet ze bij de goede afdeling in plaats van "Overig"
+    pools: dict = {}
+    found: dict = {}
+    for b in blocks:
+        moved = False
+        for it in b["flat"]:
+            if it.get("product_id") or _norm_text(it["name"]) in _ALWAYS_HOME:
+                continue
+            k = (b["store"], _norm_text(it["name"]))
+            if k not in found:
+                if b["store"] not in pools:
+                    pools[b["store"]] = [d for d in docs if d.get("_src") == b["store"] and d.get("is_global")]
+                hits = _best_matches(pools[b["store"]], it["name"]) if pools[b["store"]] else []
+                found[k] = hits[0] if hits else None
+            d = found[k]
+            if not d:
+                continue
+            prods.setdefault(d["product_id"], _clean(d))
+            it["product_id"] = d["product_id"]
+            it["matched"] = True  # door de app gekozen: je kunt het zelf nog wisselen
+            if it.get("aisle") == "Overig" and d.get("aisle") in AISLES and d["aisle"] != "Overig":
+                it["aisle"] = d["aisle"]
+                moved = True
+        if moved:
+            by_aisle: Dict[str, list] = {}
+            for it in sorted(b["flat"], key=lambda x: (AISLES.index(x["aisle"]) if x["aisle"] in AISLES else 99, x["name"].lower())):
+                by_aisle.setdefault(it["aisle"], []).append(it)
+            b["grouped"] = [{"aisle": a, "items": by_aisle[a]} for a in AISLES if a in by_aisle]
+
+
 def _item_grams(qty: float, unit: str, p: dict) -> Optional[float]:
     # Hoeveelheid in gram of ml, zodat 0,38 kg en 1 stuk aardappel samen op één regel kunnen
     u = (unit or "").lower().strip()
@@ -2075,6 +2106,10 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
                 it["product_id"] = swaps[it["product_id"]]
     pids = {it.get("product_id") for b in by_store + general + [x for d in per_day for x in d["by_store"]] for it in b["flat"] if it.get("product_id")}
     prods = {p["product_id"]: p for p in await db.products.find(_live({"product_id": {"$in": list(pids)}}), {"_id": 0}).to_list(5000)} if pids else {}
+    # Ingrediënten zonder product (bijv. uit een recept van een andere winkel): zelf het best passende product zoeken
+    if any(not it.get("product_id") for b in by_store + general for it in b["flat"]):
+        docs = await _global_products()
+        await asyncio.to_thread(_match_missing, by_store + general + [x for d in per_day for x in d["by_store"]], docs, prods)
     piece_ids = {it.get("product_id") for b in by_store + general for it in b["flat"] if (it.get("unit") or "").lower().strip() in ("", "stuks", "stuk", "st")}
     await _learn_pack_counts([prods[x] for x in piece_ids if x in prods], 4)
 
@@ -5653,7 +5688,8 @@ _SYNONYMS = {"lasagnevel": ["lasagnebladen", "lasagne"], "lasagnevellen": ["lasa
              "vanille extract": ["vanille extract", "vanillearoma", "vanille"], "vanilleextract": ["vanille extract", "vanillearoma", "vanille"],
              "parmezaanse kaas": ["parmigiano reggiano", "grana padano", "parmezaan"], "parmezaan": ["parmigiano reggiano", "grana padano"],
              "creme fraiche": ["creme fraiche", "zure room"], "zalmfilet": ["zalm"], "kipfilet": ["kipfilet", "kip"],
-             "lente ui": ["bosui"], "lenteui": ["bosui"], "sjalot": ["sjalotten", "sjalot"], "rucola": ["rucola", "rucolasla"]}
+             "lente ui": ["bosui"], "lenteui": ["bosui"], "sjalot": ["sjalotten", "sjalot"], "rucola": ["rucola", "rucolasla"],
+             "kokostoppers": ["kokostoppen", "kokosmakronen"], "kokostopjes": ["kokostoppen", "kokosmakronen"]}
 
 
 def _best_matches(pool: list, name: str, limit: int = 1) -> list:
