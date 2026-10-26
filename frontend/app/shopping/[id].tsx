@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Linking, Modal, Platform, Pressable, ScrollView, Share, Text, View } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
@@ -13,12 +13,13 @@ import { BetterPack, PackBetter, packText } from "@/src/packs";
 import { AISLE_ICONS, formatQty } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
+import { usePremium } from "@/src/premium";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; better?: PackBetter | null; in_pantry?: number };
 type Grouped = { aisle: string; items: Item[] };
-type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number };
+type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number; saving?: number };
 
 const euro = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
 type PerDay = { index: number; adults: number; children: number; by_store: StoreBlock[] };
@@ -33,6 +34,7 @@ export default function ShoppingScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
 
   const [tab, setTab] = useState<"total" | "perday">("total");
   const [checked, setChecked] = useState<Set<string>>(new Set());
@@ -72,6 +74,8 @@ export default function ShoppingScreen() {
   }, [data, multi]);
   // "Algemeen" staat ook al in de winkeltotalen; het totaal is de som van de winkels
   const grandTotal = (data?.by_store ?? []).reduce((n, b) => n + (b.total ?? 0), 0);
+  const promoSaving = (data?.by_store ?? []).reduce((n, b) => n + (b.saving ?? 0), 0);
+  const premium = usePremium();
 
   // Elk product staat één keer in het winkeltotaal; per dag en bij "Algemeen" zijn dat delen ervan.
   // Afvinken houden we op alle plekken gelijk: totaal af = alle delen af, alle delen af = totaal af.
@@ -306,6 +310,11 @@ export default function ShoppingScreen() {
               <Text style={styles.totalLabel}>Geschat totaal</Text>
               <Text style={styles.totalValue}>{euro(grandTotal)}</Text>
               <Text style={styles.totalHint}>Hele verpakkingen tegen de huidige winkelprijs. Producten zonder prijs tellen niet mee.</Text>
+              {premium && promoSaving > 0 ? (
+                <Pressable onPress={() => router.push("/savings")} testID="promo-saving">
+                  <Text style={styles.savingText}>Aanbiedingen schelen je {euro(promoSaving)} op deze lijst. Bekijk je bespaaroverzicht</Text>
+                </Pressable>
+              ) : null}
             </View>
           ) : null}
           {tab === "total"
@@ -484,6 +493,7 @@ const useStyles = makeStyles((colors) => ({
   totalCard: { borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 2, backgroundColor: colors.surfaceSecondary },
   totalLabel: { fontSize: 13, fontFamily: fonts.medium, color: colors.muted },
   totalValue: { fontSize: 26, fontFamily: fonts.bold, color: colors.onSurface },
+  savingText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.success, marginTop: 6 },
   totalHint: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },
   root: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingBottom: 10 },

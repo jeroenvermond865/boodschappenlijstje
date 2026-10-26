@@ -1682,6 +1682,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
     def priced(blocks: list) -> None:
         for b in blocks:
             total = 0.0
+            saving = 0.0
             for it in b["flat"]:
                 p = prods.get(it.get("product_id") or "")
                 price = resolve_price(p.get("prices", {}), b["store"], p.get("unavailable", [])) if p else 0
@@ -1691,7 +1692,13 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
                     it.update({"packs": packs, "pack_unit": p.get("unit") or "", "price": round(packs * price, 2), "pack_price": price,
                                "product": p.get("name"), "better": plan.get("better")})
                     total += packs * price
+                    # Korting door een aanbieding: normale prijs min wat je nu betaalt
+                    off = _promo_saving(p, price, packs)
+                    if off > 0:
+                        it["saving"] = off
+                        saving += off
             b["total"] = round(total, 2)
+            b["saving"] = round(saving, 2)
     await _global_products()  # voor voorstellen van een grotere verpakking
 
     def price_all():
@@ -1700,6 +1707,11 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
         for d in per_day:
             priced(d["by_store"])
     await asyncio.to_thread(price_all)
+    # Voor het bespaaroverzicht: per lijst onthouden wat de aanbiedingen schelen
+    sv = {"promo": round(sum(b.get("saving") or 0 for b in by_store), 2), "total": round(sum(b.get("total") or 0 for b in by_store), 2)}
+    old = camp.get("savings") or {}
+    if (old.get("promo"), old.get("total")) != (sv["promo"], sv["total"]):
+        await db.camps.update_one({"camp_id": camp_id}, {"$set": {"savings": {**sv, "at": now_utc()}}})
     # Premium: wat je al in je voorraadkast hebt, zetten we erbij
     has_pantry = False
     if user.get("premium"):
@@ -1813,6 +1825,48 @@ async def delete_pantry(item_id: str, user: dict = Depends(get_current_user)):
     await require_premium(user)
     await db.pantry.delete_one({"item_id": item_id, "user_id": user["user_id"]})
     return {"ok": True}
+
+
+def _promo_saving(p: dict, price: float, packs: int) -> float:
+    # Wat een aanbieding je op dit aantal verpakkingen scheelt (lagere prijs, of bijv. 1+1 gratis als je er genoeg koopt)
+    now_p, _ = _promo_public(p, price)
+    if not now_p:
+        return 0.0
+    regular = float(now_p.get("regular") or 0)
+    pay = min(price, float(now_p.get("price") or price))
+    if regular > pay:
+        return round(packs * (regular - pay), 2)
+    deal = now_p.get("deal") or {}
+    n = int(deal.get("count") or 0)
+    if n > 1 and packs >= n and deal.get("total"):
+        return round(max(0.0, (packs // n) * (n * price - float(deal["total"]))), 2)
+    if n == 1 and deal.get("total") and float(deal["total"]) < price:
+        return round(packs * (price - float(deal["total"])), 2)
+    return 0.0
+
+
+@api_router.get("/savings")
+async def savings_overview(user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    camps = await db.camps.find(camp_access_filter(user["user_id"]), {"_id": 0, "camp_id": 1, "name": 1, "start_date": 1, "created_at": 1, "savings": 1}).to_list(500)
+    months: Dict[str, dict] = {}
+    for c in camps:
+        sv = c.get("savings") or {}
+        if not sv.get("total"):
+            continue
+        when = c.get("start_date") or (c.get("created_at").isoformat() if isinstance(c.get("created_at"), datetime) else str(c.get("created_at") or ""))
+        m = (when or "")[:7]
+        if not m:
+            continue
+        row = months.setdefault(m, {"month": m, "saving": 0.0, "total": 0.0, "lists": []})
+        row["saving"] += sv.get("promo") or 0
+        row["total"] += sv.get("total") or 0
+        row["lists"].append({"id": c["camp_id"], "name": c.get("name"), "saving": sv.get("promo") or 0, "total": sv.get("total") or 0})
+    out = sorted(months.values(), key=lambda r: r["month"], reverse=True)[:12]
+    for r in out:
+        r["saving"] = round(r["saving"], 2)
+        r["total"] = round(r["total"], 2)
+    return {"months": out, "saving": round(sum(r["saving"] for r in out), 2), "total": round(sum(r["total"] for r in out), 2)}
 
 
 @api_router.get("/camps/{camp_id}/budget")
@@ -6659,14 +6713,17 @@ HIST_MAX_POINTS = 400
 
 
 def _hist_now(doc: dict) -> tuple:
+    # (normale prijs, actieprijs of None). De opgeslagen prijs is bij sommige winkels al de actieprijs.
     store = product_source(doc)
-    price = float((doc.get("prices") or {}).get(store) or 0) if store else 0.0
-    promo = None
-    if price:
-        now_p, _ = _promo_public(doc, price)
-        if now_p and now_p.get("price") and float(now_p["price"]) < price:
-            promo = round(float(now_p["price"]), 2)
-    return round(price, 2), promo
+    shelf = float((doc.get("prices") or {}).get(store) or 0) if store else 0.0
+    if not shelf:
+        return 0.0, None
+    now_p, _ = _promo_public(doc, shelf)
+    if not now_p and not doc.get("on_offer"):
+        return round(shelf, 2), None
+    regular = max(shelf, float((now_p or {}).get("regular") or 0))
+    pay = min(shelf, float((now_p or {}).get("price") or shelf))
+    return round(regular, 2), round(pay, 2)
 
 
 async def _snapshot_prices() -> int:
@@ -6682,7 +6739,7 @@ async def _snapshot_prices() -> int:
         hist_ops.clear()
         prod_ops.clear()
 
-    proj = {"_id": 0, "product_id": 1, "prices": 1, "dirk_id": 1, "ah_id": 1, "jumbo_id": 1, "promo": 1, "promos": 1, "hist_last": 1}
+    proj = {"_id": 0, "product_id": 1, "prices": 1, "dirk_id": 1, "ah_id": 1, "jumbo_id": 1, "promo": 1, "promos": 1, "on_offer": 1, "hist_last": 1}
     async for doc in db.products.find({"is_global": True, "deleted_at": None}, proj):
         price, promo = _hist_now(doc)
         if not price:

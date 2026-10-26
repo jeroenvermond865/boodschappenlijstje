@@ -137,6 +137,12 @@ export default function AccountScreen() {
           onPress={() => router.push("/account/profile")}
         />
         <AdminRow
+          testID="savings-link"
+          icon="piggy-bank-outline"
+          label={user?.premium ? "Bespaaroverzicht" : "Bespaaroverzicht ⭐"}
+          onPress={() => router.push("/savings")}
+        />
+        <AdminRow
           testID="alerts-link"
           icon="bell-ring-outline"
           label={user?.premium ? "Prijsalarmen" : "Prijsalarmen ⭐"}
