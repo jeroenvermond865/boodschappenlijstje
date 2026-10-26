@@ -6678,79 +6678,150 @@ async def _refresh_dirk_prices(mults: dict) -> int:
 
 
 async def _refresh_ah_prices(mults: dict) -> int:
-    prods = await db.products.find({"ah_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0, "product_id": 1, "dirk_id": 1, "ah_id": 1, "jumbo_id": 1, "aisle": 1}).to_list(None)
-    if not prods:
-        return 0
-    updated = 0
-    seen, gone = [], []
-    async with httpx.AsyncClient(timeout=30, headers=AH_HEADERS) as c:
-        tok = await _ah_token(c)
-        H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-        for p in prods:
-            try:
-                r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{p['ah_id']}", headers=H)
-                if r.status_code == 401:
-                    tok = await _ah_token(c)
-                    H = {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP"}
-                    r = await c.get(f"https://api.ah.nl/mobile-services/product/detail/v4/fir/{p['ah_id']}", headers=H)
-                if r.status_code == 404:
-                    gone.append(p["product_id"])
-                    continue
-                card = (r.json() or {}).get("productCard") or {}
-            except Exception:
+    # Per categorie 1000 producten tegelijk (zo'n 40 verzoeken voor de hele winkel, i.p.v. één per product).
+    # Nieuwe producten komen er meteen bij; na een herstart gaan we verder bij de categorie waar we waren.
+    from pymongo import UpdateOne
+    prods = {str(p["ah_id"]): p async for p in db.products.find({"ah_id": {"$exists": True}, "deleted_at": None, "is_global": True},
+                                                               {"_id": 0, "product_id": 1, "ah_id": 1, "aisle": 1})}
+    known = {str(p["ah_id"]) async for p in db.products.find({"ah_id": {"$exists": True}}, {"_id": 0, "ah_id": 1})}
+    state = await db.meta.find_one({"key": "price_refresh"}) or {}
+    start_cat = int(state.get("ah_cat") or 0)
+    seen, gone, updated, added = set(), [], 0, 0
+    async with httpx.AsyncClient(timeout=60, headers=AH_HEADERS) as c:
+        H = {"Authorization": f"Bearer {await _ah_token(c)}", "X-Application": "AHWEBSHOP"}
+        cats = (await c.get("https://api.ah.nl/mobile-services/v1/product-shelves/categories", headers=H)).json() or []
+        for ci, cat in enumerate(cats):
+            if ci < start_cat:
                 continue
-            n = _ah_normalize(card)
-            if card and card.get("orderAvailabilityStatus") in ("OUT_OF_ASSORTMENT", "DELISTED"):
-                gone.append(p["product_id"])
-                continue
-            if not n or not n["price"]:
-                continue
-            await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Albert Heijn", n, mults)})
-            seen.append(p["product_id"])
-            updated += 1
-    await _mark_assortment(seen, gone)
-    return updated
+            page, pages = 0, 1
+            while page < pages and page < 20:
+                try:
+                    r = await c.get("https://api.ah.nl/mobile-services/product/search/v2",
+                                    params={"taxonomyId": cat["id"], "size": 1000, "page": page}, headers=H)
+                    if r.status_code == 401:
+                        H["Authorization"] = f"Bearer {await _ah_token(c)}"
+                        continue
+                    j = r.json() or {}
+                except Exception as e:
+                    logger.warning("AH-prijzen %s mislukt: %r", cat.get("name"), e)
+                    break
+                pages = int((j.get("page") or {}).get("totalPages") or 0)
+                ops, new = [], []
+                for pr in j.get("products") or []:
+                    n = _ah_normalize(pr)
+                    if not n or not n.get("ah_id"):
+                        continue
+                    aid = str(n["ah_id"])
+                    if pr.get("orderAvailabilityStatus") in ("OUT_OF_ASSORTMENT", "DELISTED"):
+                        if aid in prods:
+                            gone.append(prods[aid]["product_id"])
+                        continue
+                    if not n["price"] or aid in seen:
+                        continue
+                    seen.add(aid)
+                    if aid in prods:
+                        ops.append(UpdateOne({"product_id": prods[aid]["product_id"]}, {"$set": _apply_refresh(prods[aid], "Albert Heijn", n, mults)}))
+                    elif aid not in known:
+                        known.add(aid)
+                        n["source_id"] = aid
+                        new.append(_new_store_product("ah_id", n, "Albert Heijn", mults))
+                if ops:
+                    await db.products.bulk_write(ops, ordered=False)
+                    updated += len(ops)
+                if new:
+                    await db.products.insert_many(new)
+                    added += len(new)
+                page += 1
+            await db.meta.update_one({"key": "price_refresh"}, {"$set": {"ah_cat": ci + 1}}, upsert=True)
+            await asyncio.sleep(0.5)
+    await db.meta.update_one({"key": "price_refresh"}, {"$set": {"ah_cat": 0}}, upsert=True)
+    # Alleen bij een volledige ronde weten we wat er niet meer is
+    full = start_cat == 0
+    await _mark_assortment([prods[a]["product_id"] for a in seen if a in prods],
+                           gone + ([p["product_id"] for a, p in prods.items() if a not in seen] if full and len(seen) >= 0.85 * len(prods) else []))
+    logger.info("AH-prijzen: %d bijgewerkt, %d nieuw%s", updated, added, "" if full else " (hervat)")
+    return updated + added
 
 
 async def _refresh_jumbo_prices(mults: dict) -> int:
-    # Jumbo heeft geen losse productopvraag meer: dezelfde zoektermen opnieuw doorlopen
-    prods = {str(p["jumbo_id"]): p for p in await db.products.find({"jumbo_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0, "product_id": 1, "dirk_id": 1, "ah_id": 1, "jumbo_id": 1, "aisle": 1}).to_list(None)}
-    if not prods:
-        return 0
+    # Jumbo heeft geen losse productopvraag: zoeken op "*" geeft de hele winkel, 24 per keer. Rustig aan (anders blokkeert
+    # Jumbo), nieuwe producten meteen erbij, en na een herstart verder waar we waren.
+    from pymongo import UpdateOne
+    prods = {str(p["jumbo_id"]): p async for p in db.products.find({"jumbo_id": {"$exists": True}, "deleted_at": None, "is_global": True},
+                                                                  {"_id": 0, "product_id": 1, "jumbo_id": 1, "aisle": 1})}
+    known = {str(p["jumbo_id"]) async for p in db.products.find({"jumbo_id": {"$exists": True}}, {"_id": 0, "jumbo_id": 1})}
+    state = await db.meta.find_one({"key": "price_refresh"}) or {}
+    start = off = int(state.get("jumbo_offset") or 0)
     done: set = set()
+    added, fails = 0, 0
     async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
-        for term in DIRK_ALL_TERMS:
+        _, total = await _jumbo_search_page(c, "*", 0)
+        while off < total:
             try:
-                async for page in _jumbo_sweep(c, term):
-                    for raw in page:
-                        n = _jumbo_normalize(raw)
-                        if not n or not n["price"] or n["jumbo_id"] in done or n["jumbo_id"] not in prods:
-                            continue
-                        done.add(n["jumbo_id"])
-                        p = prods[n["jumbo_id"]]
-                        await db.products.update_one({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n, mults)})
+                page = (await _jumbo_search_page(c, "*", off))[0]
+                fails = 0
             except Exception as e:
-                logger.warning("Jumbo-prijzen %s mislukt: %s", term, e)
-    # Jumbo zoeken we via zoektermen; alleen als bijna alles gevonden is, mag de rest als verdwenen gelden
-    seen = [prods[j]["product_id"] for j in done]
-    if len(done) >= 0.85 * len(prods):
+                fails += 1
+                if "403" in repr(e) or fails >= 5:
+                    await db.meta.update_one({"key": "price_refresh"}, {"$set": {"jumbo_offset": off}}, upsert=True)
+                    raise RuntimeError(f"Jumbo-prijzen gestopt bij {off} van {total}: {e!r}")
+                await asyncio.sleep(10)
+                continue
+            ops, new = [], []
+            for raw in page:
+                n = _jumbo_normalize(raw)
+                if not n or not n["price"] or n["jumbo_id"] in done:
+                    continue
+                done.add(n["jumbo_id"])
+                if n["jumbo_id"] in prods:
+                    p = prods[n["jumbo_id"]]
+                    ops.append(UpdateOne({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n, mults)}))
+                elif n["jumbo_id"] not in known:
+                    known.add(n["jumbo_id"])
+                    n["source_id"] = n["jumbo_id"]
+                    new.append(_new_store_product("jumbo_id", n, "Jumbo", mults))
+            if ops:
+                await db.products.bulk_write(ops, ordered=False)
+            if new:
+                await db.products.insert_many(new)
+                added += len(new)
+            off += 24
+            if off % (24 * 25) == 0:
+                await db.meta.update_one({"key": "price_refresh"}, {"$set": {"jumbo_offset": off}}, upsert=True)
+            await asyncio.sleep(2)
+    await db.meta.update_one({"key": "price_refresh"}, {"$set": {"jumbo_offset": 0}}, upsert=True)
+    seen = [prods[j]["product_id"] for j in done if j in prods]
+    if start == 0 and len(done) >= 0.85 * len(prods):
         await _mark_assortment(seen, [p["product_id"] for j, p in prods.items() if j not in done])
     else:
         await _mark_assortment(seen, [])
-        logger.info("Jumbo: %d van %d gevonden, assortiment niet bijgewerkt", len(done), len(prods))
+    logger.info("Jumbo-prijzen: %d bijgewerkt, %d nieuw (van %d)%s", len(seen), added, total, "" if start == 0 else " (hervat)")
     return len(done)
 
 
 async def _refresh_dirk_prices_all() -> dict:
     mults = await _store_mults()
     updated = 0
+    # Een ronde loopt per winkel; wat al klaar is (bijv. voor een herstart) slaan we over
+    state = await db.meta.find_one({"key": "price_refresh"}) or {}
+    done = set(state.get("done") or [])
+    ok = True
     for fn in (_refresh_dirk_prices, _refresh_jumbo_prices, _refresh_ah_prices):
+        if fn.__name__ in done:
+            continue
         try:
             updated += await fn(mults)
+            done.add(fn.__name__)
+            await db.meta.update_one({"key": "price_refresh"}, {"$set": {"done": sorted(done)}}, upsert=True)
         except Exception as e:
+            ok = False
             logger.warning("Refresh %s failed: %s", fn.__name__, e)
         if fn is _refresh_jumbo_prices:
             asyncio.create_task(_load_folders())  # Jumbo-acties komen mee met de producten
+    _invalidate_products()
+    if not ok:
+        return {"updated": updated, "partial": True}
+    await db.meta.update_one({"key": "price_refresh"}, {"$set": {"done": []}}, upsert=True)
     await db.settings.update_one({"key": "app"}, {"$set": {"dirk_refreshed_at": now_utc()}}, upsert=True)
     try:
         await _snapshot_prices()
@@ -7876,7 +7947,6 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_import_extra_terms())
-    asyncio.create_task(_catalog_loop())
     asyncio.create_task(_log_product_counts())
 
 
@@ -7886,130 +7956,8 @@ async def _log_product_counts(wait: int = 15):
     logger.info("Producten per winkel: %s", counts)
 
 
-async def _import_ah_catalog(mults: dict) -> int:
-    # De hele AH-catalogus: alle categorieën van de app, per 1000 producten
-    existing = {str(p["ah_id"]) async for p in db.products.find({"ah_id": {"$exists": True}}, {"_id": 0, "ah_id": 1})}
-    added = 0
-    async with httpx.AsyncClient(timeout=60, headers=AH_HEADERS) as c:
-        H = {"Authorization": f"Bearer {await _ah_token(c)}", "X-Application": "AHWEBSHOP"}
-        cats = (await c.get("https://api.ah.nl/mobile-services/v1/product-shelves/categories", headers=H)).json() or []
-        for cat in cats:
-            page, pages = 0, 1
-            while page < pages and page < 20:
-                try:
-                    r = await c.get("https://api.ah.nl/mobile-services/product/search/v2",
-                                    params={"taxonomyId": cat["id"], "size": 1000, "page": page}, headers=H)
-                    if r.status_code == 401:
-                        H["Authorization"] = f"Bearer {await _ah_token(c)}"
-                        continue
-                    j = r.json() or {}
-                except Exception as e:
-                    logger.warning("AH-categorie %s mislukt: %r", cat.get("name"), e)
-                    break
-                pages = int((j.get("page") or {}).get("totalPages") or 0)
-                docs = []
-                for pr in j.get("products") or []:
-                    nrm = _ah_normalize(pr)
-                    if not nrm or not nrm.get("ah_id") or str(nrm["ah_id"]) in existing:
-                        continue
-                    existing.add(str(nrm["ah_id"]))
-                    nrm["source_id"] = nrm["ah_id"]
-                    docs.append(_new_store_product("ah_id", nrm, "Albert Heijn", mults))
-                if docs:
-                    await db.products.insert_many(docs)
-                    added += len(docs)
-                page += 1
-            await asyncio.sleep(0.5)
-    _invalidate_products()
-    logger.info("AH-catalogus: %d producten toegevoegd", added)
-    return added
-
-
-async def _import_jumbo_catalog(mults: dict) -> int:
-    # De hele Jumbo-catalogus: zoeken op "*" geeft alles, 24 per keer. Rustig aan, één pagina tegelijk, want bij te veel
-    # verzoeken blokkeert Jumbo ons (403) en doen ook de prijzen het even niet. We onthouden waar we waren.
-    existing = {str(p["jumbo_id"]) async for p in db.products.find({"jumbo_id": {"$exists": True}}, {"_id": 0, "jumbo_id": 1})}
-    meta = await db.meta.find_one({"key": "catalog_import"}) or {}
-    off = int(meta.get("jumbo_offset") or 0)
-    added = 0
-    async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
-        _, total = await _jumbo_search_page(c, "*", 0)
-        while off < total:
-            try:
-                prods = (await _jumbo_search_page(c, "*", off))[0]
-            except Exception as e:
-                if "403" in repr(e):
-                    await db.meta.update_one({"key": "catalog_import"}, {"$set": {"jumbo_offset": off, "jumbo_paused": now_utc()}})
-                    logger.warning("Jumbo-catalogus gepauzeerd bij %d van %d (%d toegevoegd): Jumbo blokkeert even", off, total, added)
-                    _invalidate_products()
-                    raise RuntimeError("Jumbo blokkeert even")
-                await asyncio.sleep(10)
-                continue
-            docs = []
-            for pr in prods:
-                nrm = _jumbo_normalize(pr)
-                if not nrm or nrm["jumbo_id"] in existing:
-                    continue
-                existing.add(nrm["jumbo_id"])
-                nrm["source_id"] = nrm["jumbo_id"]
-                docs.append(_new_store_product("jumbo_id", nrm, "Jumbo", mults))
-            if docs:
-                await db.products.insert_many(docs)
-                added += len(docs)
-            off += 24
-            if off % (24 * 50) == 0:
-                await db.meta.update_one({"key": "catalog_import"}, {"$set": {"jumbo_offset": off}})
-            await asyncio.sleep(2.5)
-    await db.meta.update_one({"key": "catalog_import"}, {"$set": {"jumbo_offset": 0}})
-    _invalidate_products()
-    logger.info("Jumbo-catalogus: %d producten toegevoegd (van %d)", added, total)
-    return added
-
-
-_catalog_busy = False
-_heavy_lock = asyncio.Lock()  # prijzen verversen en de catalogus nooit tegelijk: scheelt geheugen en blokkades
-
-
-
-
-async def _catalog_loop():
-    # Eens per week de volledige catalogus van AH en Jumbo langs, zodat nieuwe producten er ook in komen.
-    # Een onderbroken ronde (herstart, of Jumbo die even blokkeert) gaat na een tijdje verder waar hij was.
-    global _catalog_busy
-    if _catalog_busy:
-        return
-    _catalog_busy = True
-    await asyncio.sleep(120)
-    while True:
-        wait = 6 * 3600
-        try:
-            last = await db.meta.find_one({"key": "catalog_import"}) or {}
-            at = last.get("done_at")
-            if not at or (datetime.now(timezone.utc) - ensure_aware(at)).total_seconds() > 7 * 86400:
-                ok = True
-                async with _heavy_lock:
-                    mults = await _store_mults()
-                    if not last.get("ah_done_at") or (at and ensure_aware(last["ah_done_at"]) <= ensure_aware(at)):
-                        try:
-                            await _import_ah_catalog(mults)
-                            await db.meta.update_one({"key": "catalog_import"}, {"$set": {"key": "catalog_import", "ah_done_at": now_utc()}}, upsert=True)
-                        except Exception as e:
-                            ok = False
-                            logger.warning("AH-catalogus mislukt: %r", e)
-                    try:
-                        await _import_jumbo_catalog(mults)
-                    except Exception as e:
-                        ok = False
-                        logger.warning("Jumbo-catalogus niet af: %r", e)
-                if ok:
-                    await db.meta.update_one({"key": "catalog_import"}, {"$set": {"done_at": now_utc()}})
-                else:
-                    wait = 45 * 60  # straks verder
-                await _log_product_counts(0)
-        except Exception as e:
-            logger.warning("Catalogus: %r", e)
-            wait = 45 * 60
-        await asyncio.sleep(wait)
+# De volledige catalogus van AH en Jumbo komt nu mee met de dagelijkse prijsronde (die voegt nieuwe producten toe)
+_heavy_lock = asyncio.Lock()  # nooit twee grote ophaalrondes tegelijk: scheelt geheugen en blokkades
 
 
 async def _daily_refresh_loop():
