@@ -3892,6 +3892,9 @@ async def _load_products() -> None:
         logger.warning("Productlijst laden mislukt: %s", e)
     asyncio.ensure_future(_warm_search())
     asyncio.ensure_future(_load_learned())
+    if os.environ.get("COMPARE_AUDIT") and not _audit_done:
+        _audit_done.append(1)
+        asyncio.ensure_future(_compare_audit(_product_cache["docs"]))
 
 
 async def _warm_search() -> None:
@@ -3918,8 +3921,6 @@ async def _warm_search() -> None:
                 pick = await asyncio.to_thread(_cheapest_good, pool, pq, src)
                 logger.info("PROBE ingrediënt %s %s: kies %s; %s", pq, src, pick and pick["name"],
                             [(d["name"], d.get("unit"), round(pen, 1)) for pen, d in ing])
-        if os.environ.get("COMPARE_AUDIT"):
-            await _compare_audit(docs)
         if os.environ.get("SEARCH_PROBE"):
             for src in ("Dirk", "Albert Heijn", "Jumbo"):
                 pool = [d for d in docs if d.get("_src") == src and d.get("aisle") == "Brood, beleg & koek"]
@@ -3929,6 +3930,9 @@ async def _warm_search() -> None:
                 logger.info("PROBE soorten %s: %s", src, {k: (len(v), v[:4]) for k, v in sorted(subs.items(), key=lambda kv: -len(kv[1]))[:25]})
     except Exception as e:
         logger.info("Producten klaarzetten: %r", e)
+
+
+_audit_done: list = []  # één keer per herstart
 
 
 async def _compare_audit(docs: list) -> None:
@@ -3958,7 +3962,11 @@ async def _compare_audit(docs: list) -> None:
                 if hit and alt:
                     bad.append((base["name"], st[:2], hit["name"]))
         return len(pids), bad
-    n, bad = await asyncio.to_thread(work)
+    try:
+        n, bad = await asyncio.to_thread(work)
+    except Exception as e:
+        logger.warning("AUDIT mislukt: %r", e)
+        return
     logger.info("AUDIT vergelijken: %d producten, %d vervangen door iets vergelijkbaars", n, len(bad))
     bad.sort()
     for k in range(0, len(bad), 30):
