@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, Share, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Modal, Platform, Pressable, ScrollView, Share, Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -25,6 +25,7 @@ type PerDay = { index: number; adults: number; children: number; by_store: Store
 type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean };
 
 const key = (store: string, i: Item) => `${store}|${i.name.toLowerCase()}|${i.unit}`;
+const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 export default function ShoppingScreen() {
   const styles = useStyles();
@@ -35,6 +36,8 @@ export default function ShoppingScreen() {
 
   const [tab, setTab] = useState<"total" | "perday">("total");
   const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [shareOpen, setShareOpen] = useState(false);
+  const [onlyOpen, setOnlyOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const storageKey = `checked_${id}`;
@@ -91,53 +94,81 @@ export default function ShoppingScreen() {
     });
   };
 
-  const shareLines = () => {
-    const lines: string[] = [`🛒 Boodschappenlijst${camp?.name ? ` – ${camp.name}` : ""}`, ""];
+  const isDone = (store: string, i: Item) => checked.has(key(store, i));
+
+  const shareLines = (open = false) => {
+    const lines: string[] = [`🛒 Boodschappenlijst${camp?.name ? ` – ${camp.name}` : ""}`];
+    if (open) lines.push("(alleen wat nog niet is afgevinkt)");
+    lines.push("");
     totalBlocks.forEach((b) => {
+      const groups = b.grouped
+        .map((g) => ({ aisle: g.aisle, items: g.items.filter((i) => !(open && isDone(b.store, i))) }))
+        .filter((g) => g.items.length);
+      if (!groups.length) return;
       if (multi || b.label === "Algemeen") lines.push(`== ${b.label.toUpperCase()} ==`);
-      b.grouped.forEach((g) => {
+      groups.forEach((g) => {
         lines.push(g.aisle.toUpperCase());
-        g.items.forEach((i) => lines.push(`• ${i.name}: ${formatQty(i.qty)} ${i.unit}`));
+        g.items.forEach((i) => lines.push(`${isDone(b.store, i) ? "✅" : "▫️"} ${i.name}: ${formatQty(i.qty)} ${i.unit}`));
       });
+      if (b.total && !open) lines.push(`Geschat totaal: ${euro(b.total)}`);
       lines.push("");
     });
     lines.push("Gemaakt met Slim Boodschappenlijstje");
     return lines.join("\n");
   };
 
-  const onShare = async () => {
+  const onShare = () => {
     if (totalCount === 0) return;
+    setShareOpen(true);
+  };
+
+  const shareVia = async (how: "whatsapp" | "mail" | "copy" | "other") => {
+    const text = shareLines(onlyOpen);
+    const title = `Boodschappenlijst${camp?.name ? ` – ${camp.name}` : ""}`;
+    setShareOpen(false);
     try {
-      await Share.share({ message: shareLines() });
+      if (how === "whatsapp") await Linking.openURL(`https://wa.me/?text=${encodeURIComponent(text)}`);
+      else if (how === "mail") await Linking.openURL(`mailto:?subject=${encodeURIComponent(title)}&body=${encodeURIComponent(text)}`);
+      else if (how === "copy") {
+        await (globalThis as any).navigator.clipboard.writeText(text);
+        toast.show("Lijst gekopieerd");
+      } else await Share.share({ message: text, title });
     } catch {
-      /* cancelled */
+      if (how === "copy") toast.show("Kopiëren lukt niet in deze browser", "error");
     }
   };
+  const canCopy = Platform.OS === "web" && !!(globalThis as any).navigator?.clipboard;
+  const canNativeShare = Platform.OS !== "web" || !!(globalThis as any).navigator?.share;
 
   const onExportPdf = async () => {
     if (totalCount === 0) return;
     const blocks = totalBlocks
       .map((b) => {
-        const head = multi || b.label === "Algemeen" ? `<h2 style="color:#1C1B1A;font-size:17px;margin:20px 0 4px">${b.label}</h2>` : "";
+        const head = multi || b.label === "Algemeen" ? `<h2 style="color:#1C1B1A;font-size:17px;margin:20px 0 4px">${esc(b.label)}</h2>` : "";
+        const td = "padding:6px 0;border-bottom:1px solid #eee";
         const groups = b.grouped
           .map((g) => {
             const items = g.items
               .map(
                 (i) =>
-                  `<tr><td style="padding:6px 0;border-bottom:1px solid #eee">${i.name}</td>` +
-                  `<td style="padding:6px 0;border-bottom:1px solid #eee;text-align:right;font-weight:600">${formatQty(i.qty)} ${i.unit}</td></tr>`,
+                  `<tr><td style="${td};width:22px;font-size:16px;color:#2E5E38">${isDone(b.store, i) ? "&#9745;" : "&#9744;"}</td>` +
+                  `<td style="${td}">${esc(i.name)}${i.product ? `<br/><span style="color:#888;font-size:11px">${esc(i.packs ? `${packText(i.packs, i.pack_unit)} · ` : "")}${esc(i.product)}</span>` : ""}</td>` +
+                  `<td style="${td};text-align:right;font-weight:600;white-space:nowrap">${formatQty(i.qty)} ${esc(i.unit)}</td>` +
+                  `<td style="${td};text-align:right;color:#555;white-space:nowrap;padding-left:10px">${i.price ? euro(i.price) : ""}</td></tr>`,
               )
               .join("");
-            return `<h3 style="color:#2E5E38;margin:12px 0 4px;font-size:14px">${g.aisle}</h3><table style="width:100%;border-collapse:collapse;font-size:14px">${items}</table>`;
+            return `<h3 style="color:#2E5E38;margin:12px 0 4px;font-size:14px">${esc(g.aisle)}</h3><table style="width:100%;border-collapse:collapse;font-size:14px">${items}</table>`;
           })
           .join("");
-        return head + groups;
+        const total = b.total ? `<p style="text-align:right;font-weight:700;margin:8px 0 0">Geschat totaal: ${euro(b.total)}</p>` : "";
+        return head + groups + total;
       })
       .join("");
     const html = `<html><head><meta charset="utf-8"/></head><body style="font-family:Arial,sans-serif;color:#1C1B1A;padding:24px">
       <h1 style="color:#2E5E38;font-size:22px;margin:0 0 4px">Boodschappenlijst</h1>
-      <p style="color:#777;margin:0 0 8px">${camp?.name ?? ""}</p>${blocks}
-      <p style="color:#999;font-size:11px;margin-top:24px">Gemaakt met Slim Boodschappenlijstje</p></body></html>`;
+      <p style="color:#777;margin:0 0 8px">${esc(camp?.name ?? "")}</p>${blocks}
+      ${multi && grandTotal ? `<p style="text-align:right;font-size:16px;font-weight:700;margin-top:16px">Totaal alle winkels: ${euro(grandTotal)}</p>` : ""}
+      <p style="color:#999;font-size:11px;margin-top:24px">Prijzen zijn een schatting op basis van de websites van supermarkten. Gemaakt met Slim Boodschappenlijstje.</p></body></html>`;
     try {
       if (Platform.OS === "web") {
         await Print.printAsync({ html });
@@ -266,7 +297,37 @@ export default function ShoppingScreen() {
               ))}
         </ScrollView>
       )}
+
+      <Modal visible={shareOpen} transparent animationType="fade" onRequestClose={() => setShareOpen(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setShareOpen(false)}>
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            <Text style={styles.modalTitle}>Lijst delen</Text>
+            {doneCount > 0 ? (
+              <Pressable testID="share-only-open" onPress={() => setOnlyOpen((v) => !v)} style={styles.shareToggle}>
+                <Icon name={onlyOpen ? "checkbox-marked" : "checkbox-blank-outline"} size={22} color={colors.brandPrimary} />
+                <Text style={styles.shareToggleText}>Alleen wat nog niet is afgevinkt</Text>
+              </Pressable>
+            ) : null}
+            <ShareOption testID="share-whatsapp" icon="whatsapp" label="WhatsApp" onPress={() => shareVia("whatsapp")} />
+            <ShareOption testID="share-mail" icon="email-outline" label="E-mail" onPress={() => shareVia("mail")} />
+            {canCopy ? <ShareOption testID="share-copy" icon="content-copy" label="Tekst kopiëren" onPress={() => shareVia("copy")} /> : null}
+            {canNativeShare ? <ShareOption testID="share-other" icon="share-variant" label="Andere app" onPress={() => shareVia("other")} /> : null}
+            <ShareOption testID="share-print" icon="printer-outline" label="Printen of PDF" onPress={() => { setShareOpen(false); onExportPdf(); }} />
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
+  );
+}
+
+function ShareOption({ icon, label, onPress, testID }: { icon: string; label: string; onPress: () => void; testID: string }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  return (
+    <Pressable testID={testID} onPress={onPress} style={styles.shareOption}>
+      <Icon name={icon} size={22} color={colors.brandPrimary} />
+      <Text style={styles.shareOptionText}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -390,5 +451,12 @@ const useStyles = makeStyles((colors) => ({
   dayTitle: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },
   dayMeta: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
   dayStore: { fontSize: 13, fontFamily: fonts.bold, color: colors.brandPrimary, paddingHorizontal: 4 },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(28,27,26,0.5)", justifyContent: "center", padding: 20 },
+  modalCard: { backgroundColor: colors.surface, borderRadius: 20, padding: 20, gap: 4, width: "100%", maxWidth: 420, alignSelf: "center" },
+  modalTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface, marginBottom: 8 },
+  shareToggle: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, marginBottom: 4 },
+  shareToggleText: { fontSize: 14, fontFamily: fonts.medium, color: colors.onSurfaceSecondary },
+  shareOption: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 13, borderTopWidth: 1, borderTopColor: colors.divider },
+  shareOptionText: { fontSize: 16, fontFamily: fonts.semibold, color: colors.onSurface },
   emptyDay: { fontSize: 14, fontFamily: fonts.regular, color: colors.muted, paddingHorizontal: 4 },
 }));
