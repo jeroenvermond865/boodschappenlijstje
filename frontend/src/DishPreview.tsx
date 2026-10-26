@@ -26,16 +26,18 @@ type RecipeDetail = {
   time?: number | null;
   servings?: number | null;
   steps: string[];
-  ingredients: { text: string; name: string; product?: Product | null }[];
+  ingredients: { text: string; name: string; product?: Product | null; alt_for?: number | null }[];
   alt_swaps?: AltSwap[];
 };
 
 // Het product in een gerecht dat bij een wisseltip hoort (op naam, anders op volgorde)
 export function dishProductFor(dish: Dish, s: AltSwap): string | null {
   const words = s.from.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  // Op de regel uit het recept ("350 gr vega gyros") of op de productnaam
+  const txt = (i: Dish["ingredients"][number]) => `${(i as { recipe_text?: string }).recipe_text ?? ""} ${i.name}`.toLowerCase();
   const hit =
-    dish.ingredients.find((i) => words.every((w) => i.name.toLowerCase().includes(w))) ??
-    dish.ingredients.find((i) => words.some((w) => i.name.toLowerCase().includes(w) && w.length > 3));
+    dish.ingredients.find((i) => words.every((w) => txt(i).includes(w))) ??
+    dish.ingredients.find((i) => words.some((w) => txt(i).includes(w) && w.length > 3));
   return hit?.product_id ?? null;
 }
 
@@ -181,7 +183,7 @@ export function DishPreview({
             ) : rec.isLoading ? (
               <ActivityIndicator color={colors.brandPrimary} />
             ) : (
-              (rec.data?.ingredients ?? []).map((i, k) => (
+              (rec.data?.ingredients ?? []).filter((i) => i.alt_for == null).map((i, k) => (
                 <Text key={k} style={styles.line}>
                   • {i.text}
                 </Text>

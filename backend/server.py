@@ -2766,6 +2766,23 @@ async def _fix_dish_picks() -> None:
     logger.info("Gerechten nagekeken: %d aangepast", fixed)
 
 
+async def _fix_dish_twins() -> None:
+    # Eenmalig: gerechten van een recept met vega én vlees ("350 gr vega gyros" en "400 gr gyros") kochten allebei. Het vlees eruit.
+    if await db.meta.find_one({"key": "dish_twins_fix_1"}):
+        return
+    fixed = 0
+    async for d in db.dishes.find({"deleted_at": None, "source.recipe_id": {"$exists": True}, "ingredients.recipe_text": {"$nin": [None, ""]}},
+                                  {"_id": 0, "dish_id": 1, "ingredients": 1}):
+        ings = d.get("ingredients") or []
+        twins = _vega_twins([{"text": i.get("recipe_text") or "", "name": i.get("name")} if i.get("recipe_text") else {"text": "", "name": ""} for i in ings])
+        if not twins:
+            continue
+        await db.dishes.update_one({"dish_id": d["dish_id"]}, {"$set": {"ingredients": [i for k, i in enumerate(ings) if k not in twins]}})
+        fixed += 1
+        logger.info("Gerecht %s: vlees-keuze eruit: %s", d["dish_id"], [ings[k].get("recipe_text") for k in twins])
+    await db.meta.insert_one({"key": "dish_twins_fix_1", "at": now_utc(), "dishes": fixed})
+
+
 def _weeks_since(at) -> float:
     if not isinstance(at, datetime):
         return 0.0
@@ -7547,6 +7564,25 @@ def _swap_texts(node, depth: int = 0) -> list:
     return [t for v in items for t in _swap_texts(v, depth + 1)]
 
 
+_GYROS_LIKE = {"gyros": "shoarma", "kebab": "shoarma", "doner": "shoarma", "souvlaki": "shoarma"}
+
+
+def _vega_twins(ings: list) -> Dict[int, int]:
+    # Recepten die vlees als keuze erbij zetten ("350 gr vega gyros" en "400 gr gyros"): vlees-index -> vega-index
+    def key(i):
+        n = _norm_text(_parse_amount(i.get("text") or i.get("name") or "")[2] or i.get("name") or "")
+        return n, " ".join(w for w in n.split() if not _VEGA_WORD_RE.search(w) and w not in ("vegetarische", "plantaardige"))
+    keys = [key(i) for i in ings]
+    out: Dict[int, int] = {}
+    for v, (vn, vrest) in enumerate(keys):
+        if not vrest or not _VEGA_WORD_RE.search(vn):
+            continue
+        for m, (mn, mrest) in enumerate(keys):
+            if m != v and m not in out and mrest == vrest and not _VEGA_WORD_RE.search(mn):
+                out[m] = v
+    return out
+
+
 def _recipe_alt_swaps(rec: dict, user: dict) -> list:
     text = " ".join(dict.fromkeys(x for x in (rec.get("tip"), rec.get("description"), rec.get("alt_text"), *(rec.get("steps") or [])) if x))
     if not text:
@@ -7588,6 +7624,21 @@ def _recipe_alt_swaps(rec: dict, user: dict) -> list:
         why = (m.group("why") or "").lower()
         out.append({"index": best, "label": f"Liever {why}" if why else "Wisselen", "from": a, "to": b_name,
                     "text": m.group(0).strip(), "product": product_public(_clean(d), d["_src"], user["user_id"], favs)})
+    # Vlees dat als keuze naast het vega-ingrediënt staat: daarmee kun je wisselen
+    for m, v in _vega_twins(rec.get("ingredients") or []).items():
+        if any(x["index"] == v for x in out):
+            continue
+        ing, vi = rec["ingredients"][m], rec["ingredients"][v]
+        prod = ing.get("product")
+        if not prod:
+            store = ((vi.get("product") or {}).get("source")) or STORE_LABELS.get(rec.get("store")) or DEFAULT_STORE
+            pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
+            name = ing.get("name") or ""
+            d = _cheapest_good(pool, name, store) or next((_cheapest_good(pool, alt, store) for w, alt in _GYROS_LIKE.items() if w in _norm_text(name)), None)
+            prod = product_public(_clean(d), d["_src"], user["user_id"], favs) if d else None
+        if prod:
+            out.append({"index": v, "label": "Liever vlees", "from": vi.get("name") or "", "to": ing.get("name") or "",
+                        "text": f"{vi.get('text')} of {ing.get('text')}", "product": prod})
     if not out and re.search(r"\bliever\b", text, re.I):
         logger.info("Recept %s: wisseltip niet begrepen: %s", rec.get("id"), text[:400])
     return out[:4]
@@ -7677,6 +7728,10 @@ async def _recipe_products(rec: dict, user: dict, light: bool = False) -> dict:
         await _import_linked_jumbo(rec)
     matches = await _recipe_matches(rec)
     out = _recipe_with_products(rec, user, matches)
+    # Vlees als keuze naast vega: niet allebei kopen; het vlees wordt een wisselknop
+    twins = _vega_twins(out["ingredients"])
+    if twins:
+        out = {**out, "ingredients": [{**i, "alt_for": twins[k]} if k in twins else i for k, i in enumerate(out["ingredients"])]}
     try:
         out["alt_swaps"] = await asyncio.to_thread(_recipe_alt_swaps, out, user)
     except Exception as e:
@@ -7760,6 +7815,8 @@ async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = Fal
     ings, pantry = [], []
     keep = set(include or [])
     for n, i in enumerate(rec["ingredients"]):
+        if i.get("alt_for") is not None:
+            continue  # vlees dat als keuze naast vega staat: alleen via de wisselknop
         prod = i.get("product")
         per = round((i["qty"] or 1) / persons, 3)
         target = pantry if i.get("pantry") and n not in keep else ings
@@ -11101,6 +11158,7 @@ async def startup():
     async def _fix_picks_later():
         try:
             await _fix_dish_picks()
+            await _fix_dish_twins()
         except Exception as e:
             logger.warning("Gerechten nakijken mislukt: %r", e)
     asyncio.create_task(_fix_picks_later())

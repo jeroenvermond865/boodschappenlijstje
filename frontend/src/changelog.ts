@@ -11,6 +11,7 @@ export const CHANGELOG: Release[] = [
     changes: [
       { kind: "nieuw", text: "Gerechten zonder bereiding (bijv. zelf gemaakt in de app) krijgen een bereidingsvoorstel, op basis van je producten en wat er op de verpakking staat." },
       { kind: "nieuw", text: "Gebruik je andere producten dan in het recept (bijv. gewone gyros in plaats van vega), dan past de bereiding zich daarop aan." },
+      { kind: "opgelost", text: "Recepten met vega én vlees als keuze (zoals vega pita gyros) zetten niet meer allebei op je lijst. Je kiest vega, en met 'Liever vlees?' wissel je met één knop." },
       { kind: "opgelost", text: "'Liever vlees? ...' bij een recept wordt nu ook gevonden als het in de stappen of op een andere plek staat." },
       { kind: "opgelost", text: "Gerechten die je eerder overnam en een kruidenmix (zoals 'mix voor gyros') of vlees bij een vega-ingrediënt kregen, zijn opnieuw gekozen." },
       { kind: "beter", text: "Gerecht kiezen voor een maaltijd: na Toevoegen ga je meteen terug naar je lijstje." },

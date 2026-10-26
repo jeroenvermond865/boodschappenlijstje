@@ -31,7 +31,7 @@ type Recipe = {
   url: string;
   is_favorite?: boolean;
   steps: string[];
-  ingredients: { text: string; name: string; qty: number | null; unit: string; pantry?: boolean; stock?: "yes" | "low" | "maybe" | null; site_packs?: number | null; product: Product | null }[];
+  ingredients: { text: string; name: string; qty: number | null; unit: string; pantry?: boolean; stock?: "yes" | "low" | "maybe" | null; site_packs?: number | null; product: Product | null; alt_for?: number | null }[];
   in_stock?: string[];
   alt_swaps?: AltSwap[];
 };
@@ -106,7 +106,7 @@ export default function RecipeScreen() {
 
   // Wat kost het gerecht: alles wat op je lijst komt (dus niet wat je al in huis hebt, tenzij je het aanzet)
   const total = (r?.ingredients ?? []).reduce((sum, i, idx) => {
-    if (i.pantry && !include.includes(idx)) return sum;
+    if ((i.pantry && !include.includes(idx)) || i.alt_for != null) return sum;
     const plan = plans.data?.[idx];
     return sum + (plan?.cost ?? (i.product && i.qty == null && !i.site_packs ? i.product.price ?? 0 : 0));
   }, 0);
@@ -199,7 +199,7 @@ export default function RecipeScreen() {
                 </View>
               ) : null}
               <View style={styles.card}>
-                {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => !x.i.pantry).map(({ i, idx }, k) => (
+                {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => !x.i.pantry && x.i.alt_for == null).map(({ i, idx }, k) => (
                   <IngRow key={idx} i={i} first={k === 0} label={amount(i)} plan={plans.data?.[idx]} onSwap={(b) => swapTo(idx, b)} />
                 ))}
               </View>
