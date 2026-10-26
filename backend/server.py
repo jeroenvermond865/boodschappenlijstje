@@ -11104,6 +11104,11 @@ async def startup():
         except Exception as e:
             logger.warning("Gerechten nakijken mislukt: %r", e)
     asyncio.create_task(_fix_picks_later())
+    # Controle: DISH_LOG=dish_x,dish_y logt de ingrediënten van die gerechten (daarna weer leegmaken)
+    for did in [x.strip() for x in os.environ.get("DISH_LOG", "").split(",") if x.strip()]:
+        d = await db.dishes.find_one({"dish_id": did}, {"_id": 0, "name": 1, "ingredients": 1})
+        logger.info("DISHLOG %s %s: %s", did, (d or {}).get("name"),
+                    [(i.get("recipe_text"), i.get("name"), i.get("product_id")) for i in (d or {}).get("ingredients") or []])
     # Accounts van voor het bijhouden van "laatst gezien": de twee jaar tellen vanaf nu
     await db.users.update_many({"last_seen_at": {"$exists": False}}, {"$set": {"last_seen_at": now_utc()}})
 
