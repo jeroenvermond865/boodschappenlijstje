@@ -8884,73 +8884,75 @@ async def to_own_domain(request, call_next):
 # ---------------------------------------------------------------------------
 # Gewone maaltijden zoals de meeste mensen thuis eten: (naam, maaltijd, [(ingrediënt, eenheid, per volwassene, per kind, afdeling)])
 _AF, _AV, _AB, _AZ, _AM, _AD = "Aardappelen, groente & fruit", "Voorraadkast", "Brood, beleg & koek", "Zuivel & kaas", "Vlees & vis", "Diepvries"
-_BROOD = ("Volkoren brood", "gram", 105, 70, _AB)  # 3 of 2 boterhammen
+# Porties zoals mensen echt eten: een volwassene eet een hele pizza, 3 tot 4 boterhammen, 300 gram aardappelen
+_BROOD = ("Volkoren brood", "gram", 105, 70, _AB)  # 3 of 2 boterhammen van 35 gram
+_BROOD_LUNCH = ("Volkoren brood", "gram", 140, 105, _AB)  # 4 of 3 boterhammen
 _BOTER = ("Roomboter", "gram", 10, 7, _AZ)
 BASIC_DISHES = [
     # Brood met beleg: het menu zet brood, boter en wisselend beleg als losse producten bij de maaltijd (zie _bread_meal)
     ("Brood met beleg", "ontbijt", [_BROOD, _BOTER]),
-    ("Yoghurt met muesli", "ontbijt", [("Halfvolle yoghurt", "ml", 200, 150, _AZ), ("Muesli", "gram", 50, 35, _AV)]),
-    ("Havermout met banaan", "ontbijt", [("Havermout", "gram", 50, 35, _AV), ("Halfvolle melk", "ml", 250, 200, _AZ), ("Bananen", "stuks", 0.5, 0.5, _AF)]),
-    ("Krentenbollen met boter", "ontbijt", [("Krentenbollen", "stuks", 2, 1, _AB), _BOTER]),
-    ("Cornflakes met melk", "ontbijt", [("Cornflakes", "gram", 40, 30, _AV), ("Halfvolle melk", "ml", 200, 150, _AZ)]),
-    ("Broodje ham-kaas", "lunch", [("Bruine bolletjes", "stuks", 2, 1, _AB), _BOTER, ("Achterham", "plak", 2, 1, _AM),
+    ("Yoghurt met muesli", "ontbijt", [("Halfvolle yoghurt", "ml", 250, 175, _AZ), ("Muesli", "gram", 60, 40, _AV)]),
+    ("Havermout met banaan", "ontbijt", [("Havermout", "gram", 60, 40, _AV), ("Halfvolle melk", "ml", 300, 200, _AZ), ("Bananen", "stuks", 1, 0.5, _AF)]),
+    ("Krentenbollen met boter", "ontbijt", [("Krentenbollen", "stuks", 2, 2, _AB), _BOTER]),
+    ("Cornflakes met melk", "ontbijt", [("Cornflakes", "gram", 50, 35, _AV), ("Halfvolle melk", "ml", 250, 175, _AZ)]),
+    ("Broodje ham-kaas", "lunch", [("Bruine bolletjes", "stuks", 2, 2, _AB), _BOTER, ("Achterham", "plak", 2, 1, _AM),
                                    ("Jong belegen kaas plakken", "plak", 2, 1, _AZ)]),
-    ("Brood met beleg", "lunch", [_BROOD, _BOTER]),
-    ("Tosti ham-kaas", "lunch", [("Volkoren brood", "gram", 70, 70, _AB), ("Achterham", "plak", 1, 1, _AM),
-                                 ("Jong belegen kaas plakken", "plak", 2, 1, _AZ)]),
-    ("Broodje gezond", "lunch", [("Bruine bolletjes", "stuks", 2, 1, _AB), ("Jong belegen kaas plakken", "plak", 2, 1, _AZ),
-                                 ("Achterham", "plak", 1, 1, _AM), ("Komkommer", "stuks", 0.15, 0.1, _AF), ("Tomaten", "stuks", 0.5, 0.5, _AF),
-                                 ("IJsbergsla", "gram", 15, 10, _AF)]),
-    ("Boterham met ei", "lunch", [_BROOD, _BOTER, ("Eieren", "stuks", 1, 1, _AZ)]),
-    ("Crackers met smeerkaas", "lunch", [("Volkoren crackers", "gram", 40, 25, _AB), ("Smeerkaas", "gram", 30, 20, _AZ)]),
-    ("Tomatensoep met stokbrood", "lunch", [("Tomatensoep", "ml", 300, 200, _AV), ("Afbakstokbrood", "stuks", 0.25, 0.15, _AB)]),
-    ("Pannenkoeken met stroop", "lunch", [("Pannenkoekenmix", "gram", 100, 75, _AV), ("Halfvolle melk", "ml", 200, 150, _AZ),
-                                          ("Eieren", "stuks", 1, 0.5, _AZ), ("Schenkstroop", "gram", 20, 20, _AV)]),
-    ("Spaghetti bolognese", "avondeten", [("Spaghetti", "gram", 100, 70, _AV), ("Rundergehakt", "gram", 100, 60, _AM),
-                                          ("Pastasaus", "ml", 125, 80, _AV), ("Uien", "stuks", 0.25, 0.15, _AF)]),
-    ("Macaroni met ham en kaas", "avondeten", [("Macaroni", "gram", 100, 70, _AV), ("Hamblokjes", "gram", 75, 50, _AM),
-                                               ("Pastasaus", "ml", 125, 80, _AV), ("Geraspte kaas", "gram", 30, 20, _AZ)]),
-    ("Boerenkoolstamppot met rookworst", "avondeten", [("Kruimige aardappelen", "gram", 250, 150, _AF), ("Boerenkool", "gram", 200, 120, _AF),
-                                                       ("Rookworst", "gram", 100, 60, _AM), ("Halfvolle melk", "ml", 50, 30, _AZ)]),
-    ("Hutspot met gehaktbal", "avondeten", [("Kruimige aardappelen", "gram", 250, 150, _AF), ("Hutspotgroente", "gram", 200, 120, _AF),
+    ("Brood met beleg", "lunch", [_BROOD_LUNCH, _BOTER]),
+    ("Tosti ham-kaas", "lunch", [("Volkoren brood", "gram", 140, 70, _AB), ("Achterham", "plak", 2, 1, _AM),
+                                 ("Jong belegen kaas plakken", "plak", 4, 2, _AZ)]),
+    ("Broodje gezond", "lunch", [("Bruine bolletjes", "stuks", 2, 2, _AB), ("Jong belegen kaas plakken", "plak", 2, 1, _AZ),
+                                 ("Achterham", "plak", 2, 1, _AM), ("Komkommer", "stuks", 0.15, 0.1, _AF), ("Tomaten", "stuks", 1, 0.5, _AF),
+                                 ("IJsbergsla", "gram", 20, 10, _AF)]),
+    ("Boterham met ei", "lunch", [_BROOD_LUNCH, _BOTER, ("Eieren", "stuks", 2, 1, _AZ)]),
+    ("Crackers met smeerkaas", "lunch", [("Volkoren crackers", "gram", 60, 40, _AB), ("Smeerkaas", "gram", 40, 25, _AZ)]),
+    ("Tomatensoep met stokbrood", "lunch", [("Tomatensoep", "ml", 400, 250, _AV), ("Afbakstokbrood", "stuks", 0.5, 0.25, _AB)]),
+    ("Pannenkoeken met stroop", "lunch", [("Pannenkoekenmix", "gram", 125, 85, _AV), ("Halfvolle melk", "ml", 250, 175, _AZ),
+                                          ("Eieren", "stuks", 1, 0.5, _AZ), ("Schenkstroop", "gram", 30, 25, _AV)]),
+    ("Spaghetti bolognese", "avondeten", [("Spaghetti", "gram", 125, 80, _AV), ("Rundergehakt", "gram", 125, 75, _AM),
+                                          ("Pastasaus", "ml", 150, 100, _AV), ("Uien", "stuks", 0.25, 0.15, _AF)]),
+    ("Macaroni met ham en kaas", "avondeten", [("Macaroni", "gram", 125, 80, _AV), ("Hamblokjes", "gram", 100, 60, _AM),
+                                               ("Pastasaus", "ml", 150, 100, _AV), ("Geraspte kaas", "gram", 40, 25, _AZ)]),
+    ("Boerenkoolstamppot met rookworst", "avondeten", [("Kruimige aardappelen", "gram", 300, 175, _AF), ("Boerenkool", "gram", 200, 125, _AF),
+                                                       ("Rookworst", "gram", 125, 75, _AM), ("Halfvolle melk", "ml", 50, 30, _AZ)]),
+    ("Hutspot met gehaktbal", "avondeten", [("Kruimige aardappelen", "gram", 300, 175, _AF), ("Hutspotgroente", "gram", 200, 125, _AF),
                                             ("Gehaktballen", "stuks", 1, 1, _AM)]),
-    ("Aardappelen, sperziebonen en kipfilet", "avondeten", [("Vastkokende aardappelen", "gram", 250, 150, _AF),
-                                                             ("Sperziebonen", "gram", 150, 100, _AF), ("Kipfilet", "gram", 125, 75, _AM)]),
-    ("Nasi goreng", "avondeten", [("Rijst", "gram", 75, 50, _AV), ("Nasi bami groente", "gram", 150, 100, _AF),
-                                  ("Kipreepjes", "gram", 100, 60, _AM), ("Nasi kruiden", "gram", 10, 7, _AV)]),
-    ("Bami goreng", "avondeten", [("Mie", "gram", 75, 50, _AV), ("Nasi bami groente", "gram", 150, 100, _AF),
-                                  ("Kipreepjes", "gram", 100, 60, _AM), ("Ketjap manis", "ml", 15, 10, _AV)]),
-    ("Wraps met gehakt", "avondeten", [("Wraps", "stuks", 2, 1, _AB), ("Rundergehakt", "gram", 100, 60, _AM), ("Taco kruiden", "gram", 10, 7, _AV),
-                                       ("IJsbergsla", "gram", 30, 20, _AF), ("Geraspte kaas", "gram", 30, 20, _AZ)]),
-    ("Pizza uit de oven", "avondeten", [("Diepvriespizza", "stuks", 0.5, 0.33, _AD)]),
-    ("Hamburgers met sla", "avondeten", [("Hamburgers", "stuks", 1, 1, _AM), ("Hamburgerbroodjes", "stuks", 1, 1, _AB),
-                                         ("IJsbergsla", "gram", 20, 10, _AF), ("Ketchup", "ml", 20, 15, _AV)]),
-    ("Patat met frikandel", "avondeten", [("Friet", "gram", 200, 125, _AD), ("Frikandellen", "stuks", 2, 1, _AD),
-                                          ("Mayonaise", "ml", 25, 15, _AV), ("Appelmoes", "gram", 100, 75, _AV)]),
-    ("Kip met rijst en broccoli", "avondeten", [("Rijst", "gram", 75, 50, _AV), ("Broccoli", "gram", 150, 100, _AF),
-                                                ("Kipfilet", "gram", 125, 75, _AM)]),
-    ("Vissticks met puree en doperwten", "avondeten", [("Vissticks", "stuks", 4, 3, _AD), ("Kruimige aardappelen", "gram", 250, 150, _AF),
-                                                        ("Doperwten", "gram", 100, 75, _AD)]),
-    ("Erwtensoep met roggebrood", "avondeten", [("Erwtensoep", "ml", 400, 250, _AV), ("Roggebrood", "gram", 40, 20, _AB)]),
-    ("Pasta pesto met groente", "avondeten", [("Penne", "gram", 100, 70, _AV), ("Groene pesto", "gram", 40, 25, _AV),
-                                              ("Cherrytomaten", "gram", 75, 50, _AF), ("Spinazie", "gram", 75, 50, _AF)]),
+    ("Aardappelen, sperziebonen en kipfilet", "avondeten", [("Vastkokende aardappelen", "gram", 300, 175, _AF),
+                                                             ("Sperziebonen", "gram", 200, 125, _AF), ("Kipfilet", "gram", 150, 90, _AM)]),
+    ("Nasi goreng", "avondeten", [("Rijst", "gram", 90, 60, _AV), ("Nasi bami groente", "gram", 200, 125, _AF),
+                                  ("Kipreepjes", "gram", 125, 75, _AM), ("Nasi kruiden", "gram", 10, 7, _AV)]),
+    ("Bami goreng", "avondeten", [("Mie", "gram", 90, 60, _AV), ("Nasi bami groente", "gram", 200, 125, _AF),
+                                  ("Kipreepjes", "gram", 125, 75, _AM), ("Ketjap manis", "ml", 20, 10, _AV)]),
+    ("Wraps met gehakt", "avondeten", [("Wraps", "stuks", 3, 2, _AB), ("Rundergehakt", "gram", 125, 75, _AM), ("Taco kruiden", "gram", 10, 7, _AV),
+                                       ("IJsbergsla", "gram", 40, 20, _AF), ("Geraspte kaas", "gram", 40, 25, _AZ)]),
+    ("Pizza uit de oven", "avondeten", [("Diepvriespizza", "stuks", 1, 0.5, _AD)]),
+    ("Hamburgers met sla", "avondeten", [("Hamburgers", "stuks", 2, 1, _AM), ("Hamburgerbroodjes", "stuks", 2, 1, _AB),
+                                         ("IJsbergsla", "gram", 30, 15, _AF), ("Ketchup", "ml", 25, 15, _AV)]),
+    ("Patat met frikandel", "avondeten", [("Friet", "gram", 250, 150, _AD), ("Frikandellen", "stuks", 2, 1, _AD),
+                                          ("Mayonaise", "ml", 30, 15, _AV), ("Appelmoes", "gram", 125, 75, _AV)]),
+    ("Kip met rijst en broccoli", "avondeten", [("Rijst", "gram", 90, 60, _AV), ("Broccoli", "gram", 200, 125, _AF),
+                                                ("Kipfilet", "gram", 150, 90, _AM)]),
+    ("Vissticks met puree en doperwten", "avondeten", [("Vissticks", "stuks", 5, 3, _AD), ("Kruimige aardappelen", "gram", 300, 175, _AF),
+                                                        ("Doperwten", "gram", 150, 75, _AD)]),
+    ("Erwtensoep met roggebrood", "avondeten", [("Erwtensoep", "ml", 500, 300, _AV), ("Roggebrood", "gram", 60, 30, _AB)]),
+    ("Pasta pesto met groente", "avondeten", [("Penne", "gram", 125, 80, _AV), ("Groene pesto", "gram", 50, 30, _AV),
+                                              ("Cherrytomaten", "gram", 100, 60, _AF), ("Spinazie", "gram", 100, 60, _AF)]),
     ("Appel of mandarijn", "snacks", [("Appels", "stuks", 1, 1, _AF)]),
     ("Plak ontbijtkoek", "snacks", [("Ontbijtkoek", "gram", 30, 25, _AB)]),
-    ("Biscuitjes", "snacks", [("Biscuits", "gram", 20, 15, _AB)]),
-    ("Chips", "snacks", [("Chips naturel", "gram", 30, 20, "Snacks & snoep")]),
-    ("Groentelasagne", "avondeten", [("Lasagnebladen", "gram", 75, 50, _AV), ("Pastasaus", "ml", 150, 100, _AV),
-                                     ("Courgette", "stuks", 0.3, 0.2, _AF), ("Geraspte kaas", "gram", 40, 25, _AZ)]),
+    ("Biscuitjes", "snacks", [("Biscuits", "gram", 25, 20, _AB)]),
+    ("Chips", "snacks", [("Chips naturel", "gram", 40, 25, "Snacks & snoep")]),
+    ("Groentelasagne", "avondeten", [("Lasagnebladen", "gram", 90, 60, _AV), ("Pastasaus", "ml", 175, 110, _AV),
+                                     ("Courgette", "stuks", 0.4, 0.25, _AF), ("Geraspte kaas", "gram", 50, 30, _AZ)]),
 ]
 
 
 # Beleg dat per dag wisselt (2 soorten per keer): (product, eenheid, per volwassene, per kind, afdeling, kort)
 _TOPPINGS = {
-    "ontbijt": [("Jong belegen kaas plakken", "plak", 1, 1, _AZ, "kaas"), ("Hagelslag melk", "gram", 15, 15, _AB, "hagelslag"),
-                ("Aardbeienjam", "gram", 15, 15, _AB, "jam"), ("Chocoladepasta", "gram", 15, 15, _AB, "chocopasta"),
-                ("Pindakaas", "gram", 15, 10, _AB, "pindakaas"), ("Smeerkaas", "gram", 15, 10, _AZ, "smeerkaas")],
+    "ontbijt": [("Jong belegen kaas plakken", "plak", 2, 1, _AZ, "kaas"), ("Hagelslag melk", "gram", 20, 15, _AB, "hagelslag"),
+                ("Aardbeienjam", "gram", 20, 15, _AB, "jam"), ("Chocoladepasta", "gram", 20, 15, _AB, "chocopasta"),
+                ("Pindakaas", "gram", 20, 15, _AB, "pindakaas"), ("Smeerkaas", "gram", 20, 15, _AZ, "smeerkaas")],
     "lunch": [("Jong belegen kaas plakken", "plak", 2, 1, _AZ, "kaas"), ("Achterham", "plak", 2, 1, _AM, "ham"),
-              ("Gerookte kipfilet", "plak", 2, 1, _AM, "kipfilet"), ("Smeerkaas", "gram", 20, 15, _AZ, "smeerkaas"),
-              ("Pindakaas", "gram", 15, 10, _AB, "pindakaas"), ("Eieren", "stuks", 1, 1, _AZ, "ei")],
+              ("Gerookte kipfilet", "plak", 2, 2, _AM, "kipfilet"), ("Smeerkaas", "gram", 25, 15, _AZ, "smeerkaas"),
+              ("Pindakaas", "gram", 20, 15, _AB, "pindakaas"), ("Eieren", "stuks", 1, 1, _AZ, "ei")],
 }
 _OLD_BREAD_DISHES = ["Boterham met kaas", "Boterham met hagelslag", "Boterham met chocoladepasta", "Boterham met pindakaas",
                      "Boterham met jam", "Boterham met kipfilet"]
@@ -9201,6 +9203,25 @@ async def startup():
             await db.dishes.insert_many(docs)
         await db.settings.update_one({"key": "basic_dishes_v2"}, {"$set": {"value": True, "at": now_utc()}}, upsert=True)
         logger.info("%d gewone gerechten toegevoegd", len(docs))
+
+    if not await db.settings.find_one({"key": "basic_portions_v3"}):
+        # v3: echte porties (een hele pizza per volwassene). Gekoppelde producten blijven staan.
+        defs = {(n, c): ings for n, c, ings in BASIC_DISHES}
+        n_upd = 0
+        async for d in db.dishes.find({"basic": True, "deleted_at": None}, {"_id": 0}):
+            want = defs.get((d["name"], d["category"]))
+            if not want:
+                continue
+            ings = d.get("ingredients") or []
+            by_name = {_norm_text(w[0]): w for w in want}
+            for k, i in enumerate(ings):
+                w = by_name.get(_norm_text(i.get("name") or "")) or (want[k] if len(want) == len(ings) else None)
+                if w:
+                    i["qty_adult"], i["qty_child"] = w[2], w[3]
+            await db.dishes.update_one({"dish_id": d["dish_id"]}, {"$set": {"ingredients": ings}})
+            n_upd += 1
+        await db.settings.update_one({"key": "basic_portions_v3"}, {"$set": {"value": True, "at": now_utc()}}, upsert=True)
+        logger.info("Porties van %d app-gerechten bijgewerkt", n_upd)
 
     await db.products.create_index("product_id", unique=True)
     await db.products.create_index("barcode")
