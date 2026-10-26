@@ -477,6 +477,7 @@ class ExtraItem(BaseModel):
     aisle: str = "Overig"
     product_id: Optional[str] = None
     store: Optional[str] = None
+    meal: Optional[str] = None  # bij welke maaltijd van de dag (ontbijt, lunch, ...); leeg = los voor de dag
 
 
 class DayInput(BaseModel):

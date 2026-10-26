@@ -25,7 +25,7 @@ import { DateField } from "@/src/DateField";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Extra = { name: string; unit: string; qty: number; aisle: string; store?: string | null; product_id?: string | null };
+type Extra = { name: string; unit: string; qty: number; aisle: string; store?: string | null; product_id?: string | null; meal?: MealCategory | null };
 type Day = {
   index: number;
   adults: number;
@@ -64,6 +64,7 @@ export default function CampDetailScreen() {
   const [membersOpen, setMembersOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [extraTarget, setExtraTarget] = useState<"day" | "general" | null>(null);
+  const [extraMeal, setExtraMeal] = useState<MealCategory | null>(null); // los product bij een maaltijd (bijv. ontbijt)
   const [packOpen, setPackOpen] = useState(false);
   const [vegaDish, setVegaDish] = useState<Dish | null>(null);
   const [budgetOpen, setBudgetOpen] = useState(false);
@@ -166,10 +167,12 @@ export default function CampDetailScreen() {
     if (extraTarget === "general") {
       patchCamp.mutate({ general: [...(camp.general ?? []), ex] });
     } else {
-      const days = camp.days.map((d) => (d.index === selected ? { ...d, extras: [...(d.extras ?? []), ex] } : d));
+      const item = extraMeal ? { ...ex, meal: extraMeal } : ex;
+      const days = camp.days.map((d) => (d.index === selected ? { ...d, extras: [...(d.extras ?? []), item] } : d));
       applyDays(days);
     }
     setExtraTarget(null);
+    setExtraMeal(null);
   };
 
   // Een pakket in één keer bij de algemene boodschappen; wat er al staat wordt opgeteld
@@ -433,6 +436,7 @@ export default function CampDetailScreen() {
                   </View>
                   <Text style={styles.mealTitle}>{CATEGORY_LABELS[cat]}</Text>
                 </View>
+                <View style={{ flexDirection: "row", gap: 6 }}>
                 <Pressable
                   testID={`add-dish-${cat}`}
                   onPress={() => setPickerCat(cat)}
@@ -441,10 +445,41 @@ export default function CampDetailScreen() {
                   <Icon name="plus" size={16} color={colors.onBrandTertiary} />
                   <Text style={styles.addBtnText}>Gerecht</Text>
                 </Pressable>
+                <Pressable
+                  testID={`add-extra-${cat}`}
+                  onPress={() => {
+                    setExtraMeal(cat);
+                    setExtraTarget("day");
+                  }}
+                  style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.85 }]}
+                >
+                  <Icon name="plus" size={16} color={colors.onBrandTertiary} />
+                  <Text style={styles.addBtnText}>Product</Text>
+                </Pressable>
+                </View>
               </View>
 
+              {(day.extras ?? []).some((ex) => ex.meal === cat) ? (
+                <View style={{ gap: 8, marginTop: 10 }}>
+                  {(day.extras ?? []).map((ex, i) =>
+                    ex.meal === cat ? (
+                      <View key={`${ex.name}-${i}`} style={styles.dishRow}>
+                        <Icon name="basket-outline" size={15} color={colors.muted} />
+                        <Text style={[styles.dishName, { flex: 1 }]} numberOfLines={1}>
+                          {formatQty(ex.qty)} {ex.unit} · {ex.name}
+                          {ex.store ? ` (${ex.store})` : ""}
+                        </Text>
+                        <Pressable testID={`remove-meal-extra-${cat}-${i}`} hitSlop={8} onPress={() => removeExtra("day", i)}>
+                          <Icon name="close-circle" size={20} color={colors.muted} />
+                        </Pressable>
+                      </View>
+                    ) : null,
+                  )}
+                </View>
+              ) : null}
+
               {ids.length === 0 ? (
-                <Text style={styles.noMeal}>Nog geen gerecht gekozen</Text>
+                (day.extras ?? []).some((ex) => ex.meal === cat) ? null : <Text style={styles.noMeal}>Nog geen gerecht of product gekozen</Text>
               ) : (
                 <View style={{ gap: 8, marginTop: 10 }}>
                   {ids.map((dishId) => {
@@ -513,11 +548,11 @@ export default function CampDetailScreen() {
               <Text style={styles.addBtnText}>Product</Text>
             </Pressable>
           </View>
-          {(day.extras ?? []).length === 0 ? (
+          {!(day.extras ?? []).some((ex) => !ex.meal) ? (
             <Text style={styles.noMeal}>Nog geen losse producten voor deze dag</Text>
           ) : (
             <View style={{ gap: 8, marginTop: 10 }}>
-              {(day.extras ?? []).map((ex, i) => (
+              {(day.extras ?? []).map((ex, i) => ex.meal ? null : (
                 <View key={`${ex.name}-${i}`} style={styles.dishRow}>
                   <Text style={styles.dishName} numberOfLines={1}>
                     {formatQty(ex.qty)} {ex.unit} · {ex.name}
@@ -573,7 +608,10 @@ export default function CampDetailScreen() {
         visible={extraTarget !== null}
         stores={stores}
         defaultStore={user?.store}
-        onClose={() => setExtraTarget(null)}
+        onClose={() => {
+          setExtraTarget(null);
+          setExtraMeal(null);
+        }}
         onAdd={addExtra}
       />
 
