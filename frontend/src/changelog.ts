@@ -5,6 +5,19 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-26-u",
+    date: "26 oktober 2026",
+    title: "Gerechten eerst bekijken, dan kiezen",
+    changes: [
+      { kind: "nieuw", text: "Gerecht kiezen voor een maaltijd: tik een gerecht aan en je ziet eerst wat erin zit en de bereiding, met Toevoegen of Terug. Met de tabs App, Online, Eigen en Pakketten, net als bij Gerechten." },
+      { kind: "beter", text: "Tik je in je lijstje op een gerecht, dan kies je tussen het hele gerecht openen of aanpassen voor dit lijstje. Ook vanuit Op het menu open je het hele gerecht." },
+      { kind: "nieuw", text: "Staat in een recept 'Liever vlees? Vervang ...', dan kun je dat met één knop doen: bij het recept, bij het kiezen en in je lijstje." },
+      { kind: "beter", text: "Voorraadkast: bladeren per afdeling, dan per soort, dan je producten. Net als bij Alle producten." },
+      { kind: "beter", text: "Product toevoegen is een groter venster en de zoekbalk blijft staan als je scrolt." },
+      { kind: "opgelost", text: "Vega gyros (en vergelijkbare producten) kiest niet meer een kruidenmix zoals 'mix voor gyros'." },
+    ],
+  },
+  {
     id: "2026-10-26-t",
     date: "26 oktober 2026",
     title: "Voorraadkast opnieuw ingedeeld",

@@ -1338,6 +1338,7 @@ def camp_public(doc: dict) -> dict:
         "vega_adults": doc.get("vega_adults", 0),
         "vega_children": doc.get("vega_children", 0),
         "general": doc.get("general", []),
+        "product_swaps": doc.get("product_swaps") or {},
         "budget_target": doc.get("budget_target", 0),
         "start_date": doc.get("start_date"),
         "owner_id": doc.get("owner_id"),
@@ -7060,6 +7061,9 @@ _DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", 
 _STORE_WORDS = {"ah", "jumbo", "dirk", "1 de beste", "excellent", "biologisch"}
 
 
+_VEGA_WORD_RE = re.compile(r"(vega|vegetari|plantaardig|vegan|veggie)")
+
+
 @functools.lru_cache(maxsize=64)
 def _penalty_ctx(words: tuple) -> dict:
     # Wat alleen van de zoekwoorden afhangt één keer uitrekenen, niet opnieuw voor elk product
@@ -7069,8 +7073,10 @@ def _penalty_ctx(words: tuple) -> dict:
     def related(w):
         v = rel.get(w)
         if v is None:
-            v = rel[w] = any(w == q or w in _stems(q) or q in _stems(w) or q in w or (q.endswith("e") and w == q[:-1]) for q in words)
+            v = rel[w] = any(w == q or w in _stems(q) or q in _stems(w) or q in w or (q.endswith("e") and w == q[:-1]) for q in words) or (
+                vega_q and bool(_VEGA_WORD_RE.match(w)))  # "vega gyros" = "plantaardige gyros" = "vegetarische gyros"
         return v
+    vega_q = any(_VEGA_WORD_RE.match(q) for q in words)
     procs = [x for x in _PROCESSED if not any(x in q for q in qstems)]
     long_re = re.compile("|".join(re.escape(x) for x in procs if len(x) > 4) or r"(?!)")
     short = [x for x in procs if len(x) <= 4]
@@ -7086,7 +7092,7 @@ def _penalty_ctx(words: tuple) -> dict:
     ends = tuple(e for x in procs if len(x) > 3 for e in (x, x + "s", x + "en", x + "jes"))
     # Zoek je een specerij (saffraan, nootmuskaat, peper)? Dan is de soort "Kruiden" juist goed
     spice = any(_SPICE_RE.search(q) or q in ("peper", "zout") for q in words)
-    return {"related": related, "processed": processed, "sub_ends": ends, "spice": spice}
+    return {"related": related, "processed": processed, "sub_ends": ends, "spice": spice, "vega": vega_q}
 
 
 _ODD_BREAD = (r"pita|naan|wrap|tortilla|stokbrood|ciabatta|bolletjes|afbak|toast|libanees|turks|pinsa|focaccia|"
@@ -7211,6 +7217,13 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     if re.match(r"(knorr|euroma|verstegen|silvo|conimex|honig) ", d["_norm"]) and not any(
             re.search(r"kruid|mix|saus|bouillon|soep|poeder|boemboe|specerij|peper|zout", q) or _SPICE_RE.search(q) for q in words):
         pen += 5
+    # "350 g vega gyros" is geen zakje "mix voor gyros": kruidenmixen alleen als je om een mix of kruiden vraagt
+    if re.search(r"\bmix voor\b|\bkruidenmix|\bkruiden voor\b|\bspecerijen voor\b|\bmix\b.*\bkruiden\b", d["_norm"]) and not any(
+            re.search(r"mix|kruid|specerij", q) for q in words):
+        pen += 8
+    # Vega gevraagd: dan geen vlees of vis
+    if ctx["vega"] and _MEAT_RE.search(d["_norm"]) and not _VEGA_RE.search(d["_norm"]):
+        pen += 10
     # Bakmix van Koopmans is geen brood
     if (brand_of(d) == "koopmans" or d["_norm"].startswith("koopmans ")) and not any(q in ("mix", "bakmix", "meel", "bloem") for q in words):
         pen += 6
@@ -7317,6 +7330,48 @@ def _recipe_with_products(rec: dict, user: dict, matches: Optional[dict] = None)
     return {**rec, "ingredients": ings}
 
 
+# "Liever vlees? Vervang de vega gyros door 350 g gyros." of "Gebruik kipfilet in plaats van tofu": een tip van de site om te wisselen
+_SWAP_TIP_RE = re.compile(
+    r"(?:liever\s+(?P<why>vlees|vis|vega\w*|vegetarisch\w*|vegan\w*|kip|zonder\s+\w+)[^.?!]*[?!.:]\s*)?"
+    r"(?:(?:vervang|ruil)\s+(?:de|het|een)?\s*(?P<a>[^.?!;]+?)\s+(?:door|voor)\s+(?:de|het|een)?\s*(?P<b>[^.?!;(]+)"
+    r"|(?:gebruik|neem)\s+(?:de|het|een)?\s*(?P<b2>[^.?!;(]+?)\s+in\s+plaats\s+van\s+(?:de|het|een)?\s*(?P<a2>[^.?!;(]+))", re.I)
+
+
+def _recipe_alt_swaps(rec: dict, user: dict) -> list:
+    text = " ".join(x for x in (rec.get("tip"), rec.get("description")) if x)
+    if not text:
+        return []
+    docs = _product_cache.get("docs") or []
+    favs = set(user.get("favorite_products") or [])
+    out = []
+    for m in _SWAP_TIP_RE.finditer(text):
+        a, b = (m.group("a") or m.group("a2") or "").strip(), (m.group("b") or m.group("b2") or "").strip()
+        # Hoeveelheden eraf: "350 g gyros" -> gyros
+        b_name = re.sub(r"^\s*[\d.,½¼]+\s*(g|gr|gram|kg|ml|l|liter|stuks?|st)?\.?\s+", "", b, flags=re.I).strip()
+        if not a or not b_name or len(b_name) > 60:
+            continue
+        aw = set(_norm_text(a).split())
+        # Welk ingrediënt bedoelt de tip: de meeste woorden gelijk ("vega gyros" bij "350 g vegetarische gyros")
+        best, score = None, 0
+        for k, i in enumerate(rec.get("ingredients") or []):
+            iw = set(_norm_text(i.get("name") or "").split())
+            sc = len(aw & iw) + sum(0.5 for w in aw for x in iw if w != x and (w in x or x in w) and len(w) > 3)
+            if sc > score:
+                best, score = k, sc
+        if best is None:
+            continue
+        ing = rec["ingredients"][best]
+        store = ((ing.get("product") or {}).get("source")) or STORE_LABELS.get(rec.get("store")) or DEFAULT_STORE
+        pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
+        d = _cheapest_good(pool, b_name, store)
+        if not d:
+            continue
+        why = (m.group("why") or "").lower()
+        out.append({"index": best, "label": f"Liever {why}" if why else "Wisselen", "from": a, "to": b_name,
+                    "text": m.group(0).strip(), "product": product_public(_clean(d), d["_src"], user["user_id"], favs)})
+    return out[:4]
+
+
 @api_router.get("/recipes/detail")
 async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
     try:
@@ -7401,6 +7456,11 @@ async def _recipe_products(rec: dict, user: dict, light: bool = False) -> dict:
         await _import_linked_jumbo(rec)
     matches = await _recipe_matches(rec)
     out = _recipe_with_products(rec, user, matches)
+    try:
+        out["alt_swaps"] = await asyncio.to_thread(_recipe_alt_swaps, out, user)
+    except Exception as e:
+        logger.info("Recept %s wisseltip: %r", rec.get("id"), e)
+        out["alt_swaps"] = []
     out["is_favorite"] = any(f.get("id") == rec["id"] for f in user.get("recipe_favorites") or [])
     return out
 

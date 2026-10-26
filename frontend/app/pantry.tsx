@@ -132,6 +132,12 @@ export default function PantryScreen() {
   });
   const [edit, setEdit] = useState<PItem | null>(null);
   const [aisle, setAisle] = useState("all");
+  // Bladeren zoals bij Alle producten: eerst de afdeling, dan de soort, dan de producten. Zoeken of filteren toont meteen de lijst.
+  const [sub, setSub] = useState<string | null>(null); // null = soorten kiezen, "" = alles in de afdeling
+  const goAisle = (a: string) => {
+    setAisle(a);
+    setSub(null);
+  };
   const [filter, setFilter] = useState<Filter>("all");
   const [filterOpen, setFilterOpen] = useState(false);
   // Indeling zoals bij Alle producten: per afdeling, en daarbinnen per soort. Wat je typt bij zoeken filtert ook je voorraad.
@@ -156,7 +162,7 @@ export default function PantryScreen() {
     const out: { aisle: string; subs: { sub: string; items: PItem[] }[]; n: number }[] = [];
     for (const a of AISLES) {
       if (aisle !== "all" && a !== aisle) continue;
-      const items = shownItems.filter((i) => (i.aisle || "Overig") === a);
+      const items = shownItems.filter((i) => (i.aisle || "Overig") === a && (!sub || (i.sub || "Overig") === sub));
       if (!items.length) continue;
       const subs: { sub: string; items: PItem[] }[] = [];
       for (const it of items) {
@@ -167,6 +173,13 @@ export default function PantryScreen() {
       out.push({ aisle: a, subs, n: items.length });
     }
     return out;
+  }, [shownItems, aisle, sub]);
+  const browsing = !name.trim() && filter === "all";
+  const mode: "cats" | "subs" | "list" = !browsing ? "list" : aisle === "all" ? "cats" : sub === null ? "subs" : "list";
+  const subCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    shownItems.filter((i) => (i.aisle || "Overig") === aisle).forEach((i) => (c[i.sub || "Overig"] = (c[i.sub || "Overig"] ?? 0) + 1));
+    return Object.entries(c).sort((x, y) => (x[0] === "Overig" ? 1 : y[0] === "Overig" ? -1 : x[0].localeCompare(y[0], "nl")));
   }, [shownItems, aisle]);
   const low = (data?.items ?? []).filter((i) => (i.restock ?? 0) > 0);
   const step = (i: PItem, dir: 1 | -1) => {
@@ -305,24 +318,61 @@ export default function PantryScreen() {
                     </Text>
                   </Pressable>
                 </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-                  <Pressable onPress={() => setAisle("all")} style={[styles.deptChip, aisle === "all" && styles.deptChipOn]} testID="pantry-dept-all">
-                    <Text style={[styles.deptText, aisle === "all" && styles.deptTextOn]}>Alle afdelingen</Text>
+                <View style={styles.crumbs}>
+                  <Pressable onPress={() => goAisle("all")} hitSlop={6} testID="pantry-crumb-all">
+                    <Text style={[styles.crumb, mode === "cats" && styles.crumbOn]}>Alle afdelingen</Text>
                   </Pressable>
-                  {AISLES.filter((a) => (aisleCounts[a] ?? 0) > 0).map((a) => (
-                    <Pressable key={a} onPress={() => setAisle(a)} style={[styles.deptChip, aisle === a && styles.deptChipOn]} testID={`pantry-dept-${a}`}>
-                      <Icon name={(AISLE_ICONS[a] ?? "cart-outline") as any} size={14} color={aisle === a ? colors.onBrandPrimary : colors.brandPrimary} />
-                      <Text style={[styles.deptText, aisle === a && styles.deptTextOn]}>
-                        {a} ({aisleCounts[a]})
-                      </Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
+                  {aisle !== "all" ? (
+                    <>
+                      <Icon name="chevron-right" size={16} color={colors.muted} />
+                      <Pressable onPress={() => setSub(null)} hitSlop={6} testID="pantry-crumb-aisle">
+                        <Text style={[styles.crumb, mode === "subs" && styles.crumbOn]} numberOfLines={1}>{aisle}</Text>
+                      </Pressable>
+                    </>
+                  ) : null}
+                  {aisle !== "all" && sub !== null ? (
+                    <>
+                      <Icon name="chevron-right" size={16} color={colors.muted} />
+                      <Text style={[styles.crumb, styles.crumbOn, { flexShrink: 1 }]} numberOfLines={1}>{sub || "Alles"}</Text>
+                    </>
+                  ) : null}
+                </View>
               </View>
             ) : null}
             {isLoading ? (
               <ActivityIndicator color={colors.brandPrimary} />
-            ) : (data?.items ?? []).length === 0 ? null : groups.length === 0 ? (
+            ) : (data?.items ?? []).length === 0 ? null : mode === "cats" ? (
+              <View style={styles.tiles}>
+                {AISLES.filter((a) => (aisleCounts[a] ?? 0) > 0).map((a) => (
+                  <Pressable key={a} onPress={() => goAisle(a)} style={styles.tile} testID={`pantry-cat-${a}`}>
+                    <View style={styles.tileIcon}>
+                      <Icon name={(AISLE_ICONS[a] ?? "cart-outline") as any} size={24} color={colors.brandPrimary} />
+                    </View>
+                    <Text style={styles.tileTitle} numberOfLines={2}>{a}</Text>
+                    <Text style={styles.rowQty}>{aisleCounts[a]} in huis</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : mode === "subs" ? (
+              <View style={styles.tiles}>
+                <Pressable onPress={() => setSub("")} style={styles.tile} testID="pantry-sub-all">
+                  <View style={styles.tileIcon}>
+                    <Icon name="view-grid-outline" size={24} color={colors.brandPrimary} />
+                  </View>
+                  <Text style={styles.tileTitle} numberOfLines={2}>Alles in {aisle}</Text>
+                  <Text style={styles.rowQty}>{aisleCounts[aisle] ?? 0} in huis</Text>
+                </Pressable>
+                {subCounts.map(([k, n]) => (
+                  <Pressable key={k} onPress={() => setSub(k)} style={styles.tile} testID={`pantry-sub-${k}`}>
+                    <View style={styles.tileIcon}>
+                      <Icon name={(AISLE_ICONS[aisle] ?? "cart-outline") as any} size={24} color={colors.brandPrimary} />
+                    </View>
+                    <Text style={styles.tileTitle} numberOfLines={2}>{k}</Text>
+                    <Text style={styles.rowQty}>{n} in huis</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : groups.length === 0 ? (
               <Text style={styles.rowQty}>Niets gevonden in je voorraad{name.trim() ? ` voor "${name.trim()}"` : ""}.</Text>
             ) : (
               groups.map((g) => (
@@ -456,6 +506,13 @@ const useStyles = makeStyles((colors) => ({
   filterBtnOn: { backgroundColor: colors.brandPrimary },
   filterText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
   filterRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  crumbs: { flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap" },
+  crumb: { fontSize: 14, fontFamily: fonts.medium, color: colors.brandPrimary },
+  crumbOn: { color: colors.onSurface, fontFamily: fonts.semibold },
+  tiles: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  tile: { width: "48%", flexGrow: 1, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 12, gap: 6, backgroundColor: colors.surface },
+  tileIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
+  tileTitle: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },
   deptChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceTertiary },
   deptChipOn: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
   deptText: { fontSize: 13, fontFamily: fonts.medium, color: colors.onSurfaceTertiary },

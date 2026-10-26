@@ -5,7 +5,9 @@ import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "rea
 import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { AltSwapList, dishProductFor, fullDishRoute, type AltSwap } from "@/src/DishPreview";
+import { useToast } from "@/src/toast";
 
 import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
@@ -17,8 +19,8 @@ export type SoonDay = { date: string; index: number; in_list?: boolean; meals: {
 type Dish = {
   id: string;
   name: string;
-  ingredients: { name: string; qty_adult?: number; unit?: string }[];
-  source?: { recipe_id?: string; url?: string } | null;
+  ingredients: { name: string; qty_adult: number; qty_child: number; unit: string; aisle: string; product_id?: string | null }[];
+  source?: { recipe_id: string; url?: string } | null;
 };
 
 export const MEAL_WORD: Record<string, string> = { ontbijt: "Ontbijt", lunch: "Lunch", avondeten: "Avondeten", snacks: "Tussendoor" };
@@ -38,7 +40,13 @@ export function DayMenuSheet({ campId, days, start, onClose }: { campId: string;
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const qc = useQueryClient();
   const [pos, setPos] = useState(0);
+  // Het hele gerecht openen, net als bij Gerechten (online recept of gerecht)
+  const openFull = (d: Dish) => {
+    onClose();
+    router.push(fullDishRoute(d));
+  };
   const [openDish, setOpenDish] = useState<string | null>(null);
   useEffect(() => {
     if (start != null) {
@@ -79,7 +87,14 @@ export function DayMenuSheet({ campId, days, start, onClose }: { campId: string;
                   const isOpen = openDish === k;
                   return (
                     <View key={k} style={styles.mealCard}>
-                      <Pressable onPress={() => setOpenDish(isOpen ? null : k)} style={styles.mealRow} testID={`day-menu-dish-${m.dish_id}`}>
+                      <Pressable
+                        onPress={() => {
+                          // Nog een keer tikken op een open gerecht: het hele gerecht openen
+                          const full = isOpen ? qc.getQueryData<Dish>(["dish", m.dish_id]) : undefined;
+                          if (full) openFull(full);
+                          else setOpenDish(isOpen ? null : k);
+                        }}
+                        style={styles.mealRow} testID={`day-menu-dish-${m.dish_id}`}>
                         {m.image ? (
                           <Image source={{ uri: m.image }} style={styles.img} />
                         ) : (
@@ -93,10 +108,7 @@ export function DayMenuSheet({ campId, days, start, onClose }: { campId: string;
                         </View>
                         <Icon name={isOpen ? "chevron-up" : "chevron-down"} size={22} color={colors.muted} />
                       </Pressable>
-                      {isOpen ? <DishDetail dishId={m.dish_id} onRecipe={(rid) => {
-                            onClose();
-                            router.push({ pathname: "/recipe/[id]", params: { id: rid } });
-                          }} /> : null}
+                      {isOpen ? <DishDetail dishId={m.dish_id} campId={campId} onOpen={openFull} /> : null}
                     </View>
                   );
                 })}
@@ -121,7 +133,10 @@ export function DayMenuSheet({ campId, days, start, onClose }: { campId: string;
   );
 }
 
-function DishDetail({ dishId, onRecipe }: { dishId: string; onRecipe: (recipeId: string) => void }) {
+function DishDetail({ dishId, campId, onOpen }: { dishId: string; campId: string; onOpen: (d: Dish) => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const camp = useQuery({ queryKey: ["camp", campId], queryFn: () => api<{ product_swaps?: Record<string, string> }>(`/camps/${campId}`), staleTime: 60 * 1000 });
   const styles = useStyles();
   const { colors } = useTheme();
   const dish = useQuery({ queryKey: ["dish", dishId], queryFn: () => api<Dish>(`/dishes/${dishId}`), staleTime: 10 * 60 * 1000 });
@@ -129,7 +144,7 @@ function DishDetail({ dishId, onRecipe }: { dishId: string; onRecipe: (recipeId:
   // Bereiding staat bij recepten van de supermarkt-sites; app-gerechten hebben alleen ingrediënten
   const rec = useQuery({
     queryKey: ["recipe", rid ?? ""],
-    queryFn: () => api<{ steps: string[] }>(`/recipes/detail?id=${encodeURIComponent(rid!)}`),
+    queryFn: () => api<{ steps: string[]; alt_swaps?: AltSwap[] }>(`/recipes/detail?id=${encodeURIComponent(rid!)}`),
     enabled: !!rid,
     staleTime: 30 * 60 * 1000,
     retry: 1,
@@ -137,6 +152,18 @@ function DishDetail({ dishId, onRecipe }: { dishId: string; onRecipe: (recipeId:
   if (dish.isLoading) return <ActivityIndicator color={colors.brandPrimary} style={{ margin: 10 }} />;
   if (!dish.data) return <Text style={[styles.meta, { padding: 10 }]}>Dit gerecht kon niet geladen worden.</Text>;
   const steps = rec.data?.steps ?? [];
+  // "Liever vlees? Vervang ...": voor dit hele lijstje wisselen
+  const swap = async (sw: AltSwap) => {
+    const from = dish.data ? dishProductFor(dish.data as any, sw) : null;
+    if (!from) return toast.show("Dit product staat niet in het gerecht; pas het gerecht aan om te wisselen", "error");
+    try {
+      await api(`/camps/${campId}/product-swap`, { method: "POST", body: { from_id: from, to_id: sw.product.id } });
+      await Promise.all(["camp", "shopping", "budget"].map((k) => qc.invalidateQueries({ queryKey: [k, campId] })));
+      toast.show(`${sw.from} vervangen door ${sw.product.name}`, "success");
+    } catch (e: any) {
+      toast.show(e?.message ?? "Wisselen mislukt", "error");
+    }
+  };
   return (
     <View style={styles.detail}>
       <Text style={styles.sub}>Ingrediënten (per volwassene)</Text>
@@ -146,6 +173,14 @@ function DishDetail({ dishId, onRecipe }: { dishId: string; onRecipe: (recipeId:
           {i.qty_adult ? ` · ${formatQty(i.qty_adult)} ${i.unit ?? ""}` : ""}
         </Text>
       ))}
+      <AltSwapList
+        swaps={rec.data?.alt_swaps ?? []}
+        done={(sw) => {
+          const from = dish.data ? dishProductFor(dish.data as any, sw) : null;
+          return !!from && camp.data?.product_swaps?.[from] === sw.product.id;
+        }}
+        onSwap={swap}
+      />
       <Text style={[styles.sub, { marginTop: 6 }]}>Bereiding</Text>
       {rid && rec.isLoading ? (
         <ActivityIndicator color={colors.brandPrimary} />
@@ -159,12 +194,10 @@ function DishDetail({ dishId, onRecipe }: { dishId: string; onRecipe: (recipeId:
       ) : (
         <Text style={styles.meta}>Bij dit gerecht staat geen bereiding.</Text>
       )}
-      {rid ? (
-        <Pressable onPress={() => onRecipe(rid)} style={styles.link}>
-          <Text style={styles.linkText}>Hele recept openen</Text>
-          <Icon name="chevron-right" size={18} color={colors.brandPrimary} />
-        </Pressable>
-      ) : null}
+      <Pressable onPress={() => onOpen(dish.data!)} style={styles.link} testID="day-menu-open-dish">
+        <Text style={styles.linkText}>Hele gerecht openen</Text>
+        <Icon name="chevron-right" size={18} color={colors.brandPrimary} />
+      </Pressable>
     </View>
   );
 }

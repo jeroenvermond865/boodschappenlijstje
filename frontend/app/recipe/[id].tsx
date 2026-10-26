@@ -15,6 +15,7 @@ import { euro } from "@/src/search";
 import { STORE_LABEL } from "@/src/OnlineRecipes";
 import type { Product } from "@/app/(tabs)/products";
 import { BetterPack, PackBetter, PackPlan, packText } from "@/src/packs";
+import { AltSwapList, type AltSwap } from "@/src/DishPreview";
 
 type Recipe = {
   id: string;
@@ -32,6 +33,7 @@ type Recipe = {
   steps: string[];
   ingredients: { text: string; name: string; qty: number | null; unit: string; pantry?: boolean; stock?: "yes" | "low" | "maybe" | null; site_packs?: number | null; product: Product | null }[];
   in_stock?: string[];
+  alt_swaps?: AltSwap[];
 };
 
 const SITE: Record<string, string> = { ah: "Allerhande", jumbo: "jumbo.com", dirk: "dirk.nl" };
@@ -248,6 +250,17 @@ export default function RecipeScreen() {
                   <Text style={[styles.body, { flex: 1 }]}>{r.tip}</Text>
                 </View>
               ) : null}
+              {/* "Liever vlees? Vervang ...": met één tik wisselen; gaat mee naar je lijstje */}
+              <AltSwapList
+                swaps={q.data?.alt_swaps ?? []}
+                done={(s) => swaps[s.index]?.id === s.product.id}
+                onSwap={(s) =>
+                  setSwaps((x) => {
+                    const { [s.index]: cur, ...rest } = x;
+                    return cur?.id === s.product.id ? rest : { ...rest, [s.index]: s.product as Product };
+                  })
+                }
+              />
 
               <Pressable onPress={() => Linking.openURL(r.url)} style={styles.siteLink}>
                 <Icon name="open-in-new" size={16} color={colors.brandPrimary} />

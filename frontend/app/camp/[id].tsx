@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Animated, FlatList, Pressable, RefreshControl, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Animated, FlatList, Image, Pressable, RefreshControl, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import Modal from "@/src/components/Modal";
 import { smartFilter } from "@/src/smartSearch";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -23,6 +23,7 @@ import { GOLD, usePremium } from "@/src/premium";
 import { useSwipePages } from "@/src/useSwipePages";
 import { goBack } from "@/src/nav";
 import { VegaPicker } from "@/src/VegaPicker";
+import { DishPreview, dishProductFor, fullDishRoute, type AltSwap, type PreviewTarget } from "@/src/DishPreview";
 import { MenuWizard } from "@/src/MenuWizard";
 import { DateField } from "@/src/DateField";
 import { useToast } from "@/src/toast";
@@ -49,6 +50,7 @@ type Camp = {
   start_date?: string | null;
   vega_children?: number;
   general?: Extra[];
+  product_swaps?: Record<string, string>; // in dit lijstje gewisseld: oorspronkelijk product -> ander product
   budget_target?: number;
 };
 
@@ -80,6 +82,8 @@ export default function CampDetailScreen() {
     if (x !== undefined) pillScroll.current?.scrollTo({ x: Math.max(0, x - 60), animated: true });
   }, [selected]);
   const [pickerCat, setPickerCat] = useState<MealCategory | null>(null);
+  // Gerecht in je lijstje aantikken: eerst bekijken, dan kiezen voor het hele gerecht of aanpassen voor dit lijstje
+  const [dishView, setDishView] = useState<Dish | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [extraTarget, setExtraTarget] = useState<"day" | "general" | null>(null);
@@ -205,6 +209,30 @@ export default function CampDetailScreen() {
     }
     patchCamp.mutate({ general });
     setPackOpen(false);
+    toast.show(`${p.name} toegevoegd`, "success");
+  };
+
+  // Wisseltip uit het recept ("liever vlees? vervang de vega gyros door gyros"): voor dit hele lijstje wisselen
+  const altSwap = async (dish: Dish, sw: AltSwap) => {
+    const from = dishProductFor(dish, sw);
+    if (!from) {
+      toast.show("Dit product staat niet in het gerecht; pas het gerecht aan om te wisselen", "error");
+      return;
+    }
+    try {
+      await api(`/camps/${id}/product-swap`, { method: "POST", body: { from_id: from, to_id: sw.product.id } });
+      await Promise.all(["camp", "shopping", "budget"].map((k) => qc.invalidateQueries({ queryKey: [k, id] })));
+      toast.show(`${sw.from} vervangen door ${sw.product.name}`, "success");
+    } catch (e: any) {
+      toast.show(e?.message ?? "Wisselen mislukt", "error");
+    }
+  };
+
+  // Een pakket bij één maaltijd van deze dag (vanuit "gerecht kiezen")
+  const addPackageToMeal = (p: Package, meal: MealCategory) => {
+    if (!camp) return;
+    const items = p.items.map((it) => ({ name: it.name, unit: it.unit, qty: it.qty, aisle: it.aisle, product_id: it.product_id ?? undefined, store: it.store ?? undefined, meal }) as Extra);
+    applyDays(camp.days.map((d) => (d.index === selected ? { ...d, extras: [...(d.extras ?? []), ...items] } : d)));
     toast.show(`${p.name} toegevoegd`, "success");
   };
 
@@ -525,7 +553,7 @@ export default function CampDetailScreen() {
                       <View style={styles.dishRow}>
                         <Pressable
                           disabled={!dish}
-                          onPress={() => router.push({ pathname: "/dish/edit", params: { id: dishId, campId: camp.id } })}
+                          onPress={() => dish && setDishView(dish)}
                           style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6 }}
                         >
                           {dish?.online ? <Icon name="web" size={15} color={colors.muted} /> : null}
@@ -604,6 +632,42 @@ export default function CampDetailScreen() {
       </Animated.View>
 
       <VegaPicker dish={vegaDish} onClose={() => setVegaDish(null)} />
+      <DishPreview
+        target={dishView ? { dish: dishView } : null}
+        onClose={() => setDishView(null)}
+        swapDone={(sw) => {
+          const from = dishView ? dishProductFor(dishView, sw) : null;
+          return !!from && (camp.product_swaps ?? {})[from] === sw.product.id;
+        }}
+        onAltSwap={(sw) => dishView && altSwap(dishView, sw)}
+        actions={
+          dishView
+            ? [
+                {
+                  label: "Hele gerecht openen",
+                  icon: "book-open-variant",
+                  primary: true,
+                  testID: "dish-view-open",
+                  onPress: () => {
+                    const d = dishView;
+                    setDishView(null);
+                    router.push(fullDishRoute(d));
+                  },
+                },
+                {
+                  label: `Aanpassen voor ${T.deze} ${T.one}`,
+                  icon: "pencil-outline",
+                  testID: "dish-view-edit",
+                  onPress: () => {
+                    const d = dishView;
+                    setDishView(null);
+                    router.push({ pathname: "/dish/edit", params: { id: d.id, campId: camp.id } });
+                  },
+                },
+              ]
+            : []
+        }
+      />
       <PackagePickerModal visible={packOpen} onClose={() => setPackOpen(false)} onPick={addPackage} />
 
       {/* Dish picker */}
@@ -618,6 +682,10 @@ export default function CampDetailScreen() {
           const cat = pickerCat;
           setPickerCat(null);
           router.push({ pathname: "/dish/edit", params: { category: cat ?? "avondeten" } });
+        }}
+        onPackage={(p) => {
+          if (pickerCat) addPackageToMeal(p, pickerCat);
+          setPickerCat(null);
         }}
       />
 
@@ -727,7 +795,7 @@ function ExtraAddModal({
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <View style={styles.modalBackdrop}>
-        <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
+        <View style={[styles.sheet, sel ? null : { height: "92%" }, { paddingBottom: insets.bottom + 12 }]}>
           <View style={styles.sheetHandle} />
           <View style={styles.sheetHeader}>
             <Text style={styles.sheetTitle}>{sel ? "Aantal & winkel" : "Kies een product"}</Text>
@@ -760,7 +828,7 @@ function ExtraAddModal({
               <Button label="Toevoegen" onPress={confirm} testID="extra-add-button" />
             </View>
           ) : (
-            <View style={{ height: 560, marginHorizontal: -16 }}>
+            <View style={{ flex: 1, marginHorizontal: -16 }}>
               <ProductBrowser onPick={setSel} bottomPadding={16} />
             </View>
           )}
@@ -1069,6 +1137,7 @@ function DishPickerModal({
   onToggle,
   onClose,
   onCreate,
+  onPackage,
 }: {
   visible: boolean;
   category: MealCategory | null;
@@ -1077,6 +1146,7 @@ function DishPickerModal({
   onToggle: (id: string) => void;
   onClose: () => void;
   onCreate: () => void;
+  onPackage: (p: Package) => void;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -1084,33 +1154,43 @@ function DishPickerModal({
   const qc = useQueryClient();
   const toast = useToast();
   const [q, setQ] = useState("");
-  const [tab, setTab] = useState<"own" | "online">("own");
+  // Zelfde indeling als de Gerechten-pagina: App, Online, Eigen en Pakketten
+  const [tab, setTab] = useState<"app" | "online" | "own" | "packages">("app");
   const [allCats, setAllCats] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Eerst bekijken (wat zit erin, bereiding), dan pas toevoegen
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
+  // Wisseltips van het recept ("liever vlees") die je in het voorbeeld aanzet; gaan mee bij het toevoegen
+  const [recSwaps, setRecSwaps] = useState<Record<string, string>>({});
   useEffect(() => {
     if (visible) {
       setQ("");
       setAllCats(false);
-      setTab(category && !dishes.some((d) => isOwnDish(d, user?.id) && d.category === category) ? "online" : "own");
+      setPreview(null);
+      setRecSwaps({});
+      const fits = (std: boolean) => dishes.some((d) => isOwnDish(d, user?.id) && d.is_standard === std && (!category || d.category === category));
+      setTab(fits(true) ? "app" : fits(false) ? "own" : "online");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, category]);
 
   const { user } = useAuth();
-  const mine = dishes.filter((d) => isOwnDish(d, user?.id));
+  const packages = useQuery({ queryKey: ["packages"], queryFn: () => api<{ packages: Package[] }>("/packages"), enabled: visible && tab === "packages" });
+  const mine = dishes.filter((d) => isOwnDish(d, user?.id) && (tab === "app" ? d.is_standard : !d.is_standard));
   const own = category && !allCats ? mine.filter((d) => d.category === category) : mine;
   const list = smartFilter(own, q, (d) => [d.name, ...(d.ingredients ?? []).map((i) => i.name)]);
   const pickedRecipes = dishes
     .filter((d) => selectedIds.includes(d.id) && d.source?.recipe_id)
     .map((d) => d.source!.recipe_id.replace(":", "-"));
 
-  const pickOnline = async (r: RecipeTile) => {
+  const pickOnline = async (r: RecipeTile, swaps: Record<string, string> = {}) => {
     if (!category || busyId) return;
     const existing = dishes.find((d) => d.source?.recipe_id?.replace(":", "-") === r.id);
-    if (existing) return onToggle(existing.id);
+    if (existing && !Object.keys(swaps).length) return onToggle(existing.id);
     setBusyId(r.id);
     try {
-      const dish = await api<Dish>("/recipes/import", { method: "POST", body: { id: r.id, category, reuse: true } });
+      const dish = await api<Dish>("/recipes/import", { method: "POST", body: { id: r.id, category, reuse: true, swaps } });
+      if (existing && existing.id !== dish.id && selectedIds.includes(existing.id)) onToggle(existing.id);
       await qc.invalidateQueries({ queryKey: ["dishes"] });
       onToggle(dish.id);
       toast.show(`${r.title} toegevoegd`, "success");
@@ -1133,9 +1213,14 @@ function DishPickerModal({
           </Pressable>
         </View>
         <View style={[styles.pickTabs, { marginHorizontal: 16 }]}>
-          {(["own", "online"] as const).map((t) => (
+          {([
+            ["app", "App"],
+            ["online", "Online"],
+            ["own", "Eigen"],
+            ["packages", "Pakketten"],
+          ] as const).map(([t, label]) => (
             <Pressable key={t} testID={`picker-tab-${t}`} onPress={() => setTab(t)} style={[styles.pickTab, tab === t && styles.pickTabActive]}>
-              <Text style={[styles.pickTabText, tab === t && styles.pickTabTextActive]}>{t === "own" ? "Eigen gerechten" : "Online gerechten"}</Text>
+              <Text style={[styles.pickTabText, tab === t && styles.pickTabTextActive]}>{label}</Text>
             </Pressable>
           ))}
         </View>
@@ -1145,11 +1230,29 @@ function DishPickerModal({
               key={category ?? "x"}
               bottomPadding={16}
               initialFilters={category ? { gang: COURSE_FOR[category] } : undefined}
-              onPick={pickOnline}
+              onPick={(r) => setPreview({ recipe: r })}
               pickedIds={pickedRecipes}
               busyId={busyId}
             />
           </View>
+        ) : tab === "packages" ? (
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 16, gap: 8, paddingBottom: 8 }}>
+            <Text style={styles.pickerSub}>Een pakket zet al zijn producten in één keer bij deze maaltijd.</Text>
+            {packages.isLoading ? <ActivityIndicator color={colors.brandPrimary} /> : null}
+            {!packages.isLoading && !(packages.data?.packages ?? []).length ? <Text style={styles.noMeal}>Je hebt nog geen pakketten.</Text> : null}
+            {(packages.data?.packages ?? []).map((p) => (
+              <Pressable key={p.id} testID={`picker-package-${p.id}`} onPress={() => onPackage(p)} style={styles.pickerRow}>
+                <Icon name="package-variant-closed" size={22} color={colors.brandPrimary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pickerName}>{p.name}</Text>
+                  <Text style={styles.pickerSub} numberOfLines={1}>
+                    {p.items.length} producten{p.items.length ? ` · ${p.items.slice(0, 3).map((i) => i.name).join(", ")}` : ""}
+                  </Text>
+                </View>
+                <Icon name="plus-circle-outline" size={22} color={colors.brandPrimary} />
+              </Pressable>
+            ))}
+          </ScrollView>
         ) : (
           <View style={{ flex: 1, paddingHorizontal: 16, gap: 10 }}>
             <View style={styles.pickerSearch}>
@@ -1180,9 +1283,10 @@ function DishPickerModal({
                 return (
                   <Pressable
                     testID={`picker-dish-${item.id}`}
-                    onPress={() => onToggle(item.id)}
+                    onPress={() => setPreview({ dish: item })}
                     style={[styles.pickerRow, checked && styles.pickerRowChecked]}
                   >
+                    {item.image ? <Image source={{ uri: item.image }} style={styles.pickerImg} /> : null}
                     <View style={{ flex: 1 }}>
                       <Text style={styles.pickerName}>{item.name}</Text>
                       <Text style={styles.pickerSub}>
@@ -1190,11 +1294,7 @@ function DishPickerModal({
                         {allCats && item.category !== category ? ` · ${CATEGORY_LABELS[item.category as MealCategory] ?? item.category}` : ""}
                       </Text>
                     </View>
-                    <Icon
-                      name={checked ? "check-circle" : "circle-outline"}
-                      size={24}
-                      color={checked ? colors.brandPrimary : colors.borderStrong}
-                    />
+                    {checked ? <Icon name="check-circle" size={24} color={colors.brandPrimary} /> : <Icon name="chevron-right" size={22} color={colors.muted} />}
                   </Pressable>
                 );
               }}
@@ -1213,6 +1313,58 @@ function DishPickerModal({
           </View>
         )}
       </View>
+      <DishPreview
+        target={preview}
+        onClose={() => {
+          setPreview(null);
+          setRecSwaps({});
+        }}
+        swapDone={(sw) => recSwaps[String(sw.index)] === sw.product.id}
+        onAltSwap={
+          preview && "recipe" in preview
+            ? (sw) =>
+                setRecSwaps((x) => {
+                  const k = String(sw.index);
+                  const { [k]: cur, ...rest } = x;
+                  return cur === sw.product.id ? rest : { ...rest, [k]: sw.product.id };
+                })
+            : undefined
+        }
+        actions={(() => {
+          if (!preview) return [];
+          if ("dish" in preview) {
+            const on = selectedIds.includes(preview.dish.id);
+            return [
+              {
+                label: on ? "Weghalen bij deze maaltijd" : "Toevoegen",
+                icon: on ? "minus-circle-outline" : "plus-circle-outline",
+                primary: !on,
+                testID: "preview-add",
+                onPress: () => {
+                  onToggle(preview.dish.id);
+                  setPreview(null);
+                  if (!on) toast.show(`${preview.dish.name} toegevoegd`, "success");
+                },
+              },
+            ];
+          }
+          const r = preview.recipe;
+          const on = pickedRecipes.includes(r.id);
+          return [
+            {
+              label: busyId === r.id ? "Bezig…" : on ? "Weghalen bij deze maaltijd" : "Toevoegen",
+              icon: on ? "minus-circle-outline" : "plus-circle-outline",
+              primary: !on,
+              testID: "preview-add",
+              onPress: async () => {
+                await pickOnline(r, on ? {} : recSwaps);
+                setPreview(null);
+                setRecSwaps({});
+              },
+            },
+          ];
+        })()}
+      />
     </Modal>
   );
 }
@@ -1371,6 +1523,7 @@ const useStyles = makeStyles((colors) => ({
   },
   pickerRowChecked: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
   pickerName: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
+  pickerImg: { width: 44, height: 44, borderRadius: 10, backgroundColor: colors.brandTertiary },
   pickerSub: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },
   createRow: {
     flexDirection: "row",

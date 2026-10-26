@@ -154,7 +154,8 @@ export function ProductBrowser({
 
   const hide = useHideOnScroll();
   const listProps = {
-    ...hide.scrollProps,
+    // In een venster (kiezen) blijft de bovenkant staan; alleen op de Producten-pagina schuift hij mee weg
+    ...(onPick ? {} : hide.scrollProps),
     refreshControl: <RefreshControl refreshing={isRefetching} onRefresh={() => { refetch(); qc.invalidateQueries({ queryKey: ["products"] }); }} tintColor={colors.brandPrimary} />,
   };
 
