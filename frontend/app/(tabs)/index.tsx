@@ -14,7 +14,7 @@ import { useTerms } from "@/src/settings";
 import { usesNativeTabs } from "@/src/navigation";
 import { euro } from "@/src/search";
 import { STORE_LABEL, type RecipeTile } from "@/src/OnlineRecipes";
-import { CompareCard, SHORT, type CompareStore } from "@/src/CompareCard";
+import { SHORT, type CompareStore } from "@/src/CompareCard";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Home = {
@@ -29,6 +29,7 @@ type Home = {
     products: number;
     other_camps: number;
     start_date?: string | null;
+    soon?: { date: string; index: number; meals: { meal: string; dish_id: string; name: string; image?: string | null }[] }[];
   } | null;
   compare: CompareStore[] | null;
   compare_pending?: boolean;
@@ -76,7 +77,6 @@ export default function HomeScreen() {
     },
     staleTime: 60 * 1000,
     // De vergelijking wordt op de achtergrond uitgerekend: even later nog eens vragen
-    refetchInterval: (q) => (q.state.data?.compare_pending ? 4000 : false),
   });
 
   useEffect(() => {
@@ -301,14 +301,57 @@ export default function HomeScreen() {
         </View>
       ) : null}
 
-      {data?.camp && (data.compare_pending || (data.compare ?? []).some((c) => c.found > 0)) ? (
+      {data?.camp?.soon?.length ? (
+        // Wat eet je vandaag en morgen: één tik naar die dag in je lijstje
         <View style={styles.pad}>
-          <CompareCard campId={data.camp.id} campName={data.camp.name} compare={data.compare} pending={data.compare_pending} shopStore={data.shop_store} />
+          <Text style={styles.soonTitle}>Op het menu</Text>
+          <View style={{ gap: 10 }}>
+            {data.camp.soon.map((d) => (
+              <Pressable
+                key={d.date}
+                testID={`home-soon-${d.date}`}
+                onPress={() => router.push({ pathname: "/camp/[id]", params: { id: data.camp!.id, day: String(d.index) } })}
+                style={styles.soonCard}
+              >
+                <View style={styles.soonHead}>
+                  <Text style={styles.soonDay}>{dayWord(d.date)}</Text>
+                  <Icon name="chevron-right" size={20} color={colors.muted} />
+                </View>
+                {d.meals.map((m) => (
+                  <View key={`${m.meal}-${m.dish_id}`} style={styles.soonRow}>
+                    {m.image ? (
+                      <Image source={{ uri: m.image }} style={styles.soonImg} />
+                    ) : (
+                      <View style={[styles.soonImg, { alignItems: "center", justifyContent: "center" }]}>
+                        <Icon name="silverware-fork-knife" size={18} color={colors.brandPrimary} />
+                      </View>
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.soonMeal}>{MEAL_WORD[m.meal] ?? m.meal}</Text>
+                      <Text style={styles.soonName} numberOfLines={1}>{m.name}</Text>
+                    </View>
+                  </View>
+                ))}
+              </Pressable>
+            ))}
+          </View>
         </View>
       ) : null}
       <AdSlot place="home" />
     </ScrollView>
   );
+}
+
+const MEAL_WORD: Record<string, string> = { ontbijt: "Ontbijt", lunch: "Lunch", avondeten: "Avondeten", snacks: "Tussendoor" };
+
+function dayWord(iso: string) {
+  const d = new Date(`${iso}T12:00:00`);
+  const t = new Date();
+  t.setHours(12, 0, 0, 0);
+  const diff = Math.round((d.getTime() - t.getTime()) / 86400000);
+  if (diff === 0) return "Vandaag";
+  if (diff === 1) return "Morgen";
+  return d.toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
 }
 
 function Stat({ n, label }: { n: number; label: string }) {
@@ -338,6 +381,14 @@ function SectionHead({ title, link, onPress }: { title: string; link: string; on
 }
 
 const useStyles = makeStyles((colors) => ({
+  soonTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface, marginBottom: 10 },
+  soonCard: { borderWidth: 1, borderColor: colors.border, borderRadius: 16, padding: 12, gap: 8, backgroundColor: colors.surface },
+  soonHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  soonDay: { fontSize: 15, fontFamily: fonts.bold, color: colors.brandPrimary, textTransform: "capitalize" },
+  soonRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  soonImg: { width: 44, height: 44, borderRadius: 10, backgroundColor: colors.brandTertiary },
+  soonMeal: { fontSize: 12, fontFamily: fonts.medium, color: colors.muted },
+  soonName: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
   root: { flex: 1, backgroundColor: colors.surface },
   pad: { paddingHorizontal: 16 },
   date: { fontSize: 14, fontFamily: fonts.medium, color: colors.muted },

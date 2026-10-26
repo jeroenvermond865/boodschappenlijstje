@@ -60,10 +60,10 @@ export default function CampDetailScreen() {
   const router = useRouter();
   const toast = useToast();
   const qc = useQueryClient();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, day: dayParam } = useLocalSearchParams<{ id: string; day?: string }>();
   const { user, has } = useAuth();
 
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelected] = useState(dayParam && /^\d+$/.test(dayParam) ? Number(dayParam) : 0); // ?day=2 vanaf Home: meteen die dag
   // Vegen naar de vorige of volgende dag ("Algemeen" staat vooraan)
   const order = useRef<number[]>([-1, 0]);
   const pillX = useRef<Record<number, number>>({});

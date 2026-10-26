@@ -5,12 +5,13 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
-    id: "2026-10-26-o",
+    id: "2026-10-26-p",
     date: "26 oktober 2026",
     title: "Nette PDF van je boodschappenlijst",
     changes: [
       { kind: "opgelost", text: "Delen > Printen of PDF werkt weer, nu met een overzichtelijke lijst in de stijl van de app." },
       { kind: "beter", text: "Verversen door omlaag te trekken gaat minder snel per ongeluk: je moet verder trekken." },
+      { kind: "nieuw", text: "Home: 'Op het menu' laat zien wat je vandaag en morgen eet; tik om naar die dag te gaan. Het vergelijkblok staat nu alleen bij je boodschappenlijst." },
       { kind: "beter", text: "Vernieuwen naar een nieuwe versie gaat soepeler, met een laadscherm in plaats van een wit of vastgelopen scherm." },
       { kind: "opgelost", text: "Het budget rekent nu met hetzelfde bedrag als je boodschappenlijst." },
       { kind: "opgelost", text: "Vergelijken tussen winkels kiest dezelfde soort: gewone penne wordt niet meer vergeleken met volkoren of glutenvrij." },

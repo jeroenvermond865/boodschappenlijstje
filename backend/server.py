@@ -7914,7 +7914,7 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
         upcoming = sorted((x for x in camps if x.get("start_date") and last_day(x) >= today), key=lambda x: x["start_date"])
         c = upcoming[0] if upcoming else camps[0]
         dish_ids = {did for day in c.get("days", []) for cat in MEAL_CATEGORIES for did in (day.get("meals") or {}).get(cat, [])}
-        dishes = await db.dishes.find({"dish_id": {"$in": list(dish_ids)}}, {"_id": 0, "dish_id": 1, "name": 1, "ingredients": 1}).to_list(500)
+        dishes = await db.dishes.find({"dish_id": {"$in": list(dish_ids)}}, {"_id": 0, "dish_id": 1, "name": 1, "ingredients": 1, "image": 1, "photo": 1, "source.image": 1}).to_list(500)
         names = {}
         for d in dishes:
             for i in d.get("ingredients") or []:
@@ -7933,6 +7933,23 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
                 "shopping_days": sum(1 for d in days if d.get("is_shopping_day")),
                 "meals_planned": sum(len((d.get("meals") or {}).get(cat, [])) for d in days for cat in MEAL_CATEGORIES),
                 "products": len(names), "other_camps": len(camps) - 1}
+        # Wat eet je vandaag en morgen (voor de kaart op Home)
+        dish_by = {d["dish_id"]: d for d in dishes}
+        soon = []
+        try:
+            start = datetime.fromisoformat(str(c.get("start_date") or "")[:10]) if c.get("start_date") else None
+        except ValueError:
+            start = None
+        if start:
+            for k, day in enumerate(days):
+                dt = (start + timedelta(days=k)).date().isoformat()
+                if dt < today or len(soon) >= 2:
+                    continue
+                meals = [{"meal": cat, "dish_id": did, "name": dish_by[did].get("name"), "image": dish_by[did].get("photo") or (dish_by[did].get("source") or {}).get("image") or dish_by[did].get("image")}
+                         for cat in MEAL_CATEGORIES for did in (day.get("meals") or {}).get(cat, []) if did in dish_by]
+                if meals:
+                    soon.append({"date": dt, "index": k, "meals": meals})
+        camp["soon"] = soon
         if names:
             compare, pending = await _camp_compare(c, user)
             compare_pending = pending
