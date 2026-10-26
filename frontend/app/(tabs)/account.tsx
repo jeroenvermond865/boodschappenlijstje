@@ -263,21 +263,24 @@ function AdminRow({
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
+  // De hele balk is klikbaar, niet alleen het pijltje
   return (
-    <Card style={styles.adminRow}>
-      <View style={styles.adminIcon}>
-        <Icon name={icon} size={20} color={colors.brandPrimary} />
-      </View>
-      <Text style={styles.adminLabel}>{label}</Text>
-      {badge && badge > 0 ? (
-        <View style={styles.badge} testID={`${testID}-badge`}>
-          <Text style={styles.badgeText}>{badge}</Text>
+    <Pressable testID={testID} onPress={onPress} style={({ pressed }) => pressed && { opacity: 0.7 }}>
+      <Card style={styles.adminRow}>
+        <View style={styles.adminIcon}>
+          <Icon name={icon} size={20} color={colors.brandPrimary} />
         </View>
-      ) : null}
-      <Pressable testID={testID} onPress={onPress} style={styles.adminChevron} hitSlop={10}>
-        <Icon name="chevron-right" size={22} color={colors.muted} />
-      </Pressable>
-    </Card>
+        <Text style={styles.adminLabel}>{label}</Text>
+        {badge && badge > 0 ? (
+          <View style={styles.badge} testID={`${testID}-badge`}>
+            <Text style={styles.badgeText}>{badge}</Text>
+          </View>
+        ) : null}
+        <View style={styles.adminChevron}>
+          <Icon name="chevron-right" size={22} color={colors.muted} />
+        </View>
+      </Card>
+    </Pressable>
   );
 }
 

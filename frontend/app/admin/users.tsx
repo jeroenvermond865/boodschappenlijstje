@@ -30,6 +30,17 @@ export default function AdminUsersScreen() {
     queryKey: ["roles"],
     queryFn: () => api<{ roles: Role[] }>("/roles"),
   });
+  // Zoeken op naam, e-mail, gebruikersnaam, telefoon of rol; filter op Premium
+  const [q, setQ] = useState("");
+  const [onlyPremium, setOnlyPremium] = useState(false);
+  const norm = (t?: string | null) => (t ?? "").toLowerCase();
+  const terms = norm(q).split(/\s+/).filter(Boolean);
+  const allUsers = usersData?.users ?? [];
+  const users = allUsers.filter(
+    (u) =>
+      (!onlyPremium || u.premium) &&
+      terms.every((t) => [u.name, u.email, u.username, u.phone, u.role].some((v) => norm(v).includes(t))),
+  );
   // Alleen de beheerder kan iemand beheerder maken
   const roles = (rolesData?.roles ?? []).filter((r) => iAmOwner || r.name !== "beheerder");
 
@@ -116,8 +127,18 @@ export default function AdminUsersScreen() {
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
       ) : (
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 24, gap: 12 }}>
-          {(usersData?.users ?? []).map((u) => (
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 24, gap: 12 }} keyboardShouldPersistTaps="handled">
+          <Field testID="user-search" value={q} onChangeText={setQ} placeholder="Zoek op naam, e-mail, gebruikersnaam of telefoon" autoCapitalize="none" />
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+            <Text style={styles.count}>
+              {users.length === allUsers.length ? `${allUsers.length} gebruikers` : `${users.length} van ${allUsers.length} gebruikers`}
+            </Text>
+            <Pressable onPress={() => setOnlyPremium((v) => !v)} style={{ flexDirection: "row", alignItems: "center", gap: 6 }} hitSlop={6}>
+              <Icon name={onlyPremium ? "checkbox-marked" : "checkbox-blank-outline"} size={20} color={colors.brandPrimary} />
+              <Text style={styles.count}>Alleen Premium</Text>
+            </Pressable>
+          </View>
+          {users.map((u) => (
             <View key={u.id} style={styles.card} testID={`user-${u.id}`}>
               <View style={styles.userRow}>
                 <View style={styles.avatar}>
@@ -211,6 +232,7 @@ export default function AdminUsersScreen() {
 }
 
 const useStyles = makeStyles((colors) => ({
+  count: { fontSize: 13, fontFamily: fonts.medium, color: colors.muted },
   root: { flex: 1, backgroundColor: colors.surface },
   header: {
     flexDirection: "row",
