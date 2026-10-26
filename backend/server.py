@@ -1427,8 +1427,13 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     dishes = [d for d in dishes if d["dish_id"] not in exclude and d.get("ingredients")]
     pids = list({i["product_id"] for d in dishes for i in d["ingredients"] if i.get("product_id")})
     on_promo = set()
+    # Ga je later boodschappen doen? Dan tellen de aanbiedingen van die dag (ook uit de folder van volgende week)
+    shop_day = _first_shop_day(camp)
+    later = shop_day if shop_day and shop_day > _iso_day(now_utc().isoformat()) else None
+    if later:
+        await _folders_fresh(wait=False)
     async for p in db.products.find(_live({"product_id": {"$in": pids}}), {"_id": 0}):
-        if _hist_now(p)[1] is not None:
+        if (_promo_on_day(p, later) is not None) if later else (_hist_now(p)[1] is not None):
             on_promo.add(p["product_id"])
 
     def score(d):
@@ -1780,6 +1785,17 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
                     if have:
                         it["in_pantry"] = round(have, 2)
                         has_pantry = True
+    # Premium: ga je later boodschappen doen (bijv. volgende week)? Dan zie je welke producten op die dag in de aanbieding zijn
+    shop_day, promo_then = _first_shop_day(camp), 0
+    if user.get("premium") and shop_day and shop_day > _iso_day(now_utc().isoformat()):
+        await _folders_fresh(wait=False)
+        for b in by_store:
+            for it in b["flat"]:
+                p = prods.get(it.get("product_id") or "")
+                then = _promo_on_day(p, shop_day) if p else None
+                if then and (_promo_public(p, it.get("pack_price") or 0)[0] or {}).get("label") != then["label"]:
+                    it["promo_then"] = then
+                    promo_then += 1
     return {
         "by_store": by_store,
         "general": general,
@@ -1787,6 +1803,8 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
         "stores": stores,
         "multi_store": len(stores) > 1,
         "has_pantry": has_pantry,
+        "shop_day": shop_day,
+        "promo_then": promo_then,
     }
 
 
@@ -4397,6 +4415,28 @@ def _promos_for(doc: dict) -> list:
         found = [_promo_item(src, pr["id"], pr.get("title"), pr.get("label"), pr.get("start"), pr.get("end"), combinable=pr.get("combinable"))
                  for pr in (doc.get("promos") or [doc.get("promo") or {}]) if pr.get("id")]
     return found
+
+
+def _promo_on_day(doc: dict, day: str) -> Optional[dict]:
+    # De aanbieding die op een bepaalde dag geldt (ook uit de folder van volgende week)
+    for it in _promos_for(doc):
+        if (it["start"] or "") <= day <= (it["end"] or "9999"):
+            return {"label": it["label"], "start": it["start"], "end": it["end"],
+                    "period": f"{_nice_day(it['start'])} t/m {_nice_day(it['end'])}" if it["start"] and it["end"] else None}
+    return None
+
+
+def _first_shop_day(camp: dict) -> Optional[str]:
+    # Datum van de eerste inkoopdag (of de eerste dag van het lijstje)
+    sd = camp.get("start_date")
+    if not sd:
+        return None
+    try:
+        start = datetime.fromisoformat(str(sd)[:10])
+    except ValueError:
+        return None
+    k = next((k for k, d in enumerate(camp.get("days") or []) if d.get("is_shopping_day")), 0)
+    return (start + timedelta(days=k)).date().isoformat()
 
 
 def _promo_public(doc: dict, price: float) -> tuple:

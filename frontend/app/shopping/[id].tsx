@@ -19,13 +19,13 @@ import { RouteSheet, useRoute } from "@/src/route";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; better?: PackBetter | null; in_pantry?: number };
+type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; better?: PackBetter | null; in_pantry?: number; promo_then?: { label: string; start?: string | null; period?: string | null } };
 type Grouped = { aisle: string; items: Item[] };
 type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number; saving?: number };
 
 const euro = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
 type PerDay = { index: number; adults: number; children: number; by_store: StoreBlock[] };
-type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean };
+type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean; shop_day?: string | null; promo_then?: number };
 
 const key = (store: string, i: Item) => `${store}|${i.name.toLowerCase()}|${i.unit}`;
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -304,6 +304,15 @@ export default function ShoppingScreen() {
               <Text style={styles.multiText}>{offlineText(data.offline_at)} Afvinken werkt gewoon.</Text>
             </View>
           ) : null}
+          {data?.promo_then ? (
+            <View style={styles.multiBanner}>
+              <Icon name="tag-outline" size={16} color={colors.onBrandTertiary} />
+              <Text style={styles.multiText}>
+                Op je inkoopdag ({new Date(data.shop_day!).toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" })}) zijn{" "}
+                {data.promo_then === 1 ? "1 product" : `${data.promo_then} producten`} in de aanbieding. Ze staan hieronder gemarkeerd.
+              </Text>
+            </View>
+          ) : null}
           {multi ? (
             <View style={styles.multiBanner}>
               <Icon name="storefront-outline" size={16} color={colors.onBrandTertiary} />
@@ -507,6 +516,12 @@ function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boole
             {packText(item.packs, item.pack_unit)}
           </Text>
         ) : null}
+        {item.promo_then ? (
+          <Text style={styles.itemPromo} numberOfLines={2}>
+            {item.promo_then.label}
+            {item.promo_then.period ? ` · ${item.promo_then.period}` : ""}
+          </Text>
+        ) : null}
         {item.in_pantry ? (
           <Text style={styles.itemPantry} numberOfLines={1}>
             In je voorraadkast: {formatQty(item.in_pantry)} {item.unit}
@@ -531,6 +546,7 @@ function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boole
 }
 
 const useStyles = makeStyles((colors) => ({
+  itemPromo: { fontSize: 12, fontFamily: fonts.semibold, color: colors.warning, marginTop: 1 },
   itemPantry: { fontSize: 12, fontFamily: fonts.semibold, color: colors.success, marginTop: 1 },
   itemPack: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
   itemPrice: { fontSize: 12, fontFamily: fonts.semibold, color: colors.onSurfaceSecondary, marginTop: 1 },
