@@ -957,6 +957,8 @@ def dish_public(doc: dict) -> dict:
         "pantry": doc.get("pantry") or [],
         "needs_vega": bool(_needs_vega(doc)),
         "online": bool(doc.get("online")),
+        "image": doc.get("image") or (doc.get("source") or {}).get("image"),
+        "price_pp": doc.get("price_pp"),  # app-gerechten: ongeveer per volwassene per winkel (deel van de verpakking)
         "camp_id": doc.get("camp_id"),  # aangepast voor één activiteit
         "owner_id": doc.get("owner_id"),
     }
@@ -1627,7 +1629,8 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     if data.cheap:
         await _global_products()
         by_pid = _product_cache.get("by_pid") or {}
-        costs = {d["dish_id"]: _dish_cost(d, by_pid) for d in dishes}
+        own_store = user.get("store") if user.get("store") in COMPARE_STORES else DEFAULT_STORE
+        costs = {d["dish_id"]: _dish_cost(d, by_pid) or (d.get("price_pp") or {}).get(own_store) for d in dishes}
     known = [v for v in costs.values() if v]
     lo, hi = (min(known), max(known)) if known else (0, 1)
 
@@ -1919,8 +1922,7 @@ def _match_missing(blocks: list, docs: list, prods: dict) -> None:
             if k not in found:
                 if b["store"] not in pools:
                     pools[b["store"]] = [d for d in docs if d.get("_src") == b["store"] and d.get("is_global")]
-                hits = _best_matches(pools[b["store"]], it["name"]) if pools[b["store"]] else []
-                found[k] = hits[0] if hits else None
+                found[k] = _cheapest_good(pools[b["store"]], it["name"], b["store"]) if pools[b["store"]] else None
             d = found[k]
             if not d:
                 continue
@@ -1935,6 +1937,54 @@ def _match_missing(blocks: list, docs: list, prods: dict) -> None:
             for it in sorted(b["flat"], key=lambda x: (AISLES.index(x["aisle"]) if x["aisle"] in AISLES else 99, x["name"].lower())):
                 by_aisle.setdefault(it["aisle"], []).append(it)
             b["grouped"] = [{"aisle": a, "items": by_aisle[a]} for a in AISLES if a in by_aisle]
+
+
+async def _basic_dish_info_loop() -> None:
+    # App-gerechten: een foto (van het belangrijkste product) en ongeveer wat het per volwassene kost bij elke winkel.
+    # Eén keer na het opstarten en daarna elke dag, één gerecht tegelijk zodat de server er niet traag van wordt.
+    await asyncio.sleep(120)
+    while True:
+        try:
+            docs = await _global_products()
+            pools = {st: [d for d in docs if d.get("_src") == st and d.get("is_global")] for st in COMPARE_STORES}
+            found: dict = {}
+            async for dish in db.dishes.find({"basic": True, "deleted_at": None}, {"_id": 0}):
+                info = await asyncio.to_thread(_basic_dish_info, dish, pools, found)
+                await db.dishes.update_one({"dish_id": dish["dish_id"]}, {"$set": info})
+            logger.info("App-gerechten: foto's en prijzen bijgewerkt")
+        except Exception as e:
+            logger.warning("App-gerechten bijwerken: %r", e)
+        await asyncio.sleep(24 * 3600)
+
+
+def _basic_dish_info(dish: dict, pools: dict, found: dict) -> dict:
+    ings = dish.get("ingredients") or []
+    # Het belangrijkste product staat in de naam: "Boterham met hagelslag" -> hagelslag
+    title = set(re.findall(r"[a-z]{4,}", _norm_text(dish["name"])))
+    hero = next((i for i in ings if title & set(re.findall(r"[a-z]{4,}", _norm_text(i["name"])))), ings[0] if ings else None)
+    out: dict = {"price_pp": {}}
+    for st, pool in pools.items():
+        total, ok = 0.0, 0
+        for i in ings:
+            k = (st, i["name"])
+            if k not in found:
+                found[k] = _cheapest_good(pool, i["name"], st) if pool else None
+            p = found[k]
+            price = resolve_price(p.get("prices") or {}, st, p.get("unavailable") or []) if p else 0
+            if price:
+                total += price * _pack_share(i.get("unit") or "stuks", p.get("unit") or "", p.get("name") or "", p.get("pack_count")) * (i.get("qty_adult") or 1)
+                ok += 1
+            if i is hero and p and p.get("image") and not out.get("image") and st == "Albert Heijn":
+                out["image"] = p["image"]
+        if ok:
+            out["price_pp"][st] = round(total, 2)
+    if hero and not out.get("image"):
+        for st in COMPARE_STORES:
+            p = found.get((st, hero["name"]))
+            if p and p.get("image"):
+                out["image"] = p["image"]
+                break
+    return out
 
 
 def _item_grams(qty: float, unit: str, p: dict) -> Optional[float]:
@@ -2174,7 +2224,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
                     plan = _pack_plan(p, it["qty"], it["unit"], b["store"], need.get(id(it))) or {}
                     packs = plan.get("packs") or 1
                     it.update({"packs": packs, "pack_unit": p.get("unit") or "", "price": round(packs * price, 2), "pack_price": price,
-                               "product": p.get("name"), "better": plan.get("better")})
+                               "product": p.get("name"), "image": p.get("image"), "better": plan.get("better")})
                     total += packs * price
                     # Korting door een aanbieding: normale prijs min wat je nu betaalt
                     off = _promo_saving(p, price, packs)
@@ -5112,6 +5162,20 @@ def _nice(s: str) -> str:
     return s[:1].upper() + s[1:]
 
 
+async def _ah_schema_probe() -> None:
+    # Testsite: welke velden heeft een AH-recept? (zoeken naar de producten die AH zelf bij "Kies producten" kiest)
+    try:
+        q = """{r:__type(name:"Recipe"){fields{name args{name} type{name kind ofType{name kind ofType{name}}}}}
+          q:__schema{queryType{fields{name}}}}"""
+        d = await _ah_gql(q)
+        logger.info("AH-schema Recipe: %s", [(f["name"], (f["type"].get("name") or (f["type"].get("ofType") or {}).get("name")
+                                                        or ((f["type"].get("ofType") or {}).get("ofType") or {}).get("name"))) for f in (d.get("r") or {}).get("fields") or []])
+        logger.info("AH-schema queries: %s", [f["name"] for f in (d.get("q") or {}).get("queryType", {}).get("fields") or []
+                                              if re.search(r"recipe|shop|basket|list", f["name"], re.I)])
+    except Exception as e:
+        logger.warning("AH-schema: %r", e)
+
+
 async def _ah_gql(query: str, variables: Optional[dict] = None) -> dict:
     async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
         tok = await _ah_token(c)
@@ -5742,7 +5806,7 @@ _SYNONYMS = {"lasagnevel": ["lasagnebladen", "lasagne"], "lasagnevellen": ["lasa
              "kokostoppers": ["kokostoppen", "kokosmakronen"], "kokostopjes": ["kokostoppen", "kokosmakronen"]}
 
 
-def _best_matches(pool: list, name: str, limit: int = 1) -> list:
+def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False) -> list:
     # Zoek op een paar niveaus (alle woorden, zonder voorzetsel-deel, zonder bijvoeglijke woorden, andere naam, alleen het hoofdwoord)
     # en kies daarna het beste product over alles heen: een losse treffer op "middelgrote ui" is niet beter dan "uien"
     words = _alt_terms(re.sub(r"\([^)]*\)", " ", name), None).split()
@@ -5792,7 +5856,27 @@ def _best_matches(pool: list, name: str, limit: int = 1) -> list:
             pen = _food_penalty(d, rank, lv) + extra
             if id(d) not in best or pen < best[id(d)][0]:
                 best[id(d)] = (pen, d)
-    return [d for _, d in sorted(best.values(), key=lambda x: x[0])][:limit]
+    ranked = sorted(best.values(), key=lambda x: x[0])[:limit]
+    return ranked if with_pen else [d for _, d in ranked]
+
+
+def _cheapest_good(pool: list, name: str, store: str) -> Optional[dict]:
+    # Het best passende product; zijn er een paar even goede, dan de voordeligste per kilo of liter
+    hits = _best_matches(pool, name, 5, with_pen=True)
+    if not hits:
+        return None
+    top = hits[0][0]
+    good = [d for pen, d in hits if pen <= top + 1.0]
+    if len(good) < 2:
+        return hits[0][1]
+
+    def per_unit(d):
+        return _unit_value(resolve_price(d.get("prices") or {}, store, d.get("unavailable") or []), d.get("unit") or "")
+    vals = [(per_unit(d), k, d) for k, d in enumerate(good)]
+    # Alleen vergelijken als ze dezelfde maat hebben (allemaal per kilo of allemaal per liter)
+    if not all(v for v, _, _ in vals) or len({v[1] for v, _, _ in vals}) != 1:
+        return hits[0][1]
+    return min(vals, key=lambda x: (x[0][0], x[1]))[2]
 
 
 _FORMS = ("poeder", "korrels", "vlokken", "stokjes", "stokje", "snippers", "blaadjes", "zaadjes", "gemalen")
@@ -5923,7 +6007,29 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
         pen += 8
     if d.get("aisle") == "Dranken, sap, koffie & thee" and not any(q in ("sap", "melk", "wijn", "bier", "koffie", "thee", "water") for q in words):
         pen += 6
+    full = d["_norm"] + " " + _norm_text(d.get("unit") or "")
+    # Een recept vraagt om een scheut wijn, geen doos van 6 flessen
+    if re.search(r"\b\d+\s*(flessen|blikjes|blikken|pakken|bekers)\b|\b[2-9]\d?\s*x\s*\d", full) and not any(q in ("flessen", "pack", "doos") for q in words):
+        pen += 5
+    # "verse peterselie" is geen potje gedroogde kruiden
+    if any(q in ("vers", "verse") for q in words) and (re.search(r"gedroogd|gemalen|strooibus", full) or brand_of(d) in _DRIED_BRANDS):
+        pen += 4
+    # Snoep met de naam van iets anders: Red Band "zoete paddenstoelen" zijn geen paddenstoelen
+    if brand_of(d) in _CANDY_BRANDS and not any(_CANDY_RE.search(q) for q in words):
+        pen += 8
     return pen
+
+
+_DRIED_BRANDS = {"verstegen", "euroma", "silvo", "jonnie boer", "santa maria"}
+_CANDY_BRANDS = {"red band", "haribo", "katja", "venco", "look o look", "autodrop", "klene", "lonka", "malaco", "tum tum", "fini"}
+
+
+def brand_of(d: dict) -> str:
+    b = _norm_text(d.get("brand") or "")
+    if b:
+        return b
+    n = d["_norm"]
+    return next((x for x in _DRIED_BRANDS | _CANDY_BRANDS if n.startswith(x + " ")), "")
 
 
 def _relevant_products(docs: list, q: str) -> list:
@@ -5955,9 +6061,9 @@ def _store_matches(names: list, docs: list, store: str) -> dict:
     for n in names:
         if _norm_text(n) in ("water", "kraanwater", "lauw water", "kokend water", "ijsblokjes"):
             continue
-        hits = _best_matches(pool, n)
-        if hits:
-            out[n] = hits[0]
+        hit = _cheapest_good(pool, n, store)
+        if hit:
+            out[n] = hit
     return out
 
 
@@ -9125,6 +9231,9 @@ async def startup():
     else:
         logger.info("Testsite: achtergrondtaken staan uit")
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
+    asyncio.create_task(_basic_dish_info_loop())
+    if os.environ.get("BACKGROUND_JOBS", "1") == "0":
+        asyncio.create_task(_ah_schema_probe())
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_log_product_counts())
 

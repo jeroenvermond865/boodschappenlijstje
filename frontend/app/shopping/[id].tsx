@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Modal, Platform, Pressable, ScrollView, Share, Text, View } from "react-native";
+import { ActivityIndicator, Image, Linking, Modal, Platform, Pressable, ScrollView, Share, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -20,7 +20,7 @@ import { CompareCard, type CompareStore } from "@/src/CompareCard";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; better?: PackBetter | null; in_pantry?: number; promo_then?: { label: string; start?: string | null; period?: string | null } };
+type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; image?: string | null; better?: PackBetter | null; in_pantry?: number; promo_then?: { label: string; start?: string | null; period?: string | null } };
 type Grouped = { aisle: string; items: Item[] };
 type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number; saving?: number };
 
@@ -629,6 +629,9 @@ function ItemRow({ item, checked, onToggle, last, by }: { item: Item; checked: b
   const { id } = useLocalSearchParams<{ id: string }>();
   const qc = useQueryClient();
   const toast = useToast();
+  const router = useRouter();
+  // Product openen: foto, prijs bij andere winkels en waar het ligt
+  const open = item.product_id ? () => router.push({ pathname: "/product/[id]", params: { id: item.product_id! } }) : undefined;
   // Wisselen naar het voordeligere product: alleen voor deze lijst
   const swap = async (b: PackBetter) => {
     try {
@@ -644,8 +647,19 @@ function ItemRow({ item, checked, onToggle, last, by }: { item: Item; checked: b
     <View style={!last && styles.itemRowBorder}>
     <Pressable testID={`item-${item.name.toLowerCase()}`} onPress={onToggle} style={styles.itemRow}>
       <Icon name={checked ? "checkbox-marked-circle" : "checkbox-blank-circle-outline"} size={24} color={checked ? colors.success : colors.borderStrong} />
+      {item.image ? (
+        <Pressable onPress={open} hitSlop={4} testID={`item-image-${item.name.toLowerCase()}`}>
+          <Image source={{ uri: item.image }} style={[styles.itemImg, checked && { opacity: 0.4 }]} resizeMode="contain" />
+        </Pressable>
+      ) : null}
       <View style={{ flex: 1 }}>
         <Text style={[styles.itemName, checked && styles.itemNameChecked]}>{item.name}</Text>
+        {item.product && open ? (
+          <Pressable onPress={open} hitSlop={4} style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+            <Text style={styles.itemProduct} numberOfLines={1}>{item.product}</Text>
+            <Icon name="chevron-right" size={14} color={colors.brandPrimary} />
+          </Pressable>
+        ) : null}
         {item.packs ? (
           <Text style={styles.itemPack} numberOfLines={1}>
             {packText(item.packs, item.pack_unit)}
@@ -682,6 +696,8 @@ function ItemRow({ item, checked, onToggle, last, by }: { item: Item; checked: b
 }
 
 const useStyles = makeStyles((colors) => ({
+  itemImg: { width: 44, height: 44, borderRadius: 8, backgroundColor: "#fff" },
+  itemProduct: { fontSize: 12, fontFamily: fonts.semibold, color: colors.brandPrimary, flexShrink: 1 },
   itemPromo: { fontSize: 12, fontFamily: fonts.semibold, color: colors.warning, marginTop: 1 },
   itemPantry: { fontSize: 12, fontFamily: fonts.semibold, color: colors.success, marginTop: 1 },
   itemPack: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
