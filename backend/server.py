@@ -2071,6 +2071,7 @@ def _basic_dish_info(dish: dict, pools: dict, found: dict) -> dict:
 # --- Foto bij een gerecht: een echte foto van dat gerecht, geen foto van een pak brood ---
 # We zoeken bij de recepten van AH, Jumbo en Dirk (en op Wikimedia Commons) en laten de AI kiezen welke foto echt bij de naam past.
 _photo_tasks: set = set()
+PHOTO_V = 2  # hoger zetten = alle foto's van gerechten opnieuw laten kiezen (2: strenger, geen gok meer als de AI faalt)
 
 
 async def _photo_candidates(name: str) -> list:
@@ -2119,14 +2120,15 @@ async def _dish_photo(name: str) -> Optional[str]:
     if not cands:
         return None
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return cands[0][2] if cands[0][0] >= 0.5 else None
+        raise RuntimeError("geen AI-sleutel")
     from anthropic import AsyncAnthropic
     content: list = []
     for k, (_, title, url) in enumerate(cands):
         content += [{"type": "text", "text": f"Foto {k + 1} ({title}):"}, {"type": "image", "source": {"type": "url", "url": url}}]
     content.append({"type": "text", "text": (f"Gerecht in een boodschappen-app: \"{name}\". Welke foto laat het beste precies dit gerecht zien, "
-                                             "zoals je het op je bord of tafel hebt? Geen verpakking, geen ander gerecht. "
-                                             "Geef het nummer van de foto, of null als geen enkele foto goed past.")})
+                                             "zoals je het op je bord of tafel hebt? Geen verpakking, geen ander gerecht: let ook op de titel bij de foto "
+                                             "(\"havermout-banaan-brownies\" is geen havermout met banaan, \"tomatensoep met balletjes\" is goed genoeg voor tomatensoep). "
+                                             "Geef het nummer van de foto, of null als geen enkele foto echt dit gerecht laat zien.")})
     try:
         msg = await AsyncAnthropic().beta.messages.create(
             model=DIRK_AI_MODEL, max_tokens=300, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
@@ -2135,8 +2137,9 @@ async def _dish_photo(name: str) -> Optional[str]:
                 "properties": {"photo": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}},
             messages=[{"role": "user", "content": content}])
     except Exception as e:
+        # Geen gok: liever even geen foto dan een foto van een ander gerecht. Morgen opnieuw proberen.
         logger.warning("Foto %s kiezen: %r", name, e)
-        return cands[0][2] if cands[0][0] >= 0.5 else None
+        raise
     text = next((b.text for b in msg.content if b.type == "text"), "")
     n = (json.loads(text) if text and msg.stop_reason not in ("refusal", "max_tokens") else {}).get("photo")
     return cands[n - 1][2] if isinstance(n, int) and 1 <= n <= len(cands) else None
@@ -2145,14 +2148,14 @@ async def _dish_photo(name: str) -> Optional[str]:
 async def _set_dish_photo(dish: dict) -> None:
     # Eén keer per naam zoeken; bij een nieuwe naam opnieuw
     name = (dish.get("name") or "").strip()
-    if not name or dish.get("photo_for") == name or (dish.get("source") or {}).get("image"):
+    if not name or (dish.get("photo_for") == name and dish.get("photo_v") == PHOTO_V) or (dish.get("source") or {}).get("image"):
         return
     try:
         url = await _dish_photo(name)
     except Exception as e:
         logger.warning("Foto %s: %r", name, e)
         return
-    await db.dishes.update_one({"dish_id": dish["dish_id"]}, {"$set": {"photo": url, "photo_for": name}})
+    await db.dishes.update_one({"dish_id": dish["dish_id"]}, {"$set": {"photo": url, "photo_for": name, "photo_v": PHOTO_V}})
     if url:
         logger.info("Foto bij gerecht %s gevonden", name)
 
