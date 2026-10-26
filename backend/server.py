@@ -7757,7 +7757,9 @@ async def camp_shop_store(camp_id: str, data: ShopStoreInput, user: dict = Depen
             key = _ikey(_norm_text(it["name"]))
             stores[key] = st
             if len(opts) > 1 and opts[1][0] > opts[0][0]:
-                was[key] = {"store": opts[1][1], "price": round(opts[1][0], 2)}  # "bij Jumbo was het € 2,49"
+                # "bij Jumbo was het € 2,49"; met het product erbij, zodat je ze naast elkaar kunt zien
+                was[key] = {"store": opts[1][1], "price": round(opts[1][0], 2), "product_id": opts[1][2].get("product_id"),
+                            "product": opts[1][2].get("product")}
             if it.get("product_id"):
                 prods[key] = it["product_id"]
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {"shop_store": "split", "split_stores": split, "item_stores": stores,

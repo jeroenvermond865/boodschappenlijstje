@@ -14,6 +14,7 @@ import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { cachedApi, offlineText } from "@/src/offline";
 import { BetterPack, PackBetter, packText } from "@/src/packs";
+import { PriceCompareSheet } from "@/src/PriceCompareSheet";
 import { ShopSwapSheet } from "@/src/ShopSwap";
 import { sliceInfo } from "@/src/slices";
 import { AISLE_ICONS, formatQty } from "@/src/constants";
@@ -25,7 +26,7 @@ import { CompareCard, type CompareStore } from "@/src/CompareCard";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; orig_product_id?: string | null; choose?: "todo" | "auto"; image?: string | null; better?: PackBetter | null; in_pantry?: number; was?: { store: string; price: number }; promo_then?: { label: string; start?: string | null; period?: string | null } };
+type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; orig_product_id?: string | null; choose?: "todo" | "auto"; image?: string | null; better?: PackBetter | null; in_pantry?: number; was?: { store: string; price: number; product_id?: string | null; product?: string | null }; promo_then?: { label: string; start?: string | null; period?: string | null } };
 type Grouped = { aisle: string; items: Item[] };
 type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number; saving?: number };
 
@@ -641,6 +642,7 @@ function AisleSection({
 
 function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; checked: boolean; onToggle: () => void; last?: boolean; by?: string; store?: string }) {
   const [swapOpen, setSwapOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
   const styles = useStyles();
   const { colors } = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -702,9 +704,12 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
           </Pressable>
         ) : null}
         {item.was && item.price ? (
-          <Text style={styles.itemWas} numberOfLines={1}>
-            Bij {item.was.store} {euro(item.was.price)}, hier {euro(item.price)}
-          </Text>
+          <Pressable onPress={() => setCompareOpen(true)} hitSlop={4} style={{ flexDirection: "row", alignItems: "center", gap: 2 }} testID={`item-was-${item.name.toLowerCase()}`}>
+            <Text style={[styles.itemWas, { textDecorationLine: "underline" }]} numberOfLines={1}>
+              Bij {item.was.store} {euro(item.was.price)}, hier {euro(item.price)}
+            </Text>
+            <Icon name="chevron-right" size={14} color={colors.success} />
+          </Pressable>
         ) : null}
         {by ? <Text style={styles.itemPack}>Afgevinkt door {by}</Text> : null}
         {item.promo_then ? (
@@ -732,6 +737,12 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
         </Pressable>
       ) : null}
     </Pressable>
+      <PriceCompareSheet
+        item={compareOpen ? item : null}
+        store={store ?? ""}
+        onClose={() => setCompareOpen(false)}
+        onPick={(p) => swap({ product_id: p.id, name: p.name } as PackBetter)}
+      />
       <ShopSwapSheet
         item={swapOpen ? item : null}
         store={store ?? ""}

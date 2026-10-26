@@ -5,6 +5,14 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-26-h",
+    date: "26 oktober 2026",
+    title: "Producten naast elkaar vergelijken",
+    changes: [
+      { kind: "nieuw", text: "Tik op 'Bij Dirk € …, hier € …' onder een product: je ziet beide producten naast elkaar, andere keuzes bij je winkel (ook grotere verpakkingen die per kilo goedkoper zijn) en wat de andere winkels hebben." },
+    ],
+  },
+  {
     id: "2026-10-26-g",
     date: "26 oktober 2026",
     title: "De app leert van jouw keuzes",
