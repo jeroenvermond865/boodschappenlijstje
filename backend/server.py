@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, UploadFile, File
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header, Request, UploadFile, File
 from fastapi.responses import Response, HTMLResponse, RedirectResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -17,6 +17,7 @@ import uuid
 import re
 import secrets
 import base64
+import ipaddress
 import unicodedata
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
@@ -130,6 +131,56 @@ def new_user_id() -> str:
 
 def new_token() -> str:
     return uuid.uuid4().hex + uuid.uuid4().hex
+
+
+# ---------------------------------------------------------------------------
+# Beveiliging: wachtwoorden en het afremmen van bots die blijven proberen
+# ---------------------------------------------------------------------------
+MIN_PASSWORD = 8
+_attempts: Dict[str, list] = {}
+
+
+def client_ip(request: Request) -> str:
+    # Achter de proxy van Render: het laatste openbare adres in X-Forwarded-For is de bezoeker (eerdere kan iemand zelf invullen)
+    for part in reversed((request.headers.get("x-forwarded-for") or "").split(",")):
+        try:
+            ip = ipaddress.ip_address(part.strip())
+        except ValueError:
+            continue
+        if ip.is_global:
+            return str(ip)
+    return request.client.host if request.client else "?"
+
+
+def _recent(key: str, window: int) -> list:
+    now = time.monotonic()
+    hits = [t for t in _attempts.get(key, []) if now - t < window]
+    if hits:
+        _attempts[key] = hits
+    else:
+        _attempts.pop(key, None)
+    return hits
+
+
+def check_limit(key: str, limit: int, window: int) -> None:
+    hits = _recent(key, window)
+    if len(hits) >= limit:
+        wait = max(1, math.ceil((window - (time.monotonic() - hits[0])) / 60))
+        logger.warning("Te veel pogingen: %s", key.split(":")[0])
+        raise HTTPException(status_code=429, detail=f"Te veel pogingen. Probeer het over {wait} minuten opnieuw.")
+
+
+def add_attempt(key: str) -> None:
+    _attempts.setdefault(key, []).append(time.monotonic())
+    if len(_attempts) > 50000:  # geheugen begrenzen bij een grote aanval
+        for k in list(_attempts)[:10000]:
+            _attempts.pop(k, None)
+
+
+def limit(key: str, max_hits: int, window: int) -> None:
+    # Elke poging telt mee (voor registreren, resetcodes e.d.)
+    check_limit(key, max_hits, window)
+    add_attempt(key)
 
 
 async def create_session(user_id: str) -> str:
@@ -453,9 +504,10 @@ class CampUpdate(BaseModel):
 # Auth routes
 # ---------------------------------------------------------------------------
 @api_router.post("/auth/register")
-async def register(data: RegisterInput):
-    if len(data.password) < 6:
-        raise HTTPException(status_code=400, detail="Wachtwoord moet minstens 6 tekens zijn")
+async def register(data: RegisterInput, request: Request):
+    limit(f"register:{client_ip(request)}", 10, 3600)
+    if len(data.password) < MIN_PASSWORD:
+        raise HTTPException(status_code=400, detail=f"Wachtwoord moet minstens {MIN_PASSWORD} tekens zijn")
     if not data.accept_terms:
         raise HTTPException(status_code=400, detail="Ga eerst akkoord met de voorwaarden en de privacyverklaring")
     email = data.email.lower().strip()
@@ -487,11 +539,17 @@ async def register(data: RegisterInput):
 
 
 @api_router.post("/auth/login")
-async def login(data: LoginInput):
+async def login(data: LoginInput, request: Request):
     ident = data.identifier.lower().strip()
+    ip_key, acc_key = f"login-ip:{client_ip(request)}", f"login-acc:{ident}"
+    check_limit(ip_key, 20, 900)
+    check_limit(acc_key, 8, 900)
     user = await db.users.find_one({"$or": [{"email": ident}, {"username": ident}]})
     if not user or user.get("deleted_at") or not user.get("password_hash") or not verify_password(data.password, user["password_hash"]):
+        add_attempt(ip_key)
+        add_attempt(acc_key)
         raise HTTPException(status_code=401, detail="Onjuiste inloggegevens")
+    _attempts.pop(acc_key, None)
     token = await create_session(user["user_id"])
     return {"session_token": token, "user": public_user(user)}
 
@@ -541,21 +599,24 @@ async def update_profile(data: ProfileUpdate, user: dict = Depends(get_current_u
 
 @api_router.post("/auth/change-password")
 async def change_password(data: ChangePassword, user: dict = Depends(get_current_user)):
-    if len(data.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Wachtwoord moet minstens 6 tekens zijn")
+    if len(data.new_password) < MIN_PASSWORD:
+        raise HTTPException(status_code=400, detail=f"Wachtwoord moet minstens {MIN_PASSWORD} tekens zijn")
     if user.get("password_hash"):
         if not data.current_password or not verify_password(data.current_password, user["password_hash"]):
+            limit(f"pw-check:{user['user_id']}", 8, 900)
             raise HTTPException(status_code=400, detail="Huidig wachtwoord is onjuist")
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"password_hash": hash_password(data.new_password)}})
     return {"ok": True}
 
 
 @api_router.post("/auth/forgot-password")
-async def forgot_password(data: ForgotPassword):
+async def forgot_password(data: ForgotPassword, request: Request):
     email = data.email.lower().strip()
+    limit(f"forgot-ip:{client_ip(request)}", 10, 3600)
+    limit(f"forgot-acc:{email}", 3, 3600)
     user = await db.users.find_one({"email": email})
     if user and user.get("password_hash"):
-        code = str(uuid.uuid4().int)[:6]
+        code = f"{secrets.randbelow(1_000_000):06d}"
         await db.password_resets.delete_many({"email": email})
         await db.password_resets.insert_one({"email": email, "code": code, "expires_at": now_utc() + timedelta(hours=1)})
         html = (
@@ -572,9 +633,10 @@ async def forgot_password(data: ForgotPassword):
 
 
 @api_router.post("/auth/reset-password")
-async def reset_password(data: ResetPassword):
-    if len(data.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Wachtwoord moet minstens 6 tekens zijn")
+async def reset_password(data: ResetPassword, request: Request):
+    limit(f"reset-ip:{client_ip(request)}", 20, 900)
+    if len(data.new_password) < MIN_PASSWORD:
+        raise HTTPException(status_code=400, detail=f"Wachtwoord moet minstens {MIN_PASSWORD} tekens zijn")
     email = data.email.lower().strip()
     rec = await db.password_resets.find_one({"email": email})
     if not rec or ensure_aware(rec["expires_at"]) < now_utc() or rec.get("attempts", 0) >= 5:
@@ -597,7 +659,7 @@ def allowed_redirect(url: str) -> bool:
     base = (FRONTEND_URL or "").rstrip("/")
     if url.startswith("http://") or url.startswith("https://"):
         return bool(base) and (url == base or url.startswith(base + "/"))
-    return "://" in url
+    return url.startswith(("frontend://", "exp://"))
 
 
 @api_router.get("/email/gmail/connect")
@@ -694,7 +756,8 @@ async def google_callback(state: str = "", code: str = "", error: str = ""):
 
 
 @api_router.post("/auth/session")
-async def auth_session(data: SessionInput):
+async def auth_session(data: SessionInput, request: Request):
+    limit(f"session-ip:{client_ip(request)}", 30, 900)
     payload = await db.google_logins.find_one_and_delete({"session_id": data.session_id})
     if not payload or ensure_aware(payload["expires_at"]) < now_utc():
         raise HTTPException(status_code=401, detail="Google inloggen mislukt")
@@ -759,6 +822,7 @@ async def delete_account(data: DeleteAccount, user: dict = Depends(get_current_u
     # Recht op verwijdering (AVG): alles van deze gebruiker gaat direct en definitief weg
     uid = user["user_id"]
     if user.get("password_hash") and (not data.password or not verify_password(data.password, user["password_hash"])):
+        limit(f"pw-check:{uid}", 8, 900)
         raise HTTPException(status_code=400, detail="Wachtwoord is onjuist")
     if user.get("role") == "beheerder" and not await db.users.find_one(
         {"role": "beheerder", "deleted_at": None, "user_id": {"$ne": uid}}
@@ -1931,8 +1995,8 @@ class AdminSetPassword(BaseModel):
 @api_router.post("/admin/users/{target_id}/set-password")
 async def admin_set_password(target_id: str, data: AdminSetPassword, user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_users")
-    if len(data.new_password) < 6:
-        raise HTTPException(status_code=400, detail="Wachtwoord moet minstens 6 tekens zijn")
+    if len(data.new_password) < MIN_PASSWORD:
+        raise HTTPException(status_code=400, detail=f"Wachtwoord moet minstens {MIN_PASSWORD} tekens zijn")
     target = await db.users.find_one({"user_id": target_id})
     if not target:
         raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
@@ -6898,6 +6962,19 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)  # js-bundel en icoon-lett
 
 
 @app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    h = response.headers
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "DENY")
+    h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        h.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
+@app.middleware("http")
 async def to_own_domain(request, call_next):
     # Het oude onrender.com-adres stuurt door naar het eigen domein (daar werkt ook Google-inlog)
     host = (request.headers.get("host") or "").split(":")[0].lower()
@@ -7393,11 +7470,17 @@ async def healthz():
     return {"ok": True}
 
 
+_SCAN_RE = re.compile(r"(^|/)\.|\.(php\d?|env|bak|old|orig|save|swp|sql|sqlite|db|ini|cfg|conf|config|ya?ml|xml|json|log|asp|aspx|jsp|cgi|pl|sh|zip|tar|gz|rar|7z)(~)?$", re.I)
+
+
 @app.get("/{full_path:path}", include_in_schema=False)
 async def serve_web(full_path: str):
     if full_path.startswith("api/") or not WEB_DIR.is_dir():
         raise HTTPException(status_code=404, detail="Niet gevonden")
     target = (WEB_DIR / full_path).resolve()
+    if not (full_path and target.is_file() and WEB_DIR in target.parents) and _SCAN_RE.search(full_path):
+        # Bots zoeken naar .env, phpinfo.php e.d.: echte 404 in plaats van de app
+        raise HTTPException(status_code=404, detail="Niet gevonden")
     if full_path and target.is_file() and WEB_DIR in target.parents:
         # Bestanden met een hash in de naam veranderen nooit: laat de browser ze bewaren, dan start de app een stuk sneller
         if full_path.startswith(("_expo/static/", "assets/")) or re.search(r"\.[0-9a-f]{16,}\.", full_path):

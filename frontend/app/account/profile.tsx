@@ -75,8 +75,8 @@ export default function ProfileScreen() {
   };
 
   const savePassword = async () => {
-    if (newPw.length < 6) {
-      toast.show("Nieuw wachtwoord moet minstens 6 tekens zijn", "error");
+    if (newPw.length < 8) {
+      toast.show("Nieuw wachtwoord moet minstens 8 tekens zijn", "error");
       return;
     }
     if (newPw !== confirmPw) {
@@ -179,7 +179,7 @@ export default function ProfileScreen() {
           <PasswordField
             label="Nieuw wachtwoord"
             testID="profile-new-pw"
-            placeholder="Minstens 6 tekens"
+            placeholder="Minstens 8 tekens"
             value={newPw}
             onChangeText={setNewPw}
           />

@@ -146,7 +146,7 @@ export default function LoginScreen() {
             <Field
               label="Wachtwoord"
               testID="input-password"
-              placeholder="••••••••"
+              placeholder={mode === "register" ? "Minstens 8 tekens" : "••••••••"}
               value={password}
               onChangeText={setPassword}
               secureTextEntry
@@ -261,7 +261,7 @@ function ForgotPasswordModal({ visible, onClose }: { visible: boolean; onClose: 
         ) : (
           <View style={{ gap: 14 }}>
             <Field label="Code uit e-mail" testID="forgot-code" placeholder="6-cijferige code" value={code} onChangeText={setCode} keyboardType="number-pad" />
-            <Field label="Nieuw wachtwoord" testID="forgot-newpw" placeholder="••••••••" value={pw} onChangeText={setPw} secureTextEntry />
+            <Field label="Nieuw wachtwoord" testID="forgot-newpw" placeholder="Minstens 8 tekens" value={pw} onChangeText={setPw} secureTextEntry />
             <Button label="Wachtwoord instellen" onPress={doReset} loading={busy} testID="forgot-reset" />
           </View>
         )}
