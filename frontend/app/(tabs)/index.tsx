@@ -314,6 +314,11 @@ export default function HomeScreen() {
                       <Text style={styles.small}>{r.time} min</Text>
                     </View>
                   ) : null}
+                  {r.price_pp ? (
+                    <Text style={[styles.small, { fontFamily: fonts.semibold, color: colors.onSurface }]}>
+                      ± {euro(r.price_pp)} p.p.{r.price_total ? ` · ${euro(r.price_total)} totaal` : ""}
+                    </Text>
+                  ) : null}
                 </View>
               </Pressable>
             ))}

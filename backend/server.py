@@ -4685,6 +4685,76 @@ async def _store_diet_values(store: str, facets: Optional[list] = None) -> dict:
     return _diet_vals[store]
 
 
+# --- Wat kost een recept ongeveer: totaal en per persoon op de receptkaartjes, voor alle winkels ---
+RECIPE_COST_DAYS = 3
+_cost_running: set = set()
+
+
+def _recipe_cost(rec: dict, matches: dict) -> Optional[dict]:
+    # Zelfde manier van rekenen als op de receptpagina: wat op je lijst komt, in hele verpakkingen
+    by_sid = _product_cache.get("by_sid") or {}
+    total, need, priced = 0.0, 0, 0
+    for i in rec["ingredients"]:
+        if _ing_pantry(rec, i):
+            continue
+        need += 1
+        p = i.get("product")
+        doc = (by_sid.get((p["store"], p["sid"])) if p else None) or (matches or {}).get(i["name"])
+        if not doc:
+            continue
+        if i.get("qty") or i.get("site_packs"):
+            plan = _pack_plan(doc, i.get("qty") or 1, i.get("unit") or "", site_packs=i.get("site_packs"))
+            cost = plan["cost"] if plan else 0
+        else:
+            cost = resolve_price(doc.get("prices") or {}, doc.get("_src") or product_source(doc), doc.get("unavailable") or [])
+        if cost:
+            total += cost
+            priced += 1
+    # Alleen tonen als we het meeste hebben kunnen prijzen, anders is het bedrag misleidend
+    if not priced or priced < need * 0.7:
+        return None
+    servings = rec.get("servings") or 4
+    return {"total": round(total, 2), "pp": round(total / servings, 2)}
+
+
+async def _recipe_matches(rec: dict) -> dict:
+    hit = _rc_get(("match", rec["id"]), 6 * 3600)
+    if hit is not None:
+        return hit
+    docs = await _global_products()
+    by_sid = _product_cache.get("by_sid") or {}
+    missing = [i["name"] for i in rec["ingredients"] if not (i.get("product") and (i["product"]["store"], i["product"]["sid"]) in by_sid)]
+    return _rc_set(("match", rec["id"]), await asyncio.to_thread(_store_matches, missing, docs, STORE_LABELS[rec["store"]]) if missing else {})
+
+
+async def _cost_run(todo: list) -> None:
+    # Eén voor één op de achtergrond, zodat de server er niet traag van wordt
+    for r in todo:
+        try:
+            rec = await _recipe_detail(r["id"])
+            c = await asyncio.to_thread(_recipe_cost, rec, await _recipe_matches(rec))
+            await db.recipe_cost.update_one({"id": r["id"]}, {"$set": {"id": r["id"], "at": now_utc().isoformat(),
+                                                                       "total": c and c["total"], "pp": c and c["pp"]}}, upsert=True)
+        except Exception as e:
+            logger.info("Receptprijs %s: %r", r.get("id"), e)
+        finally:
+            _cost_running.discard(r["id"])
+
+
+async def _with_costs(recipes: list) -> list:
+    # Bekende prijzen erbij zetten; wat nog niet (of te lang geleden) berekend is, wordt op de achtergrond gedaan
+    ids = [r["id"] for r in recipes if r.get("id")]
+    if not ids:
+        return recipes
+    known = {d["id"]: d async for d in db.recipe_cost.find({"id": {"$in": ids}}, {"_id": 0})}
+    old = (now_utc() - timedelta(days=RECIPE_COST_DAYS)).isoformat()
+    todo = [r for r in recipes if r.get("id") and r["id"] not in _cost_running and (known.get(r["id"]) or {}).get("at", "") < old]
+    if todo:
+        _cost_running.update(r["id"] for r in todo)
+        asyncio.ensure_future(_cost_run(todo))
+    return [{**r, "price_total": (known.get(r.get("id")) or {}).get("total"), "price_pp": (known.get(r.get("id")) or {}).get("pp")} for r in recipes]
+
+
 async def _diet_recipes(store: str, q: str, flt: dict, page: int, size: int) -> dict:
     want = [v for v in flt.get("dieet") or [] if v in _DIET_LABELS]
     sf = {k: list(v) for k, v in flt.items()}
@@ -4770,7 +4840,8 @@ def _personal_recipes(recipes: list, interest: dict, seed: str) -> list:
 async def search_recipes(q: str = "", store: str = "all", page: int = 0, filters: str = "{}", user: dict = Depends(get_current_user)):
     q = (q or "").strip()[:80]
     if q:
-        return await _search_recipes(q, store, page, filters)
+        res = await _search_recipes(q, store, page, filters)
+        return {**res, "recipes": await _with_costs(res["recipes"])}
     interest = {} if user.get("no_personal") else await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0, "rwords": 1, "rtags": 1}) or {}
     now = datetime.now(timezone.utc)
     seed = f"{user['user_id']}-{now.strftime('%Y%m%d%H')}{now.minute // 10}-{store}-{filters}"  # elke 10 minuten anders, gelijk tijdens het scrollen
@@ -4779,9 +4850,9 @@ async def search_recipes(q: str = "", store: str = "all", page: int = 0, filters
         full = await _search_recipes("", "dirk", 0, filters, size=5000)
         rs = _personal_recipes(full["recipes"], interest, seed)
         page = max(0, min(page, 200))
-        return {**full, "recipes": rs[page * RECIPE_PAGE:(page + 1) * RECIPE_PAGE], "has_more": (page + 1) * RECIPE_PAGE < len(rs)}
+        return {**full, "recipes": await _with_costs(rs[page * RECIPE_PAGE:(page + 1) * RECIPE_PAGE]), "has_more": (page + 1) * RECIPE_PAGE < len(rs)}
     res = await _search_recipes("", store, page, filters)
-    return {**res, "recipes": _personal_recipes(res["recipes"], interest, seed + str(page))}
+    return {**res, "recipes": await _with_costs(_personal_recipes(res["recipes"], interest, seed + str(page)))}
 
 
 async def _search_recipes(q: str, store: str, page: int, filters: str, size: int = RECIPE_PAGE) -> dict:
@@ -5201,19 +5272,23 @@ def _is_pantry(name: str) -> bool:
     return bool(_PANTRY_RE.search(_norm_text(name)))
 
 
+def _ing_pantry(rec: dict, i: dict) -> bool:
+    # Niet door de site gekoppeld (of typisch voorraadkast): waarschijnlijk al in huis
+    site_linked = bool(i.get("product")) or bool(i.get("site_linked"))
+    return (not site_linked and (rec["store"] != "ah" or _is_pantry(i["name"]))) or _norm_text(i["name"]) in _ALWAYS_HOME
+
+
 def _recipe_with_products(rec: dict, user: dict, matches: Optional[dict] = None) -> dict:
     by_sid = _product_cache.get("by_sid") or {}
     favs = set(user.get("favorite_products") or [])
     ings = []
     for i in rec["ingredients"]:
         p = i.get("product")
-        site_linked = bool(p) or bool(i.get("site_linked"))
+        pantry = _ing_pantry(rec, i)
         doc = by_sid.get((p["store"], p["sid"])) if p else None
         if doc is None and (matches or {}).get(i["name"]) is not None:
             doc = matches[i["name"]]
             p = {"store": doc["_src"]}
-        # Niet door de site gekoppeld (of typisch voorraadkast): waarschijnlijk al in huis
-        pantry = (not site_linked and (rec["store"] != "ah" or _is_pantry(i["name"]))) or _norm_text(i["name"]) in _ALWAYS_HOME
         ings.append({**i, "pantry": pantry, "product": product_public(_clean(doc), p["store"], user["user_id"], favs) if doc else None})
     return {**rec, "ingredients": ings}
 
@@ -5292,12 +5367,7 @@ async def _recipe_products(rec: dict, user: dict) -> dict:
     await _global_products()
     await _import_linked(rec)
     await _import_linked_jumbo(rec)
-    docs = await _global_products()
-    matches = _rc_get(("match", rec["id"]), 6 * 3600)
-    if matches is None:
-        by_sid = _product_cache.get("by_sid") or {}
-        missing = [i["name"] for i in rec["ingredients"] if not (i.get("product") and (i["product"]["store"], i["product"]["sid"]) in by_sid)]
-        matches = _rc_set(("match", rec["id"]), await asyncio.to_thread(_store_matches, missing, docs, STORE_LABELS[rec["store"]]) if missing else {})
+    matches = await _recipe_matches(rec)
     out = _recipe_with_products(rec, user, matches)
     out["is_favorite"] = any(f.get("id") == rec["id"] for f in user.get("recipe_favorites") or [])
     return out
@@ -5779,7 +5849,7 @@ async def home(user: dict = Depends(get_current_user)):
         logger.warning("Persoonlijke acties: %r", e)
         promos = [{k: v for k, v in c.items() if not k.startswith("_")} for c in promos[:24]]
     return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "compare_pending": compare_pending, "promos": promos,
-            "recipes": recipes, "todo": todo, "own_dishes": own_dishes, "alerts_hit": alerts_hit}
+            "recipes": await _with_costs(recipes), "todo": todo, "own_dishes": own_dishes, "alerts_hit": alerts_hit}
 
 
 # --- Andere producten voor een ingrediënt: logische voorstellen per winkel, goedkoper of in de aanbieding ---

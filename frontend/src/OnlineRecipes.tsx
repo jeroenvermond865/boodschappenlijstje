@@ -6,6 +6,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { euro } from "@/src/search";
 import { useAuth } from "@/src/auth";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -18,6 +19,8 @@ export type RecipeTile = {
   servings?: number | null;
   course?: string | null;
   rating?: number | null;
+  price_total?: number | null; // ongeveer, in hele verpakkingen
+  price_pp?: number | null;
 };
 
 export type RecipeFacet = {
@@ -238,6 +241,11 @@ export function OnlineRecipes({
                     <View style={styles.meta}>
                       <Icon name="account-outline" size={13} color={colors.muted} />
                       <Text style={styles.metaText}>{item.servings}</Text>
+                    </View>
+                  ) : null}
+                  {item.price_pp ? (
+                    <View style={styles.meta}>
+                      <Text style={[styles.metaText, { fontFamily: fonts.semibold, color: colors.onSurface }]}>± {euro(item.price_pp)} p.p.</Text>
                     </View>
                   ) : null}
                   {item.rating ? (
