@@ -2961,6 +2961,41 @@ async def get_product(product_id: str, user: dict = Depends(get_current_user)):
     return product_public(doc, user.get("store", DEFAULT_STORE), user["user_id"], favs)
 
 
+@api_router.get("/products/{product_id}/stores")
+async def product_other_stores(product_id: str, user: dict = Depends(get_current_user)):
+    # Hetzelfde product (barcode) of iets vergelijkbaars bij de andere winkels, met prijs
+    docs = await _global_products()
+    by_pid = _product_cache.get("by_pid") or {}
+    base = by_pid.get(product_id)
+    if not base:
+        return {"stores": []}
+
+    def work():
+        src = base.get("_src")
+        cands = {st: [] for st in COMPARE_STORES if st != src}
+        by_ean: dict = {}
+        for d in docs:
+            if d.get("_src") in cands and d.get("is_global"):
+                cands[d["_src"]].append(d)
+                if d.get("barcode"):
+                    by_ean.setdefault((d["_src"], d["barcode"]), d)
+        own = resolve_price(base.get("prices") or {}, src or DEFAULT_STORE, base.get("unavailable") or [])
+        out = []
+        for st, pool in cands.items():
+            hit, alt = _compare_hit(st, pool, by_ean, base["name"], base)
+            price = resolve_price(hit.get("prices") or {}, st, hit.get("unavailable") or []) if hit else 0
+            if not hit or not price:
+                out.append({"store": st, "product": None})
+                continue
+            up = hit.get("_up")
+            out.append({"store": st, "product_id": hit["product_id"], "product": hit["name"], "unit": hit.get("unit") or "",
+                        "image": hit.get("image"), "price": round(price, 2), "same": not alt,
+                        "unit_price": f"{_euro(up[0])} per {up[1]}" if up else None,
+                        "diff": round(price - own, 2) if own and not alt else None})
+        return out
+    return {"stores": await asyncio.to_thread(work)}
+
+
 # --- Productdetails zoals op de site van de winkel (live opgehaald, even bewaard) ---
 DETAIL_CACHE_SECONDS = 6 * 3600
 _detail_cache: dict = {}

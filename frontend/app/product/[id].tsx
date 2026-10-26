@@ -1,5 +1,5 @@
 import { ActivityIndicator, Image, Linking, Pressable, ScrollView, Text, View } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -123,6 +123,8 @@ export default function ProductScreen() {
 
           {p.promo ? <PromoCard promo={p.promo} now /> : null}
           {p.promo_next ? <PromoCard promo={p.promo_next} now={false} /> : null}
+
+          {p.is_global ? <OtherStores productId={p.id} /> : null}
 
           {p.is_global && !premium ? (
             <PremiumLock plural title="Prijsalarm en prijsgeschiedenis" text="Krijg een mail als dit product in de aanbieding is, en zie of een aanbieding echt goed is." />
@@ -269,6 +271,69 @@ function PromoCard({ promo, now }: { promo: Promo; now: boolean }) {
       ) : null}
       {promo.combinable ? <Text style={styles.muted}>Je mag verschillende producten uit deze actie combineren.</Text> : null}
       {promo.note ? <Text style={styles.muted}>{promo.note}</Text> : null}
+    </View>
+  );
+}
+
+type StoreRow = {
+  store: string;
+  product: string | null;
+  product_id?: string;
+  unit?: string;
+  image?: string | null;
+  price?: number;
+  same?: boolean;
+  unit_price?: string | null;
+  diff?: number | null;
+};
+
+// Wat kost dit (of iets vergelijkbaars) bij de andere winkels?
+function OtherStores({ productId }: { productId: string }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const router = useRouter();
+  const q = useQuery({
+    queryKey: ["product-stores", productId],
+    queryFn: () => api<{ stores: StoreRow[] }>(`/products/${productId}/stores`),
+    staleTime: 10 * 60 * 1000,
+  });
+  const rows = q.data?.stores ?? [];
+  if (q.isLoading || !rows.length) return null;
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Bij andere winkels</Text>
+      {rows.map((r) => (
+        <Pressable
+          key={r.store}
+          disabled={!r.product_id}
+          onPress={() => r.product_id && router.push(`/product/${r.product_id}`)}
+          style={{ flexDirection: "row", alignItems: "center", gap: 10 }}
+        >
+          {r.image ? (
+            <Image source={{ uri: r.image }} style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: "#fff" }} resizeMode="contain" />
+          ) : (
+            <View style={{ width: 40, height: 40 }} />
+          )}
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.body, { fontFamily: fonts.semibold }]}>{r.store}</Text>
+            <Text style={styles.muted} numberOfLines={1}>
+              {!r.product ? "Niet gevonden" : r.same ? `Zelfde product${r.unit ? ` · ${r.unit}` : ""}` : `Vergelijkbaar: ${r.product}${r.unit ? ` · ${r.unit}` : ""}`}
+            </Text>
+          </View>
+          {r.price != null ? (
+            <View style={{ alignItems: "flex-end" }}>
+              <Text style={[styles.body, { fontFamily: fonts.bold }]}>{euro(r.price)}</Text>
+              {r.diff != null && Math.abs(r.diff) >= 0.01 ? (
+                <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: r.diff < 0 ? colors.success : colors.muted }}>
+                  {r.diff < 0 ? `${euro(-r.diff)} goedkoper` : `${euro(r.diff)} duurder`}
+                </Text>
+              ) : r.unit_price ? (
+                <Text style={styles.muted}>{r.unit_price}</Text>
+              ) : null}
+            </View>
+          ) : null}
+        </Pressable>
+      ))}
     </View>
   );
 }
