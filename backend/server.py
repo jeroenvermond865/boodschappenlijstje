@@ -3794,8 +3794,12 @@ async def product_other_stores(product_id: str, user: dict = Depends(get_current
                 out.append({"store": st, "product": None})
                 continue
             up = hit.get("_up")
+            promo, promo_next = _promo_public(hit, price)
+            if promo and promo.get("price"):
+                price = min(price, float(promo["price"]))
             out.append({"store": st, "product_id": hit["product_id"], "product": hit["name"], "unit": hit.get("unit") or "",
                         "image": hit.get("image"), "price": round(price, 2), "same": not alt,
+                        "promo": promo, "promo_next": promo_next,
                         "unit_price": f"{_euro(up[0])} per {up[1]}" if up else None,
                         "diff": round(price - own, 2) if own and not alt else None})
         return out
@@ -5629,6 +5633,69 @@ def _recipe_cost(rec: dict, matches: dict) -> Optional[dict]:
     return {"total": round(total, 2), "pp": round(total / servings, 2)}
 
 
+# --- AI kiest het product zoals de winkel dat zelf zou doen: uit de beste kandidaten het product dat je echt koopt ---
+AI_PICK_MODEL = "claude-haiku-5-5"
+AI_PICK_DAYS = 30
+
+
+async def _ai_pick_products(names: list, store: str, docs: list) -> dict:
+    # naam -> product; onthouden per winkel en ingrediënt, zodat het maar één keer gevraagd wordt
+    if not names or not os.environ.get("ANTHROPIC_API_KEY"):
+        return {}
+    by_pid = _product_cache.get("by_pid") or {}
+    keys = {n: f"{store}|{_norm_text(n)}" for n in names if _norm_text(n) and _norm_text(n) not in _ALWAYS_HOME}
+    since = (now_utc() - timedelta(days=AI_PICK_DAYS)).isoformat()
+    known = {d["key"]: d.get("pid") async for d in db.ai_picks.find({"key": {"$in": list(keys.values())}, "at": {"$gt": since}}, {"_id": 0})}
+    out = {n: by_pid[known[k]] for n, k in keys.items() if known.get(k) in by_pid}
+    todo = [n for n, k in keys.items() if k not in known or (known[k] and known[k] not in by_pid)]
+    if not todo:
+        return out
+
+    def cands():
+        pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
+        return {n: [d for _, d in _best_matches(pool, n, 8, with_pen=True)] for n in todo}
+    opts = await asyncio.to_thread(cands)
+    todo = [n for n in todo if opts.get(n)]
+    if not todo:
+        return out
+    lines = []
+    for k, n in enumerate(todo, 1):
+        lines.append(f"{k}. Ingrediënt: {n}")
+        for j, d in enumerate(opts[n], 1):
+            price = resolve_price(d.get("prices") or {}, store, d.get("unavailable") or [])
+            lines.append(f"   {j}) {d['name']} ({d.get('unit') or '?'}, {d.get('aisle') or '?'}, € {price:.2f})")
+    prompt = ("Je helpt een boodschappen-app. Kies per ingrediënt uit een recept het product dat de supermarkt " + store +
+              " zelf zou voorstellen bij 'Kies producten': het gewone, onbewerkte product dat je voor dit recept koopt "
+              "(dus sinaasappels, geen marmelade; prosecco, geen bloemen; geen snoep, geen cadeau, geen mini-variant als dat niet gevraagd is). "
+              "Bij gelijke keuze het gewone, voordelige product. Past geen enkel product, geef dan null.\n\n" + "\n".join(lines))
+    try:
+        from anthropic import AsyncAnthropic
+        msg = await AsyncAnthropic().beta.messages.create(
+            model=AI_PICK_MODEL, max_tokens=1500, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"format": {"type": "json_schema", "schema": {
+                "type": "object", "additionalProperties": False, "required": ["picks"],
+                "properties": {"picks": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False, "required": ["ingredient", "product"],
+                    "properties": {"ingredient": {"type": "integer"}, "product": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}}}}},
+            messages=[{"role": "user", "content": prompt}])
+        text = next((b.text for b in msg.content if b.type == "text"), "")
+        picks = (json.loads(text) if text and msg.stop_reason not in ("refusal", "max_tokens") else {}).get("picks") or []
+    except Exception as e:
+        logger.warning("AI-keuze producten %s: %r", store, e)
+        return out
+    now = now_utc().isoformat()
+    for pk in picks:
+        i, j = pk.get("ingredient"), pk.get("product")
+        if not isinstance(i, int) or not 1 <= i <= len(todo):
+            continue
+        n = todo[i - 1]
+        d = opts[n][j - 1] if isinstance(j, int) and 1 <= j <= len(opts[n]) else None
+        if d:
+            out[n] = d
+        await db.ai_picks.update_one({"key": keys[n]}, {"$set": {"key": keys[n], "pid": d and d["product_id"], "at": now}}, upsert=True)
+    return out
+
+
 async def _recipe_matches(rec: dict) -> dict:
     hit = _rc_get(("match", rec["id"]), 6 * 3600)
     if hit is not None:
@@ -5636,7 +5703,13 @@ async def _recipe_matches(rec: dict) -> dict:
     docs = await _global_products()
     by_sid = _product_cache.get("by_sid") or {}
     missing = [i["name"] for i in rec["ingredients"] if not (i.get("product") and (i["product"]["store"], i["product"]["sid"]) in by_sid)]
-    return _rc_set(("match", rec["id"]), await asyncio.to_thread(_store_matches, missing, docs, STORE_LABELS[rec["store"]]) if missing else {})
+    store = STORE_LABELS[rec["store"]]
+    found = await asyncio.to_thread(_store_matches, missing, docs, store) if missing else {}
+    try:
+        found.update(await asyncio.wait_for(_ai_pick_products(missing, store, docs), 25))
+    except Exception as e:
+        logger.info("AI-keuze recept %s: %r", rec.get("id"), e)
+    return _rc_set(("match", rec["id"]), found)
 
 
 async def _cost_run(todo: list) -> None:
@@ -7068,6 +7141,11 @@ async def dish_match(data: DishMatchInput, user: dict = Depends(get_current_user
         pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
         return [_cheapest_good(pool, n, store) if n.strip() and pool else None for n in names]
     hits = await asyncio.to_thread(run)
+    try:
+        ai = await asyncio.wait_for(_ai_pick_products([n for n in names if n.strip()], store, docs), 25)
+        hits = [ai.get(n) or h for n, h in zip(names, hits)]
+    except Exception as e:
+        logger.info("AI-keuze gerecht: %r", e)
     favs = set(user.get("favorite_products") or [])
     return {"matches": [product_public(_clean(d), store, user["user_id"], favs) if d else None for d in hits]}
 
@@ -9477,50 +9555,10 @@ async def startup():
         asyncio.create_task(_import_extra_terms())
     else:
         logger.info("Testsite: achtergrondtaken staan uit")
-        asyncio.create_task(_probe_ah_kies())
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_basic_dish_info_loop())
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_log_product_counts())
-
-
-async def _probe_ah_kies() -> None:
-    # Tijdelijk (testsite): zoeken hoe AH de producten van "Kies producten" bij een recept doorgeeft
-    await asyncio.sleep(30)
-    rid = 1188190
-    qs = ["{recipeProduct}", "{recipeShop}", "{recipeIngredient}", "{productSuggestion}", "{recipeBasket}", "{shoppableRecipe}",
-          f"{{recipe(id:{rid}){{product}}}}", f"{{recipe(id:{rid}){{shop}}}}", f"{{recipe(id:{rid}){{ingredientProduct}}}}",
-          f"{{recipe(id:{rid}){{ingredients{{product}}}}}}", f"{{recipe(id:{rid}){{ingredients{{shop}}}}}}"]
-    hdr = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
-           "Content-Type": "application/json", "client-name": "ah-recipes", "client-version": "1.0", "Origin": "https://www.ah.nl",
-           "Referer": f"https://www.ah.nl/allerhande/recept/R-R{rid}/x"}
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-        tok = None
-        try:
-            tok = await _ah_token(c)
-        except Exception as e:
-            logger.info("AH-kies token %r", e)
-        for url, extra in ((AH_GQL, {"Authorization": f"Bearer {tok}", "X-Application": "AHWEBSHOP", "User-Agent": "Appie/8.22.3"}),
-                           ("https://www.ah.nl/gql", {})):
-            for q in qs:
-                try:
-                    r = await c.post(url, json={"query": q}, headers={**hdr, **extra})
-                    logger.info("AH-kies %s %s %s -> %s", url, r.status_code, q, r.text[:700])
-                except Exception as e:
-                    logger.info("AH-kies %s %s fout %r", url, q, e)
-        for url in (f"https://www.ah.nl/allerhande/api/recipe/{rid}/products", f"https://www.ah.nl/allerhande/api/recipes/{rid}/shoppable",
-                    f"https://api.ah.nl/mobile-services/recipes/v2/{rid}", f"https://api.ah.nl/mobile-services/recipes/v1/{rid}/products",
-                    f"https://www.ah.nl/allerhande/recept/R-R{rid}/oranje-spritz-granita"):
-            try:
-                r = await c.get(url, headers={**hdr, **({"Authorization": f"Bearer {tok}"} if "api.ah.nl" in url and tok else {})})
-                body = r.text
-                k = max(body.find("productSuggest"), body.find("shoppable"), body.find("Kies producten"))
-                logger.info("AH-kies GET %s %s len=%d -> %s", url, r.status_code, len(body), body[max(0, k - 300):k + 700] if k >= 0 else body[:400])
-                if "R-R" in url:
-                    for w in ("gql", "operationName", "productSuggestions", "shoppingList", "ingredientProducts", "recipeProducts"):
-                        logger.info("AH-kies html %s: %s", w, [body[m.start() - 80:m.start() + 160] for m in re.finditer(w, body)][:3])
-            except Exception as e:
-                logger.info("AH-kies GET %s fout %r", url, e)
 
 
 async def _log_product_counts(wait: int = 15):

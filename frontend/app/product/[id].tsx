@@ -285,6 +285,8 @@ type StoreRow = {
   same?: boolean;
   unit_price?: string | null;
   diff?: number | null;
+  promo?: Promo | null;
+  promo_next?: Promo | null;
 };
 
 // Wat kost dit (of iets vergelijkbaars) bij de andere winkels?
@@ -316,13 +318,24 @@ function OtherStores({ productId }: { productId: string }) {
           )}
           <View style={{ flex: 1 }}>
             <Text style={[styles.body, { fontFamily: fonts.semibold }]}>{r.store}</Text>
+            {r.promo ? (
+              <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: colors.warning }} numberOfLines={1}>
+                Actie: {r.promo.label}{r.promo.period ? ` · ${r.promo.period}` : ""}
+              </Text>
+            ) : null}
+            {r.promo_next ? (
+              <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: colors.success }} numberOfLines={2}>
+                Binnenkort: {r.promo_next.label}{r.promo_next.price ? ` voor ${euro(r.promo_next.price)}` : ""}{r.promo_next.period ? ` (${r.promo_next.period})` : ""}
+              </Text>
+            ) : null}
             <Text style={styles.muted} numberOfLines={1}>
               {!r.product ? "Niet gevonden" : r.same ? `Zelfde product${r.unit ? ` · ${r.unit}` : ""}` : `Vergelijkbaar: ${r.product}${r.unit ? ` · ${r.unit}` : ""}`}
             </Text>
           </View>
           {r.price != null ? (
             <View style={{ alignItems: "flex-end" }}>
-              <Text style={[styles.body, { fontFamily: fonts.bold }]}>{euro(r.price)}</Text>
+              {r.promo?.regular && r.promo.regular > r.price ? <Text style={styles.oldPrice}>{euro(r.promo.regular)}</Text> : null}
+              <Text style={[styles.body, { fontFamily: fonts.bold }, r.promo && { color: colors.warning }]}>{euro(r.price)}</Text>
               {r.diff != null && Math.abs(r.diff) >= 0.01 ? (
                 <Text style={{ fontSize: 12, fontFamily: fonts.semibold, color: r.diff < 0 ? colors.success : colors.muted }}>
                   {r.diff < 0 ? `${euro(-r.diff)} goedkoper` : `${euro(r.diff)} duurder`}
