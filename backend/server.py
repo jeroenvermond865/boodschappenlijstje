@@ -6342,7 +6342,9 @@ _PROCESSED = ("koek", "cracker", "tapenade", "azijn", "saus", "chips", "spread",
               "kroket", "salami", "worst", "honing", "kogel", "zuurkool", "snack", "bonbon", "brandewijn", "jenever", "mayo", "ketchup", "jus",
               "bar", "vloeibaar", "braden", "focaccia", "brood", "margarine", "shake", "drink",
               "olie", "skyr", "muffin", "viennetta", "feta", "marmelade", "jam", "confiture", "compote", "moes", "gelei", "chutney",
-              "bonbons", "tompouce", "gebak", "bonbonniere")
+              "bonbons", "tompouce", "gebak", "bonbonniere",
+              # Bakkerij: "roomboter croissants" is geen roomboter, "kaasbroodjes" geen kaas
+              "croissant", "broodje", "bolletje", "deeg", "brownie", "cookie", "donut", "flap", "gevuld", "saucijzen")
 # Woorden die alleen iets over het product zeggen ("citroenen verpakt", "kaas plakken")
 _DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", "plakjes", "blokjes", "reepjes", "schijfjes", "zwart", "wit",
                 "rood", "groen", "geel", "bio", "biologisch", "biologische", "naturel", "kruimig", "vastkokend", "s", "m", "l", "xl", "kanjers",
@@ -9932,6 +9934,27 @@ async def startup():
     asyncio.create_task(_basic_dish_info_loop())
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_log_product_counts())
+    if os.environ.get("DISH_AUDIT") == "1":
+        asyncio.create_task(_dish_audit())
+
+
+async def _dish_audit() -> None:
+    # Alleen als DISH_AUDIT=1 (testsite): alle app-gerechten met ingrediënten, gekoppeld product en foto in de logs, om na te lopen
+    await asyncio.sleep(90)
+    docs = await _global_products()
+    by_pid = _product_cache.get("by_pid") or {}
+    pool = [d for d in docs if d.get("_src") == "Albert Heijn" and d.get("is_global")]
+    n = 0
+    async for dish in db.dishes.find({"basic": True, "deleted_at": None}, {"_id": 0}):
+        ings = []
+        for i in dish.get("ingredients") or []:
+            linked = by_pid.get(i.get("product_id") or "")
+            match = None if linked else await asyncio.to_thread(_cheapest_good, pool, i.get("name") or "", "Albert Heijn")
+            ings.append([i.get("name"), i.get("qty_adult"), i.get("unit"), (linked or match or {}).get("name"), "gekoppeld" if linked else "gezocht"])
+        logger.info("AUDIT %s", json.dumps({"id": dish["dish_id"], "name": dish.get("name"), "cat": dish.get("category"), "photo": dish.get("photo"),
+                                            "pantry": [p.get("name") for p in dish.get("pantry") or []], "ings": ings}, ensure_ascii=False))
+        n += 1
+    logger.info("AUDIT klaar: %d app-gerechten", n)
 
 
 async def _log_product_counts(wait: int = 15):
