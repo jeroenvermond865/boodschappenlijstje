@@ -8,6 +8,7 @@ import { EmptyState, Icon } from "@/src/components/ui";
 import type { Package } from "@/app/package/edit";
 import { OnlineRecipes } from "@/src/OnlineRecipes";
 import { api } from "@/src/api";
+import { dietConflicts, useDiet } from "@/src/diet";
 import { useAuth } from "@/src/auth";
 import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory } from "@/src/constants";
 import { usesNativeTabs } from "@/src/navigation";
@@ -48,6 +49,8 @@ export default function DishesScreen() {
 
   const [search, setSearch] = useState("");
   const [cat, setCat] = useState<MealCategory | "all">("all");
+  const { selected: diet } = useDiet();
+  const [fitsOnly, setFitsOnly] = useState(false);
   const params = useLocalSearchParams<{ tab?: string }>();
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>(
     params.tab === "online" || params.tab === "packages" ? params.tab : "own",
@@ -70,8 +73,9 @@ export default function DishesScreen() {
     let list = (data?.dishes ?? []).filter((d) => isOwnDish(d, user?.id)); // online gerechten en kampversies horen hier niet
     if (cat !== "all") list = list.filter((d) => d.category === cat);
     if (search.trim()) list = list.filter((d) => d.name.toLowerCase().includes(search.trim().toLowerCase()));
+    if (fitsOnly && diet.length) list = list.filter((d) => !dietConflicts(d.ingredients, diet).length);
     return list;
-  }, [data, cat, search]);
+  }, [data, cat, search, fitsOnly, diet]);
 
   const chips: ({ key: MealCategory | "all"; label: string })[] = [
     { key: "all", label: "Alle" },
@@ -116,6 +120,12 @@ export default function DishesScreen() {
           contentContainerStyle={styles.chipRow}
           style={styles.chipScroll}
         >
+          {diet.length ? (
+            <Pressable testID="diet-chip" onPress={() => setFitsOnly((v) => !v)} style={[styles.chip, styles.dietChip, fitsOnly && styles.chipActive]}>
+              <Icon name="food-off-outline" size={16} color={fitsOnly ? colors.onBrandPrimary : colors.onSurfaceTertiary} />
+              <Text style={[styles.chipText, fitsOnly && styles.chipTextActive]}>Past bij mij</Text>
+            </Pressable>
+          ) : null}
           {chips.map((c) => {
             const active = cat === c.key;
             return (
@@ -183,7 +193,9 @@ export default function DishesScreen() {
           data={filtered}
           keyExtractor={(d) => d.id}
           contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomChrome + 96, gap: 10 }}
-          renderItem={({ item }) => (
+          renderItem={({ item }) => {
+            const warn = dietConflicts(item.ingredients, diet);
+            return (
             <Pressable
               testID={`dish-row-${item.id}`}
               onPress={() => router.push({ pathname: "/dish/edit", params: { id: item.id } })}
@@ -199,6 +211,11 @@ export default function DishesScreen() {
                 <Text style={styles.rowSub}>
                   {CATEGORY_LABELS[item.category]} · {item.ingredients.length} producten
                 </Text>
+                {warn.length ? (
+                  <Text style={styles.warnText} numberOfLines={1} testID={`dish-warn-${item.id}`}>
+                    ⚠ Bevat mogelijk: {warn.join(", ")}
+                  </Text>
+                ) : null}
               </View>
               {!item.is_standard ? (
                 <View style={styles.ownBadge}>
@@ -207,7 +224,8 @@ export default function DishesScreen() {
               ) : null}
               <Icon name="chevron-right" size={22} color={colors.muted} />
             </Pressable>
-          )}
+            );
+          }}
           ListEmptyComponent={
             <EmptyState
               icon="silverware-variant"
@@ -275,6 +293,8 @@ const useStyles = makeStyles((colors) => ({
     borderColor: colors.border,
     justifyContent: "center",
   },
+  dietChip: { flexDirection: "row", alignItems: "center", gap: 6 },
+  warnText: { fontSize: 12, fontFamily: fonts.semibold, color: colors.error, marginTop: 2 },
   chipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
   chipText: { fontSize: 14, fontFamily: fonts.medium, color: colors.onSurfaceTertiary },
   chipTextActive: { color: colors.onBrandPrimary },

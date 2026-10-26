@@ -119,7 +119,7 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
           "Mensen die je uitnodigt: hun e-mailadres, zodat we ze een uitnodiging kunnen sturen.",
           "Wat je bekijkt: welke afdelingen, merken, producten en recepten je opzoekt en kiest. Dit gebruiken we alleen om aanbiedingen en recepten op de startpagina in een voor jou handige volgorde te zetten. Je kunt dit uitzetten (zie punt 4).",
           "Technische gegevens: een inlogcode op je apparaat zodat je ingelogd blijft, en je IP-adres in de logboeken van de server.",
-          "We vragen nooit om bijzondere gegevens, zoals gezondheid of geloof. Vul die ook niet in bij namen of notities.",
+          "We vragen nooit om bijzondere gegevens, zoals gezondheid of geloof. Vul die ook niet in bij namen of notities. Allergieën en dieet die je bij Account instelt, blijven alleen op je eigen apparaat. Die krijgen wij niet te zien.",
         ],
       },
       {
@@ -197,7 +197,7 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
       {
         h: "1. Wat we wel opslaan op je apparaat",
         p: [
-          "Om je ingelogd te houden, bewaren we een inlogcode op je apparaat. In de browser staat die in de lokale opslag (localStorage), in de app in de beveiligde opslag van je telefoon. Daarnaast onthouden we een paar keuzes, zoals welke weergave je het laatst gebruikte.",
+          "Om je ingelogd te houden, bewaren we een inlogcode op je apparaat. In de browser staat die in de lokale opslag (localStorage), in de app in de beveiligde opslag van je telefoon. Daarnaast onthouden we een paar keuzes, zoals welke weergave je het laatst gebruikte, wat je op je lijst hebt afgevinkt en je allergieën en dieet.",
           "Dit is nodig om de app te laten werken. Volgens de Telecommunicatiewet hoeven we daar geen toestemming voor te vragen. Als je uitlogt, wordt de inlogcode gewist.",
         ],
       },

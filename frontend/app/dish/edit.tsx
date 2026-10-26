@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Field, Icon, Select } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { dietConflicts, useDiet } from "@/src/diet";
 import { useTerms } from "@/src/settings";
 import { fetchProducts, useDebounced } from "@/src/search";
 import { ProductBrowser } from "@/src/ProductBrowser";
@@ -69,6 +70,7 @@ export default function DishEditScreen() {
   const [alsoOwn, setAlsoOwn] = useState(false);
   const { has } = useAuth();
   const canManageStandard = has("manage_standard_dishes");
+  const { selected: diet } = useDiet();
 
   const { data: dishesData } = useQuery({
     queryKey: ["dishes"],
@@ -277,6 +279,7 @@ export default function DishEditScreen() {
     }
   };
 
+  const dietWarn = dietConflicts([...ings, ...pantry], diet);
   const title = isNew ? "Nieuw gerecht" : readOnly ? existing?.name : campId ? `Gerecht in ${T.deze} ${T.one}` : "Gerecht bewerken";
 
   return (
@@ -318,6 +321,13 @@ export default function DishEditScreen() {
           <View style={styles.banner}>
             <Icon name="shield-account" size={18} color={colors.onBrandTertiary} />
             <Text style={styles.bannerText}>Standaardgerecht — je bewerkt dit voor iedereen (beheer).</Text>
+          </View>
+        ) : null}
+
+        {dietWarn.length ? (
+          <View style={[styles.banner, { backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.error }]} testID="dish-diet-warning">
+            <Icon name="alert-circle-outline" size={18} color={colors.error} />
+            <Text style={[styles.bannerText, { color: colors.error }]}>Bevat mogelijk: {dietWarn.join(", ")}. Controleer het etiket.</Text>
           </View>
         ) : null}
 
