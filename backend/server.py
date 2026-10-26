@@ -2037,11 +2037,18 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
 
     # Gekozen bij "Waar is je lijst het goedkoopst?": alles bij één winkel (niet voor de vergelijking zelf)
     shop_store = None if _for_compare else camp.get("shop_store")
-    if shop_store and shop_store not in active:
+    split_stores = [x for x in camp.get("split_stores") or [] if x in active] if shop_store == "split" else []
+    item_stores = (camp.get("item_stores") or {}) if split_stores else {}
+    if shop_store and shop_store not in active and not split_stores:
         shop_store = None
 
     def store_of(item: dict) -> str:
-        if shop_store:
+        # Gesplitst: elk product bij de winkel waar het het goedkoopst is
+        if split_stores:
+            st = item_stores.get(_ikey(_norm_text(item.get("name") or "")))
+            if st in split_stores:
+                return st
+        elif shop_store:
             return shop_store
         st = item.get("store")
         return st if st in active else primary_store
@@ -2201,6 +2208,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
         "shop_day": shop_day,
         "promo_then": promo_then,
         "shop_store": shop_store,
+        "split_stores": split_stores,
     }
 
 
@@ -6497,6 +6505,7 @@ async def camp_compare(camp_id: str, user: dict = Depends(get_current_user)):
 
 class ShopStoreInput(BaseModel):
     store: Optional[str] = None  # leeg = terug naar je eigen winkels per product
+    split: List[str] = []  # gesplitst: elk product bij de goedkoopste van deze winkels
 
 
 @api_router.post("/camps/{camp_id}/shop-store")
@@ -6505,9 +6514,28 @@ async def camp_shop_store(camp_id: str, data: ShopStoreInput, user: dict = Depen
     c = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Kamp niet gevonden")
-    if not data.store:
-        await db.camps.update_one({"camp_id": camp_id}, {"$unset": {"shop_store": "", "store_products": ""}})
+    split = [x for x in dict.fromkeys(data.split) if x in COMPARE_STORES]
+    if not data.store and len(split) < 2:
+        await db.camps.update_one({"camp_id": camp_id}, {"$unset": {"shop_store": "", "store_products": "", "split_stores": "", "item_stores": ""}})
         return {"shop_store": None}
+    if len(split) >= 2:
+        compare, pending = await _camp_compare(c, user)
+        if not compare:
+            raise HTTPException(status_code=409, detail="De vergelijking wordt nog uitgerekend, probeer het zo nog eens")
+        per = [x for x in compare if x["store"] in split]
+        prods, stores = {}, {}
+        for k in range(len(per[0]["items"]) if per else 0):
+            opts = [(x["items"][k]["price"], x["store"], x["items"][k]) for x in per if k < len(x["items"]) and x["items"][k].get("price") is not None]
+            if not opts:
+                continue
+            _, st, it = min(opts, key=lambda o: o[0])
+            key = _ikey(_norm_text(it["name"]))
+            stores[key] = st
+            if it.get("product_id"):
+                prods[key] = it["product_id"]
+        await db.camps.update_one({"camp_id": camp_id}, {"$set": {"shop_store": "split", "split_stores": split, "item_stores": stores,
+                                                                   "store_products": prods}})
+        return {"shop_store": "split", "split_stores": split}
     if data.store not in COMPARE_STORES:
         raise HTTPException(status_code=400, detail="Onbekende winkel")
     compare, pending = await _camp_compare(c, user)

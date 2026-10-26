@@ -26,7 +26,7 @@ type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: num
 
 const euro = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
 type PerDay = { index: number; adults: number; children: number; by_store: StoreBlock[] };
-type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean; shop_day?: string | null; promo_then?: number; shop_store?: string | null };
+type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean; shop_day?: string | null; promo_then?: number; shop_store?: string | null; split_stores?: string[] };
 
 const key = (store: string, i: Item) => `${store}|${i.name.toLowerCase()}|${i.unit}`;
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -406,7 +406,9 @@ export default function ShoppingScreen() {
             <View style={styles.multiBanner}>
               <Icon name="cart-check" size={16} color={colors.onBrandTertiary} />
               <Text style={styles.multiText}>
-                Je haalt alles bij {data.shop_store}, met de producten uit de vergelijking.{" "}
+                {data.shop_store === "split"
+                  ? `Je haalt elk product waar het het goedkoopst is: ${(data.split_stores ?? []).join(" en ")}.`
+                  : `Je haalt alles bij ${data.shop_store}, met de producten uit de vergelijking.`}{" "}
                 <Text onPress={backToOwn} style={{ fontFamily: fonts.bold, textDecorationLine: "underline" }}>
                   Terug naar je eigen winkels
                 </Text>

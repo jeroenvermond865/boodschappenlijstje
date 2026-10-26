@@ -101,6 +101,15 @@ export function CompareCard({
     },
     onError: (e: any) => toast.show(e?.message ?? "Dat lukte niet", "error"),
   });
+  // Gesplitst halen: elk product bij de goedkoopste van de twee winkels
+  const setSplit = useMutation({
+    mutationFn: (stores: string[]) => api(`/camps/${campId}/shop-store`, { method: "POST", body: { split: stores } }),
+    onSuccess: async (_r, stores) => {
+      await refresh();
+      toast.show(`Je lijst is gesplitst over ${stores.join(" en ")}`, "success");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Dat lukte niet", "error"),
+  });
   // Zelf een product gewisseld bij de winkel waar je alles haalt: ook je lijst bijwerken
   const onChanged = async (store: string) => {
     await refresh();
@@ -223,6 +232,15 @@ export function CompareCard({
                       </View>
                     ))
                   : null}
+                <Button
+                  label={shopStore === "split" ? "Je lijst is gesplitst" : `Gesplitst halen bij ${split.stores.map((s) => SHORT[s] ?? s).join(" + ")}`}
+                  icon={shopStore === "split" ? "check" : "call-split"}
+                  variant={shopStore === "split" ? "secondary" : "primary"}
+                  disabled={shopStore === "split"}
+                  loading={setSplit.isPending}
+                  onPress={() => setSplit.mutate(split.stores)}
+                  testID="compare-split-apply"
+                />
               </Pressable>
             ) : null}
             <Text style={styles.small}>
