@@ -1645,7 +1645,7 @@ async def _menu_recipes(cat: str, prefer: list, avoid: list, n: int, store: str 
         flt = {k: [v]} if k else {}
     where = store or "all"
     out: list = []
-    start = random.randint(0, 3)
+    start = random.randint(0, 1)  # wat afwisseling, maar niet voorbij het einde van een kleine receptenlijst
     pages = [("", start + i) for i in range(max(2, min(5, n // 6 + 1)))]
     for q, page in ([(q, 0) for q in prefer[:3]] or pages):
         try:
@@ -1653,8 +1653,8 @@ async def _menu_recipes(cat: str, prefer: list, avoid: list, n: int, store: str 
         except HTTPException:
             continue
         out += res.get("recipes") or []
-    if not out:
-        out = (await _search_recipes("", where, 0, _json.dumps(flt))).get("recipes") or []
+    if len(out) < n and (prefer or start):
+        out += (await _search_recipes("", where, 0, _json.dumps(flt))).get("recipes") or []
     out = [r for r in out if r.get("id") and not any(w in _norm_text(r.get("title") or "") for w in avoid)]
     random.shuffle(out)
     seen, uniq = set(), []
