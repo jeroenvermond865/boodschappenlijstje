@@ -29,7 +29,7 @@ function useSteps(): Step[] {
       ],
     },
     {
-      icon: "tent",
+      icon: "clipboard-list-outline",
       title: `${t.Many}: je planning`,
       text: [
         `Maak bij ${t.Many} een ${t.nieuw} ${t.one}. Kies de eerste dag, hoeveel dagen het duurt en met hoeveel mensen jullie zijn. Eten er vegetariërs mee, vul dat ook in.`,

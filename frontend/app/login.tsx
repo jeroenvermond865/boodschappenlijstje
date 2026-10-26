@@ -97,7 +97,7 @@ export default function LoginScreen() {
             {logo ? (
               <Image source={{ uri: logo }} style={styles.logoImg} contentFit="cover" />
             ) : (
-              <Icon name="campfire" size={26} color={colors.onBrandPrimary} />
+              <Icon name="basket-outline" size={26} color={colors.onBrandPrimary} />
             )}
           </View>
           <Text style={styles.brandName}>{appName}</Text>

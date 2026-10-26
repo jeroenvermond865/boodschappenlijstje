@@ -16,7 +16,7 @@ type TrashItem = { kind: Kind; id: string; name: string; extra?: string; deleted
 const KIND_LABEL: Record<Kind, string> = { user: "Gebruiker", camp: "Kamp", dish: "Gerecht", product: "Product" };
 const KIND_ICON: Record<Kind, any> = {
   user: "account-outline",
-  camp: "tent",
+  camp: "clipboard-list-outline",
   dish: "silverware-fork-knife",
   product: "cart-outline",
 };

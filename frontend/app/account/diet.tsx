@@ -2,7 +2,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Icon } from "@/src/components/ui";
-import { DIET_RULES, DIETS, useDiet } from "@/src/diet";
+import { DIET_RULES, DIETS, PREF_RULES, useDiet } from "@/src/diet";
 import { goBack } from "@/src/nav";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -28,17 +28,23 @@ export default function DietScreen() {
         <Pressable testID="back-button" onPress={() => goBack("/dishes")} hitSlop={10} style={styles.headerBtn}>
           <Icon name="chevron-left" size={28} color={colors.onSurface} />
         </Pressable>
-        <Text style={styles.headerTitle}>Allergieën & dieet</Text>
+        <Text style={styles.headerTitle}>Voorkeuren & allergieën</Text>
         <View style={styles.headerBtn} />
       </View>
       <ScrollView contentContainerStyle={{ padding: 16, gap: 22, paddingBottom: insets.bottom + 24 }}>
         <Text style={styles.intro}>
-          Vink aan waar je rekening mee wilt houden. Bij gerechten zie je dan een waarschuwing als er iets in zit, en je kunt filteren op gerechten die
-          passen. Deze keuzes blijven alleen op dit apparaat en gaan niet naar onze server.
+          Vink aan waar je rekening mee wilt houden. Bij gerechten zie je dan een waarschuwing als er iets in zit, je kunt filteren op gerechten die
+          passen, en "Menu automatisch invullen" kiest alleen gerechten die passen. Deze keuzes blijven alleen op dit apparaat en gaan niet naar onze server.
         </Text>
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Dieet</Text>
           {DIETS.map((d) => (
+            <Row key={d.key} k={d.key} label={d.label} />
+          ))}
+        </View>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Voorkeuren</Text>
+          {PREF_RULES.map((d) => (
             <Row key={d.key} k={d.key} label={d.label} />
           ))}
         </View>

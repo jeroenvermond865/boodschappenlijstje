@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -22,6 +22,8 @@ export type Dish = {
   is_standard: boolean;
   ingredients: { name: string; unit: string; qty_adult: number; qty_child: number; aisle: string; price?: number; product_id?: string | null; store?: string | null; recipe_text?: string | null }[];
   pantry?: Dish["ingredients"];
+  image?: string | null;
+  price_pp?: Record<string, number> | null;
   source?: { recipe_id: string; url?: string; image?: string; store?: string; servings?: number } | null;
   needs_vega?: boolean; // vlees of vis zonder vega-vervanger
   online?: boolean; // online gerecht dat in een kamp staat, nog niet aangepast
@@ -93,8 +95,8 @@ export default function DishesScreen() {
             <Text style={styles.subtitle}>{s.sub_dishes}</Text>
           </View>
           <Pressable testID="diet-button" onPress={() => router.push("/account/diet")} hitSlop={8} style={styles.headBtn}>
-            <Icon name="food-off-outline" size={22} color={colors.brandPrimary} />
-            <Text style={styles.headBtnText}>Allergieën</Text>
+            <Icon name="tune-variant" size={22} color={colors.brandPrimary} />
+            <Text style={styles.headBtnText}>Voorkeuren</Text>
           </Pressable>
         </View>
         <View style={styles.segment}>
@@ -124,18 +126,18 @@ export default function DishesScreen() {
           />
         </View>
 
+        {diet.length ? (
+          <Pressable testID="diet-chip" onPress={() => setFitsOnly((v) => !v)} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Icon name={fitsOnly ? "checkbox-marked" : "checkbox-blank-outline"} size={20} color={fitsOnly ? colors.brandPrimary : colors.muted} />
+            <Text style={styles.rowSub}>Alleen gerechten die passen bij mijn voorkeuren</Text>
+          </Pressable>
+        ) : null}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.chipRow}
           style={styles.chipScroll}
         >
-          {(
-            <Pressable testID="diet-chip" onPress={() => (diet.length ? setFitsOnly((v) => !v) : router.push("/account/diet"))} style={[styles.chip, styles.dietChip, fitsOnly && styles.chipActive]}>
-              <Icon name="food-off-outline" size={16} color={fitsOnly ? colors.onBrandPrimary : colors.onSurfaceTertiary} />
-              <Text style={[styles.chipText, fitsOnly && styles.chipTextActive]}>Past bij mij</Text>
-            </Pressable>
-          )}
           {chips.map((c) => {
             const active = cat === c.key;
             return (
@@ -211,15 +213,22 @@ export default function DishesScreen() {
               onPress={() => router.push({ pathname: "/dish/edit", params: { id: item.id } })}
               style={({ pressed }) => [styles.row, pressed && { opacity: 0.9 }]}
             >
-              <View style={styles.rowIcon}>
-                <Icon name={CATEGORY_ICONS[item.category] as any} size={20} color={colors.brandPrimary} />
-              </View>
+              {item.image ? (
+                <Image source={{ uri: item.image }} style={[styles.rowIcon, { backgroundColor: "#fff" }]} resizeMode="contain" />
+              ) : (
+                <View style={styles.rowIcon}>
+                  <Icon name={CATEGORY_ICONS[item.category] as any} size={20} color={colors.brandPrimary} />
+                </View>
+              )}
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowTitle} numberOfLines={1}>
                   {item.name}
                 </Text>
                 <Text style={styles.rowSub}>
                   {CATEGORY_LABELS[item.category]} · {item.ingredients.length} producten
+                  {item.price_pp?.[user?.store ?? ""] ?? item.price_pp?.["Albert Heijn"]
+                    ? ` · ± € ${(item.price_pp?.[user?.store ?? ""] ?? item.price_pp!["Albert Heijn"]).toFixed(2).replace(".", ",")} p.p.`
+                    : ""}
                 </Text>
                 {warn.length ? (
                   <Text style={styles.warnText} numberOfLines={1} testID={`dish-warn-${item.id}`}>

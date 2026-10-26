@@ -262,7 +262,7 @@ export default function RecipeScreen() {
                 <Text style={[styles.primaryText, { color: colors.brandPrimary }]}>Aanpassen</Text>
               </Pressable>
               <Pressable testID="recipe-to-camp" onPress={() => setCampOpen(true)} style={[styles.primary, { flex: 1 }]}>
-                <Icon name="tent" size={18} color={colors.onBrandPrimary} />
+                <Icon name="playlist-plus" size={18} color={colors.onBrandPrimary} />
                 <Text style={styles.primaryText}>{`Toevoegen aan ${T.one}`}</Text>
               </Pressable>
             </View>
@@ -392,7 +392,7 @@ function CampSheet({
                   <Text style={styles.label}>{T.One}</Text>
                   {list.map((c) => (
                     <Pressable key={c.id} onPress={() => { setCampId(c.id); setDay(0); }} style={[styles.catRow, camp?.id === c.id && styles.catRowSuggested]}>
-                      <Icon name="tent" size={20} color={colors.brandPrimary} />
+                      <Icon name="clipboard-list-outline" size={20} color={colors.brandPrimary} />
                       <Text style={styles.catText}>{c.name}</Text>
                       {camp?.id === c.id ? <Icon name="check" size={20} color={colors.brandPrimary} /> : null}
                     </Pressable>

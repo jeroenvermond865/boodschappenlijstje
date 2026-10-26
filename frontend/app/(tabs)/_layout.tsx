@@ -19,7 +19,7 @@ export default function TabsLayout() {
           <NativeTabs.Trigger.Label>Home</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="camps">
-          <NativeTabs.Trigger.Icon sf="tent" />
+          <NativeTabs.Trigger.Icon sf="list.bullet.clipboard" />
           <NativeTabs.Trigger.Label>{s.tab_camps}</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="dishes">
@@ -64,7 +64,7 @@ export default function TabsLayout() {
         name="camps"
         options={{
           title: s.tab_camps,
-          tabBarIcon: ({ color, size }) => <Icon name="tent" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Icon name="clipboard-list-outline" size={size} color={color} />,
         }}
       />
       <Tabs.Screen

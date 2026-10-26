@@ -69,7 +69,7 @@ export default function CampsScreen() {
             style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
           >
             <View style={styles.cardIcon}>
-              <Icon name="tent" size={24} color={colors.brandPrimary} />
+              <Icon name="clipboard-list-outline" size={24} color={colors.brandPrimary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle} numberOfLines={1}>
@@ -141,7 +141,7 @@ export default function CampsScreen() {
           }
           ListEmptyComponent={
             <EmptyState
-              icon="tent"
+              icon="clipboard-list-outline"
               title={`Nog geen ${T.many} gepland`}
               subtitle={`Maak een ${T.one} aan en plan per dag de maaltijden en het aantal personen.`}
             />

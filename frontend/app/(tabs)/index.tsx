@@ -73,7 +73,7 @@ export default function HomeScreen() {
   const premium = usePremium();
   const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
   const actions = [
-    { icon: "tent", label: `${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`, onPress: () => router.push("/camp/new") },
+    { icon: "clipboard-plus-outline", label: `${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`, onPress: () => router.push("/camp/new") },
     { icon: "silverware-fork-knife", label: "Gerechten", onPress: () => router.push("/dishes") },
     { icon: "magnify", label: "Product zoeken", onPress: () => router.push("/products") },
     { icon: "newspaper-variant-outline", label: "Folders", onPress: () => router.push("/folders") },
@@ -107,7 +107,7 @@ export default function HomeScreen() {
           <Pressable testID="home-camp" onPress={() => router.push(`/camp/${data.camp!.id}`)} style={styles.campCard}>
             <View style={styles.campTop}>
               <View style={styles.campIcon}>
-                <Icon name="tent" size={26} color={colors.onBrandPrimary} />
+                <Icon name="clipboard-list-outline" size={26} color={colors.onBrandPrimary} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.campLabel}>{data.camp.start_date ? `Eerstvolgende ${T.one} · ${niceDate(data.camp.start_date)}` : `Je ${T.one}`}</Text>
@@ -137,7 +137,7 @@ export default function HomeScreen() {
           </Pressable>
         ) : !isLoading ? (
           <Pressable onPress={() => router.push("/camp/new")} style={styles.emptyCamp}>
-            <Icon name="tent" size={28} color={colors.brandPrimary} />
+            <Icon name="clipboard-list-outline" size={28} color={colors.brandPrimary} />
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>{`Plan je eerste ${T.one}`}</Text>
               <Text style={styles.muted}>Kies dagen, mensen en gerechten. De app maakt je boodschappenlijst.</Text>
