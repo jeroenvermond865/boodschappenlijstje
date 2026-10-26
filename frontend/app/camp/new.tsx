@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Pressable, Switch, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -30,6 +30,7 @@ export default function NewCampScreen() {
   const [children, setChildren] = useState(12);
   const [vegaA, setVegaA] = useState(0);
   const [vegaC, setVegaC] = useState(0);
+  const [hasVega, setHasVega] = useState(false);
 
   const create = useMutation({
     mutationFn: () => {
@@ -95,50 +96,92 @@ export default function NewCampScreen() {
           <Stepper value={days} onChange={setDays} min={1} max={60} testID="days-stepper" />
         </Card>
 
-        <Text style={styles.sectionLabel}>Standaard per dag</Text>
-        <Text style={styles.hint}>Je kunt dit per dag later nog aanpassen.</Text>
-
-        <Card style={styles.rowCard}>
-          <View style={styles.rowLabel}>
-            <View style={styles.rowIcon}>
-              <Icon name="account-group" size={20} color={colors.brandPrimary} />
-            </View>
-            <Text style={styles.rowTitle}>Volwassenen</Text>
+        <Card style={{ gap: 14 }}>
+          <View>
+            <Text style={styles.rowTitle}>Wie eten er mee?</Text>
+            <Text style={styles.rowSub}>Per dag. Je kunt dit later per dag nog aanpassen.</Text>
           </View>
-          <Stepper value={adults} onChange={setAdults} min={0} max={500} testID="adults-stepper" />
-        </Card>
-
-        <Card style={styles.rowCard}>
-          <View style={styles.rowLabel}>
-            <View style={styles.rowIcon}>
-              <Icon name="account-child" size={20} color={colors.brandPrimary} />
+          <View style={styles.cols}>
+            <View style={styles.col}>
+              <View style={styles.colHead}>
+                <Icon name="account" size={18} color={colors.brandPrimary} />
+                <Text style={styles.colTitle}>Volwassenen</Text>
+              </View>
+              <Stepper
+                value={adults}
+                onChange={(v) => {
+                  setAdults(v);
+                  setVegaA((x) => Math.min(x, v));
+                }}
+                min={0}
+                max={500}
+                testID="adults-stepper"
+              />
             </View>
-            <Text style={styles.rowTitle}>Kinderen</Text>
+            <View style={styles.col}>
+              <View style={styles.colHead}>
+                <Icon name="account-child" size={18} color={colors.brandPrimary} />
+                <Text style={styles.colTitle}>Kinderen</Text>
+              </View>
+              <Stepper
+                value={children}
+                onChange={(v) => {
+                  setChildren(v);
+                  setVegaC((x) => Math.min(x, v));
+                }}
+                min={0}
+                max={500}
+                testID="children-stepper"
+              />
+            </View>
           </View>
-          <Stepper value={children} onChange={setChildren} min={0} max={500} testID="children-stepper" />
-        </Card>
 
-        <Card style={styles.rowCard}>
-          <View style={styles.rowLabel}>
-            <View style={styles.rowIcon}>
-              <Icon name="leaf" size={20} color={colors.brandPrimary} />
-            </View>
-            <View>
-              <Text style={styles.rowTitle}>Vega-eters (volw.)</Text>
-              <Text style={styles.rowSub}>Krijgen de vega-optie</Text>
-            </View>
-          </View>
-          <Stepper value={vegaA} onChange={setVegaA} min={0} max={500} testID="vega-adults-stepper" />
-        </Card>
+          <Pressable
+            testID="vega-toggle"
+            onPress={() => {
+              if (hasVega) {
+                setVegaA(0);
+                setVegaC(0);
+              }
+              setHasVega(!hasVega);
+            }}
+            style={styles.vegaToggle}
+          >
+            <Icon name="leaf" size={20} color={colors.brandPrimary} />
+            <Text style={[styles.colTitle, { flex: 1 }]}>Eet er iemand vegetarisch?</Text>
+            <Switch
+              value={hasVega}
+              onValueChange={(v) => {
+                if (!v) {
+                  setVegaA(0);
+                  setVegaC(0);
+                }
+                setHasVega(v);
+              }}
+            />
+          </Pressable>
+          {hasVega ? (
+            <>
+              <Text style={styles.rowSub}>Hoeveel daarvan eten vegetarisch? Zij krijgen de vega-optie van een gerecht.</Text>
+              <View style={styles.cols}>
+                <View style={styles.col}>
+                  <Text style={styles.colSub}>van de {adults} volwassenen</Text>
+                  <Stepper value={vegaA} onChange={setVegaA} min={0} max={adults} testID="vega-adults-stepper" />
+                </View>
+                <View style={styles.col}>
+                  <Text style={styles.colSub}>van de {children} kinderen</Text>
+                  <Stepper value={vegaC} onChange={setVegaC} min={0} max={children} testID="vega-children-stepper" />
+                </View>
+              </View>
+            </>
+          ) : null}
 
-        <Card style={styles.rowCard}>
-          <View style={styles.rowLabel}>
-            <View style={styles.rowIcon}>
-              <Icon name="leaf" size={20} color={colors.brandPrimary} />
-            </View>
-            <Text style={styles.rowTitle}>Vega-eters (kind.)</Text>
+          <View style={styles.summary}>
+            <Text style={styles.summaryText}>
+              Totaal {adults + children} {adults + children === 1 ? "persoon" : "personen"}
+              {vegaA + vegaC ? `, waarvan ${vegaA + vegaC} vegetarisch` : ""}.
+            </Text>
           </View>
-          <Stepper value={vegaC} onChange={setVegaC} min={0} max={500} testID="vega-children-stepper" />
         </Card>
       </KeyboardAwareScrollView>
 
@@ -180,7 +223,14 @@ const useStyles = makeStyles((colors) => ({
   rowTitle: { fontSize: 16, fontFamily: fonts.semibold, color: colors.onSurface },
   rowSub: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
   sectionLabel: { fontSize: 14, fontFamily: fonts.bold, color: colors.onSurface, marginTop: 4 },
-  hint: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted, marginTop: -8 },
+  cols: { flexDirection: "row", gap: 12 },
+  col: { flex: 1, alignItems: "center", gap: 8, paddingVertical: 10, borderRadius: 14, backgroundColor: colors.surfaceTertiary },
+  colHead: { flexDirection: "row", alignItems: "center", gap: 6 },
+  colTitle: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
+  colSub: { fontSize: 12, fontFamily: fonts.medium, color: colors.muted },
+  vegaToggle: { flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.divider },
+  summary: { borderRadius: 10, backgroundColor: colors.brandTertiary, paddingHorizontal: 12, paddingVertical: 8 },
+  summaryText: { fontSize: 13, fontFamily: fonts.medium, color: colors.onBrandTertiary },
   footer: {
     paddingHorizontal: 16,
     paddingTop: 12,

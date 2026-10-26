@@ -783,13 +783,13 @@ function EditCampModal({
 
         <View style={[styles.editRow, { marginTop: 14 }]}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.editLabel}>Vega-eters (volwassenen)</Text>
-            <Text style={styles.editWarn2}>Hiervoor komt de vega-optie op de lijst.</Text>
+            <Text style={styles.editLabel}>Vegetarisch: volwassenen</Text>
+            <Text style={styles.editWarn2}>Hoeveel eten er vegetarisch? Zij krijgen de vega-optie.</Text>
           </View>
           <Stepper value={vegaA} onChange={setVegaA} min={0} max={500} testID="edit-vega-adults" />
         </View>
         <View style={[styles.editRow, { marginTop: 12 }]}>
-          <Text style={styles.editLabel}>Vega-eters (kinderen)</Text>
+          <Text style={styles.editLabel}>Vegetarisch: kinderen</Text>
           <Stepper value={vegaC} onChange={setVegaC} min={0} max={500} testID="edit-vega-children" />
         </View>
 
