@@ -12,7 +12,7 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Low = { id: string; name: string; qty: number; unit: string; image?: string | null; product_name?: string | null; buy: number; buy_unit: string };
 
-export function RestockCard({ campId }: { campId: string }) {
+export function RestockCard({ campId, compact }: { campId: string; compact?: boolean }) {
   const styles = useStyles();
   const { colors } = useTheme();
   const premium = usePremium();
@@ -34,7 +34,8 @@ export function RestockCard({ campId }: { campId: string }) {
     },
     onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
   });
-  const items = data?.items ?? [];
+  const all = data?.items ?? [];
+  const items = compact ? all.slice(0, 4) : all; // op Home kort houden
   if (!premium || !items.length) return null;
   const ids = items.filter((i) => !off.has(i.id)).map((i) => i.id);
   return (

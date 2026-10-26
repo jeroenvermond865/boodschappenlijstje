@@ -7950,6 +7950,20 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
                 if meals:
                     soon.append({"date": dt, "index": k, "meals": meals})
         camp["soon"] = soon
+        # Wat op je lijstje staat en nu in de aanbieding is (bij de winkel van dat product)
+        by_pid = _product_cache.get("by_pid") or {}
+        deals = []
+        for nm, pid in names.values():
+            p = by_pid.get(pid or "")
+            if not p:
+                continue
+            st = p.get("_src") or product_source(p)
+            price = resolve_price(p.get("prices") or {}, st, p.get("unavailable") or [])
+            promo = _promo_public(p, price)[0] if price else None
+            if promo:
+                deals.append({"name": nm, "product_id": pid, "product": p["name"], "store": st, "image": p.get("image"),
+                              "label": promo.get("label"), "price": promo.get("price"), "regular": price})
+        camp["deals"] = deals[:8]
         if names:
             compare, pending = await _camp_compare(c, user)
             compare_pending = pending

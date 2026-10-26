@@ -14,6 +14,7 @@ import { useTerms } from "@/src/settings";
 import { usesNativeTabs } from "@/src/navigation";
 import { euro } from "@/src/search";
 import { STORE_LABEL, type RecipeTile } from "@/src/OnlineRecipes";
+import { RestockCard } from "@/src/RestockCard";
 import { SHORT, type CompareStore } from "@/src/CompareCard";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -30,6 +31,7 @@ type Home = {
     other_camps: number;
     start_date?: string | null;
     soon?: { date: string; index: number; meals: { meal: string; dish_id: string; name: string; image?: string | null }[] }[];
+    deals?: { name: string; product_id: string; product: string; store: string; image?: string | null; label?: string; price?: number | null; regular?: number }[];
   } | null;
   compare: CompareStore[] | null;
   compare_pending?: boolean;
@@ -305,13 +307,13 @@ export default function HomeScreen() {
         // Wat eet je vandaag en morgen: één tik naar die dag in je lijstje
         <View style={styles.pad}>
           <Text style={styles.soonTitle}>Op het menu</Text>
-          <View style={{ gap: 10 }}>
+          <View style={{ flexDirection: "row", gap: 10 }}>
             {data.camp.soon.map((d) => (
               <Pressable
                 key={d.date}
                 testID={`home-soon-${d.date}`}
                 onPress={() => router.push({ pathname: "/camp/[id]", params: { id: data.camp!.id, day: String(d.index) } })}
-                style={styles.soonCard}
+                style={[styles.soonCard, { flex: 1 }]}
               >
                 <View style={styles.soonHead}>
                   <Text style={styles.soonDay}>{dayWord(d.date)}</Text>
@@ -328,13 +330,41 @@ export default function HomeScreen() {
                     )}
                     <View style={{ flex: 1 }}>
                       <Text style={styles.soonMeal}>{MEAL_WORD[m.meal] ?? m.meal}</Text>
-                      <Text style={styles.soonName} numberOfLines={1}>{m.name}</Text>
+                      <Text style={styles.soonName} numberOfLines={2}>{m.name}</Text>
                     </View>
                   </View>
                 ))}
               </Pressable>
             ))}
           </View>
+        </View>
+      ) : null}
+      {data?.camp?.deals?.length ? (
+        // Compact: wat op je lijstje staat en nu in de aanbieding is
+        <View style={styles.pad}>
+          <Text style={styles.soonTitle}>Jouw lijst in de aanbieding</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+            {data.camp.deals.map((d) => (
+              <Pressable
+                key={d.product_id}
+                onPress={() => router.push({ pathname: "/product/[id]", params: { id: d.product_id } })}
+                style={styles.dealTile}
+              >
+                {d.image ? <Image source={{ uri: d.image }} style={styles.dealImg} resizeMode="contain" /> : <View style={styles.dealImg} />}
+                <Text style={styles.dealName} numberOfLines={2}>{d.name}</Text>
+                <Text style={styles.dealLabel} numberOfLines={2}>{d.label}</Text>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={styles.dealStore}>{SHORT[d.store] ?? d.store}</Text>
+                  {d.price ? <Text style={styles.dealPrice}>{euro(d.price)}</Text> : null}
+                </View>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
+      {data?.camp ? (
+        <View style={styles.pad}>
+          <RestockCard campId={data.camp.id} compact />
         </View>
       ) : null}
       <AdSlot place="home" />
@@ -386,9 +416,15 @@ const useStyles = makeStyles((colors) => ({
   soonHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   soonDay: { fontSize: 15, fontFamily: fonts.bold, color: colors.brandPrimary, textTransform: "capitalize" },
   soonRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  soonImg: { width: 44, height: 44, borderRadius: 10, backgroundColor: colors.brandTertiary },
+  soonImg: { width: 36, height: 36, borderRadius: 8, backgroundColor: colors.brandTertiary },
+  dealLabel: { fontSize: 12, fontFamily: fonts.semibold, color: colors.success },
+  dealTile: { width: 132, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 10, gap: 4, backgroundColor: colors.surface },
+  dealImg: { width: "100%", height: 70, borderRadius: 8, backgroundColor: "#fff" },
+  dealName: { fontSize: 13, fontFamily: fonts.semibold, color: colors.onSurface, minHeight: 34 },
+  dealStore: { fontSize: 11, fontFamily: fonts.bold, color: colors.muted },
+  dealPrice: { fontSize: 14, fontFamily: fonts.bold, color: colors.onSurface },
   soonMeal: { fontSize: 12, fontFamily: fonts.medium, color: colors.muted },
-  soonName: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
+  soonName: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },
   root: { flex: 1, backgroundColor: colors.surface },
   pad: { paddingHorizontal: 16 },
   date: { fontSize: 14, fontFamily: fonts.medium, color: colors.muted },
