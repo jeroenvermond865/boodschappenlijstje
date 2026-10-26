@@ -55,7 +55,7 @@ export function VegaPicker({ dish, onClose }: { dish: { id: string; name: string
 
   const items = q.data?.items ?? [];
   return (
-    <Modal visible={!!dish} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={!!dish} animationType="fade" transparent onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
           <View style={styles.head}>
@@ -147,8 +147,8 @@ export function VegaPicker({ dish, onClose }: { dish: { id: string; name: string
 }
 
 const useStyles = makeStyles((colors) => ({
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, gap: 10, maxHeight: "92%" },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 10 },
   head: { flexDirection: "row", alignItems: "center", gap: 10 },
   title: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   sub: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },

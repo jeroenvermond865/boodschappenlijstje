@@ -199,7 +199,7 @@ export default function BudgetScreen() {
         </ScrollView>
       )}
 
-      <Modal visible={editing} transparent animationType="slide" onRequestClose={() => setEditing(false)}>
+      <Modal visible={editing} transparent animationType="fade" onRequestClose={() => setEditing(false)}>
         <View style={styles.modalBackdrop}>
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
             <View style={styles.sheetHeader}>
@@ -245,8 +245,8 @@ const useStyles = makeStyles((colors) => ({
   summaryBox: { flex: 1, backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14 },
   summaryLabel: { fontSize: 12, fontFamily: fonts.medium, color: colors.muted },
   summaryValue: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface, marginTop: 4 },
-  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 16, gap: 12 },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 12 },
   sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   rowSub: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },

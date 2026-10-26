@@ -272,7 +272,7 @@ export function OnlineRecipes({
         />
       )}
 
-      <Modal visible={open} transparent animationType="slide" onRequestClose={() => setOpen(false)}>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <FilterSheet facets={facets} filters={filters} toggle={toggle} clear={() => setFilters({})} onClose={() => setOpen(false)} total={first?.total} store={store} />
       </Modal>
     </View>
@@ -410,8 +410,8 @@ const useStyles = makeStyles((colors) => ({
   metaRow: { flexDirection: "row", gap: 10, flexWrap: "wrap" },
   meta: { flexDirection: "row", alignItems: "center", gap: 3 },
   metaText: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 16, gap: 10, maxHeight: "85%" },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 10 },
   sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   hint: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },

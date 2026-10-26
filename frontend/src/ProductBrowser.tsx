@@ -448,7 +448,7 @@ function FiltersSheet({
     });
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.modalBackdrop} onPress={onClose}>
         <Pressable style={[styles.sheet, { maxHeight: "85%", paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
           <View style={styles.sheetHeader}>
@@ -668,8 +668,8 @@ const useStyles = makeStyles((colors) => ({
     elevation: 6,
   },
   fabText: { color: colors.onBrandPrimary, fontSize: 15, fontFamily: fonts.semibold },
-  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 16, gap: 10 },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 10 },
   sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   sheetHint: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },

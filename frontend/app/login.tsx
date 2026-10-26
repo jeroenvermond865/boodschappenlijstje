@@ -240,7 +240,7 @@ function ForgotPasswordModal({ visible, onClose }: { visible: boolean; onClose: 
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={close}>
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={close}>
       <Pressable style={styles.sheetBackdrop} onPress={close} />
       <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
         <View style={styles.sheetHandle} />
@@ -308,8 +308,8 @@ const useStyles = makeStyles((colors) => ({
   dividerText: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
   forgotWrap: { alignSelf: "flex-end", marginTop: -4 },
   forgotText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
-  sheetBackdrop: { flex: 1, backgroundColor: "rgba(28,27,26,0.5)" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20 },
-  sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: colors.borderStrong, alignSelf: "center", marginBottom: 14 },
+  sheetBackdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(28,27,26,0.5)" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 20 },
+  sheetHandle: { display: "none", width: 40, height: 4, borderRadius: 2, backgroundColor: colors.borderStrong, alignSelf: "center", marginBottom: 14 },
   sheetTitle: { fontSize: 19, fontFamily: fonts.bold, color: colors.onSurface, marginBottom: 16 },
 }));

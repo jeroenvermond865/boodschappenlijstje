@@ -193,7 +193,7 @@ export default function AdminUsersScreen() {
         </ScrollView>
       )}
 
-      <Modal visible={!!edit} animationType="slide" transparent onRequestClose={() => setEdit(null)}>
+      <Modal visible={!!edit} animationType="fade" transparent onRequestClose={() => setEdit(null)}>
         <View style={styles.modalBackdrop}>
           <ScrollView
             style={styles.sheetScroll}
@@ -285,9 +285,9 @@ const useStyles = makeStyles((colors) => ({
   chipText: { fontSize: 13, fontFamily: fonts.medium, color: colors.onSurfaceTertiary },
   chipTextActive: { color: colors.onBrandPrimary },
   editBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
-  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
   sheetScroll: { maxHeight: "88%" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 16, gap: 12 },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 12 },
   sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   pwBlock: { gap: 10, borderTopWidth: 1, borderTopColor: colors.divider, paddingTop: 14, marginTop: 2 },

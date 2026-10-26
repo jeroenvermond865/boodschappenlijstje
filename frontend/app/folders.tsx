@@ -214,7 +214,7 @@ export default function FoldersScreen() {
         />
       )}
 
-      <Modal visible={!!open} transparent animationType="slide" onRequestClose={() => setOpen(null)}>
+      <Modal visible={!!open} transparent animationType="fade" onRequestClose={() => setOpen(null)}>
         <Pressable style={styles.backdrop} onPress={() => setOpen(null)}>
           <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
             {open ? <ItemSheet item={open} onClose={() => setOpen(null)} onOpenProduct={(id) => { setOpen(null); router.push(`/product/${id}`); }} /> : null}
@@ -375,8 +375,8 @@ const useStyles = makeStyles((colors) => ({
   price: { fontSize: 16, fontFamily: fonts.bold, color: colors.warning },
   deal: { fontSize: 12, fontFamily: fonts.semibold, color: colors.onSurface },
   combi: { fontSize: 12, fontFamily: fonts.medium, color: colors.brandPrimary },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 16 },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16 },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   row: { flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 8 },
   rowImage: { width: 40, height: 40, borderRadius: 8, backgroundColor: "#fff" },

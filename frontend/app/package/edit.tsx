@@ -107,7 +107,7 @@ export default function PackageEditScreen() {
         <Button label="Opslaan" onPress={() => save.mutate()} loading={save.isPending} testID="package-save" />
       </View>
 
-      <Modal visible={picking} animationType="slide" transparent onRequestClose={() => setPicking(false)}>
+      <Modal visible={picking} animationType="fade" transparent onRequestClose={() => setPicking(false)}>
         <View style={styles.backdrop}>
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 8 }]}>
             <View style={styles.sheetHeader}>
@@ -138,8 +138,8 @@ const useStyles = makeStyles((colors) => ({
   addRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 8 },
   addText: { fontSize: 15, fontFamily: fonts.semibold, color: colors.brandPrimary },
   footer: { paddingHorizontal: 16, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.divider, backgroundColor: colors.surface },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
-  sheet: { height: "92%", backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingTop: 16, gap: 8 },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
+  sheet: { height: "92%", backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", paddingTop: 16, gap: 8 },
   sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16 },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
 }));

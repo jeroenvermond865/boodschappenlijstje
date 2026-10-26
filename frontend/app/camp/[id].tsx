@@ -632,8 +632,8 @@ export default function CampDetailScreen() {
         diet={diet}
       />
 
-      <Modal visible={budgetOpen} transparent animationType="slide" onRequestClose={() => setBudgetOpen(false)}>
-        <View style={[styles.modalBackdrop, { justifyContent: "flex-end" }]}>
+      <Modal visible={budgetOpen} transparent animationType="fade" onRequestClose={() => setBudgetOpen(false)}>
+        <View style={styles.modalBackdrop}>
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHeader}>
@@ -699,8 +699,8 @@ function ExtraAddModal({
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={[styles.modalBackdrop, { justifyContent: "flex-end" }]}>
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
         <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
           <View style={styles.sheetHandle} />
           <View style={styles.sheetHeader}>
@@ -808,7 +808,7 @@ function EditCampModal({
   });
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <Pressable style={styles.modalBackdrop} onPress={onClose} />
       <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.sheetHandle} />
@@ -912,7 +912,7 @@ function MembersModal({
   });
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <Pressable style={styles.modalBackdrop} onPress={onClose} />
       <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.sheetHandle} />
@@ -986,7 +986,7 @@ function PackagePickerModal({ visible, onClose, onPick }: { visible: boolean; on
   const { data, isLoading } = useQuery({ queryKey: ["packages"], queryFn: () => api<{ packages: Package[] }>("/packages"), enabled: visible });
   const list = data?.packages ?? [];
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <Pressable style={styles.modalBackdrop} onPress={onClose} />
       <View style={[styles.sheet, { paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.sheetHandle} />
@@ -1096,7 +1096,7 @@ function DishPickerModal({
   };
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <Pressable style={styles.modalBackdrop} onPress={onClose} />
       <View style={[styles.sheet, { height: "88%", paddingHorizontal: 0, paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.sheetHandle} />
@@ -1281,7 +1281,7 @@ const useStyles = makeStyles((colors) => ({
     paddingHorizontal: 14,
   },
   dishName: { flex: 1, fontSize: 15, fontFamily: fonts.medium, color: colors.onSurface, marginRight: 10 },
-  modalBackdrop: { flex: 1, backgroundColor: "rgba(28,27,26,0.45)" },
+  modalBackdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(28,27,26,0.45)", justifyContent: "center" },
   budgetBar: { backgroundColor: colors.brandTertiary, borderRadius: 16, padding: 14, gap: 8 },
   budgetTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   budgetUsed: { fontSize: 18, fontFamily: fonts.bold, color: colors.onBrandTertiary },
@@ -1296,11 +1296,16 @@ const useStyles = makeStyles((colors) => ({
   budgetField: { backgroundColor: colors.surfaceTertiary, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, fontFamily: fonts.regular, color: colors.onSurface, borderWidth: 1, borderColor: colors.border },
   sheet: {
     backgroundColor: colors.surface,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderRadius: 20,
+    width: "92%",
+    maxWidth: 560,
+    alignSelf: "center",
+    marginVertical: "auto",
+    maxHeight: "88%",
     padding: 16,
   },
   sheetHandle: {
+    display: "none",
     width: 40,
     height: 4,
     borderRadius: 2,

@@ -708,7 +708,7 @@ function SwapSheet({ ing, onClose, onPick }: { ing: Ing | null; onClose: () => v
   );
 
   return (
-    <Modal visible={open} animationType="slide" transparent onRequestClose={close}>
+    <Modal visible={open} animationType="fade" transparent onRequestClose={close}>
       <View style={styles.pickerBackdrop}>
         <View style={[styles.pickerSheet, { paddingBottom: insets.bottom + 16, maxHeight: "90%" }]}>
           <View style={styles.pickerHeader}>
@@ -779,7 +779,7 @@ function DishProductPicker({ open, onClose, onPick }: { open: boolean; onClose: 
   const insets = useSafeAreaInsets();
   const [picked, setPicked] = useState<string[]>([]);
   return (
-    <Modal visible={open} animationType="slide" transparent onRequestClose={onClose}>
+    <Modal visible={open} animationType="fade" transparent onRequestClose={onClose}>
       <View style={styles.pickerBackdrop}>
         <View style={[styles.pickerSheet, { height: "92%", paddingHorizontal: 0, paddingBottom: insets.bottom + 8 }]}>
           <View style={[styles.pickerHeader, { paddingHorizontal: 16 }]}>
@@ -937,8 +937,8 @@ const useStyles = makeStyles((colors) => ({
   addRow: { flexDirection: "row", gap: 10 },
   linkedPrice: { flexDirection: "row", alignItems: "center", gap: 6 },
   linkedPriceText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandSecondary },
-  pickerBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
-  pickerSheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 16, gap: 12 },
+  pickerBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
+  pickerSheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 12 },
   pickerHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   pickerTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   pickerSearch: {

@@ -268,7 +268,7 @@ export default function RecipeScreen() {
             </View>
           </View>
 
-          <Modal visible={pick} transparent animationType="slide" onRequestClose={() => setPick(false)}>
+          <Modal visible={pick} transparent animationType="fade" onRequestClose={() => setPick(false)}>
             <Pressable style={styles.backdrop} onPress={() => setPick(false)}>
               <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
                 <Text style={styles.sheetTitle}>Overnemen als eigen gerecht</Text>
@@ -346,7 +346,7 @@ function CampSheet({
   };
 
   return (
-    <Modal visible={open} transparent animationType="slide" onRequestClose={close}>
+    <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
       <Pressable style={styles.backdrop} onPress={close}>
         <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16, maxHeight: "85%" }]} onPress={() => {}}>
           {done ? (
@@ -549,8 +549,8 @@ const useStyles = makeStyles((colors) => ({
   footer: { position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 16, paddingTop: 12, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.divider },
   primary: { flexDirection: "row", gap: 8, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandPrimary, borderRadius: 14, paddingVertical: 15 },
   primaryText: { color: colors.onBrandPrimary, fontSize: 16, fontFamily: fonts.semibold },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 16, gap: 10 },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 10 },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   catRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: colors.border },
   catRowSuggested: { borderColor: colors.brandPrimary },

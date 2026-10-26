@@ -33,7 +33,7 @@ export function BetterPack({ better, current, onSwap }: { better?: PackBetter | 
         </Text>
         <Icon name="chevron-right" size={14} color={colors.success} />
       </Pressable>
-      <Modal visible={open} transparent animationType="slide" onRequestClose={() => setOpen(false)}>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <Pressable style={styles.backdrop} onPress={() => setOpen(false)}>
           <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
             <View style={styles.head}>
@@ -89,8 +89,8 @@ export function BetterPack({ better, current, onSwap }: { better?: PackBetter | 
 const useStyles = makeStyles((colors) => ({
   line: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2, alignSelf: "flex-start" },
   better: { fontSize: 12, fontFamily: fonts.medium, color: colors.success, flexShrink: 1 },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, gap: 14 },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 14 },
   head: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   title: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   card: { flexDirection: "row", gap: 12, alignItems: "center", padding: 12, borderRadius: 14, borderWidth: 1, borderColor: colors.border },

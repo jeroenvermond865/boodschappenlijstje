@@ -328,7 +328,7 @@ function SwapSheet({ campId, store, item, onClose, onChanged }: { campId: string
   });
   const options = (data?.options ?? []).filter((o) => o.product_id !== item.product_id);
   return (
-    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -405,6 +405,6 @@ const useStyles = makeStyles((colors) => ({
   compareCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 14 },
   barTrack: { height: 8, borderRadius: 4, backgroundColor: colors.surfaceTertiary, overflow: "hidden" },
   bar: { height: 8, borderRadius: 4, backgroundColor: colors.brandPrimary },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, gap: 10, width: "100%", maxWidth: 640, alignSelf: "center" },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 10, width: "100%", maxWidth: 640, alignSelf: "center" },
 }));

@@ -94,7 +94,7 @@ function AddSheet({ mode, onClose, productId, productName }: { mode: "camp" | "d
   });
 
   return (
-    <Modal visible={mode != null} transparent animationType="slide" onRequestClose={close}>
+    <Modal visible={mode != null} transparent animationType="fade" onRequestClose={close}>
       <Pressable style={styles.backdrop} onPress={close}>
         <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
           <ScrollView contentContainerStyle={{ gap: 12 }}>
@@ -195,8 +195,8 @@ function AddSheet({ mode, onClose, productId, productName }: { mode: "camp" | "d
 }
 
 const useStyles = makeStyles((colors) => ({
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 18, maxHeight: "85%" },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 18 },
   title: { fontSize: 20, fontFamily: fonts.bold, color: colors.onSurface },
   body: { fontSize: 15, fontFamily: fonts.regular, color: colors.onSurface },
   muted: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },

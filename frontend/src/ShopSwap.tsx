@@ -142,7 +142,7 @@ export function ShopSwapSheet({
   const groups = [...(alts.data?.groups ?? [])].sort((a, b) => Number(b.store === store) - Number(a.store === store));
 
   return (
-    <Modal visible={open} animationType="slide" transparent onRequestClose={close}>
+    <Modal visible={open} animationType="fade" transparent onRequestClose={close}>
       <View style={styles.backdrop}>
         <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
           <View style={styles.head}>
@@ -236,8 +236,8 @@ export function ShopSwapSheet({
 }
 
 const useStyles = makeStyles((colors) => ({
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "flex-end" },
-  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, gap: 10, maxHeight: "92%" },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 10 },
   head: { flexDirection: "row", alignItems: "center", gap: 10 },
   title: { flex: 1, fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   search: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surfaceSecondary, borderRadius: 12, paddingHorizontal: 12, minHeight: 44 },
@@ -303,7 +303,7 @@ export function BarcodeLink({ productId, current }: { productId: string; current
           {current ? `Barcode ${current} · klopt niet?` : "Barcode koppelen"}
         </Text>
       </Pressable>
-      <Modal visible={open} animationType="slide" transparent onRequestClose={() => setOpen(false)}>
+      <Modal visible={open} animationType="fade" transparent onRequestClose={() => setOpen(false)}>
         <View style={styles.backdrop}>
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
             <View style={styles.head}>
