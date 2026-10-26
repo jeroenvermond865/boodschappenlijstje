@@ -40,7 +40,7 @@ type FolderPeriod = {
   items: FolderItem[];
 };
 
-type FoldersResponse = { store: string; stores: string[]; periods: FolderPeriod[]; loading: boolean };
+type FoldersResponse = { store: string; stores: string[]; periods: FolderPeriod[]; loading: boolean; next_expected?: { start: string; available_from: string; nice: string } | null };
 
 export default function FoldersScreen() {
   const params = useLocalSearchParams<{ store?: string; promo?: string }>();
@@ -140,7 +140,11 @@ export default function FoldersScreen() {
           </View>
         ) : null}
         {!periods.some((p) => p.key === "next") && periods.length > 0 ? (
-          <Text style={styles.muted}>De folder van volgende week staat er nog niet; die verschijnt zodra {store} hem publiceert.</Text>
+          <Text style={styles.muted}>
+            {data?.next_expected
+              ? `De folder van volgende week staat er naar verwachting vanaf ${data.next_expected.nice}, zodra ${store} hem online zet. We kijken dan elk uur.`
+              : `De folder van volgende week staat er nog niet; die verschijnt zodra ${store} hem publiceert.`}
+          </Text>
         ) : null}
         {period?.pages ? (
           <Text style={styles.muted}>

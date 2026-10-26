@@ -3123,6 +3123,7 @@ async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_curr
         periods.append({**ex, "period": f"{_nice_day(ex['start'])} t/m {_nice_day(ex['end'])}" if ex.get("start") and ex.get("end") else None,
                         "categories": [], "items": []})
     return {"store": store, "stores": list(COUPLED_STORES), "periods": periods, "loading": f["at"] is None,
+            "next_expected": _next_expected(store, (f["data"] or {}).get(store) or []),
             "updated_at": f["at"].isoformat() if f["at"] else None}
 
 
@@ -4515,12 +4516,59 @@ async def _load_folders() -> None:
         at -= timedelta(seconds=max(0, FOLDER_REFRESH_SECONDS - 300))  # een winkel lukte niet: over 5 minuten opnieuw
     _folders.update({"at": at, "data": data, "by_id": by_id, "extra": extra})
     _search_cache.clear()
+    try:
+        await _learn_folder_lead(data)
+    except Exception as e:
+        logger.info("Folder volgende week bijhouden: %r", e)
     logger.info("Folders geladen: %s", {k: [len(p["items"]) for p in v] for k, v in data.items()})
+
+
+# Volgende week: hoeveel dagen voor de start zet een winkel de nieuwe folder online? Dat leren we elke week
+# van de site zelf, zodat de app kan zeggen "vanaf vrijdag 30 oktober" (en dan vaker kijkt).
+FOLDER_LEAD_DEFAULT = {"Albert Heijn": 3, "Jumbo": 3, "Dirk": 2}
+_folder_lead: dict = {}
+
+
+async def _learn_folder_lead(data: dict) -> None:
+    today = _iso_day(now_utc().isoformat())
+    doc = await db.meta.find_one({"key": "folder_lead"}, {"_id": 0}) or {}
+    seen = doc.get("seen") or {}
+    leads = doc.get("leads") or {}
+    changed = False
+    for store, pers in data.items():
+        for per in pers:
+            st = per.get("start") or ""
+            if st > today and seen.get(store) != st and per.get("items"):
+                seen[store] = st
+                days = (datetime.fromisoformat(st) - datetime.fromisoformat(today)).days
+                if 0 < days <= 7:
+                    leads[store] = (leads.get(store) or [])[-5:] + [days]
+                changed = True
+    if changed:
+        await db.meta.update_one({"key": "folder_lead"}, {"$set": {"seen": seen, "leads": leads}}, upsert=True)
+    _folder_lead.update({k: max(v) for k, v in leads.items() if v})
+
+
+def _next_expected(store: str, periods: list) -> Optional[dict]:
+    # Geen folder van volgende week: wanneer verwachten we hem?
+    today = _iso_day(now_utc().isoformat())
+    cur = [p for p in periods if (p.get("start") or "") <= today and p.get("end")]
+    if not cur or any((p.get("start") or "") > today for p in periods):
+        return None
+    start = (datetime.fromisoformat(max(p["end"] for p in cur)[:10]) + timedelta(days=1)).date()
+    avail = start - timedelta(days=_folder_lead.get(store) or FOLDER_LEAD_DEFAULT.get(store, 3))
+    return {"start": start.isoformat(), "available_from": max(avail.isoformat(), today), "nice": _nice_day(max(avail.isoformat(), today))}
 
 
 async def _folders_fresh(wait: bool = True) -> dict:
     f = _folders
-    old = f["at"] is None or (datetime.now(timezone.utc) - f["at"]).total_seconds() > FOLDER_REFRESH_SECONDS
+    every = FOLDER_REFRESH_SECONDS
+    if f["at"] is not None:
+        # Rond de dag dat de folder van volgende week verschijnt: elk uur kijken
+        today = _iso_day(now_utc().isoformat())
+        if any((x := _next_expected(st, pers)) and x["available_from"] <= today for st, pers in (f["data"] or {}).items()):
+            every = 3600
+    old = f["at"] is None or (datetime.now(timezone.utc) - f["at"]).total_seconds() > every
     if old and not (f["task"] and not f["task"].done()):
         f["task"] = asyncio.create_task(_load_folders())
     if wait and f["at"] is None and f["task"]:
