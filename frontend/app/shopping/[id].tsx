@@ -11,6 +11,7 @@ import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { cachedApi, offlineText } from "@/src/offline";
 import { BetterPack, PackBetter, packText } from "@/src/packs";
+import { ShopSwapSheet } from "@/src/ShopSwap";
 import { AISLE_ICONS, formatQty } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
@@ -536,6 +537,7 @@ export default function ShoppingScreen() {
                               checked={shown.has(`day${d.index}-${key(b.store, i)}`)}
                               onToggle={() => toggle(`day${d.index}-${key(b.store, i)}`)}
                               last={idx === b.flat.length - 1}
+                              store={b.store}
                             />
                           ))}
                         </View>
@@ -616,6 +618,7 @@ function AisleSection({
             onToggle={() => onToggle(key(store, i))}
             last={idx === sorted.length - 1}
             by={checked.has(key(store, i)) ? by?.[key(store, i)] : undefined}
+            store={store}
           />
         ))}
       </View>
@@ -623,7 +626,8 @@ function AisleSection({
   );
 }
 
-function ItemRow({ item, checked, onToggle, last, by }: { item: Item; checked: boolean; onToggle: () => void; last?: boolean; by?: string }) {
+function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; checked: boolean; onToggle: () => void; last?: boolean; by?: string; store?: string }) {
+  const [swapOpen, setSwapOpen] = useState(false);
   const styles = useStyles();
   const { colors } = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -690,7 +694,18 @@ function ItemRow({ item, checked, onToggle, last, by }: { item: Item; checked: b
         </Text>
         {item.price ? <Text style={styles.itemPrice}>{euro(item.price)}</Text> : null}
       </View>
+      {item.product_id && !checked ? (
+        <Pressable onPress={() => setSwapOpen(true)} hitSlop={8} style={{ paddingLeft: 4 }} testID={`item-swap-${item.name.toLowerCase()}`}>
+          <Icon name="swap-horizontal" size={22} color={colors.brandPrimary} />
+        </Pressable>
+      ) : null}
     </Pressable>
+      <ShopSwapSheet
+        item={swapOpen ? item : null}
+        store={store ?? ""}
+        onClose={() => setSwapOpen(false)}
+        onPick={(p) => swap({ product_id: p.id, name: p.name } as PackBetter)}
+      />
       {item.better && !checked ? (
         <View style={{ paddingLeft: 36, paddingBottom: 12, marginTop: -8 }}>
           <BetterPack better={item.better} current={item.product} onSwap={item.product_id ? swap : undefined} />
