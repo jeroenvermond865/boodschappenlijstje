@@ -11,6 +11,7 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { euro } from "@/src/search";
 import { PriceAlertCard, PriceHistory } from "@/src/PriceTools";
 import { PremiumLock, usePremium } from "@/src/premium";
+import { AddProductButtons } from "@/src/AddProductSheet";
 import type { Product, Promo } from "@/app/(tabs)/products";
 
 type Details = {
@@ -123,6 +124,7 @@ export default function ProductScreen() {
 
           {p.promo ? <PromoCard promo={p.promo} now /> : null}
           {p.promo_next ? <PromoCard promo={p.promo_next} now={false} /> : null}
+          <AddProductButtons productId={p.id} productName={p.name} />
 
           {p.is_global ? <OtherStores productId={p.id} /> : null}
 

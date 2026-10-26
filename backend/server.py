@@ -7130,6 +7130,57 @@ class DishMatchInput(BaseModel):
     names: List[str] = []
 
 
+class ProductToCamp(BaseModel):
+    camp_id: str
+    day_index: Optional[int] = None  # leeg = algemene boodschappen
+    meal: Optional[str] = None
+    qty: float = 1
+
+
+@api_router.post("/products/{product_id}/to-camp")
+async def product_to_camp(product_id: str, data: ProductToCamp, user: dict = Depends(get_current_user)):
+    # Vanaf een product (bijv. uit de aanbiedingen) meteen op een lijstje zetten
+    await _global_products()
+    p = (_product_cache.get("by_pid") or {}).get(product_id) or await db.products.find_one({"product_id": product_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Product niet gevonden")
+    camp = await db.camps.find_one({"camp_id": data.camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
+    item = {"name": p["name"], "unit": "stuks", "qty": max(0.1, data.qty), "aisle": p.get("aisle") or "Overig",
+            "product_id": product_id, "store": product_source(p), "meal": data.meal if data.meal in MEAL_CATEGORIES else None, "auto": False}
+    if data.day_index is None:
+        await db.camps.update_one({"camp_id": data.camp_id}, {"$push": {"general": item}})
+    else:
+        days = camp.get("days") or []
+        day = next((d for d in days if d.get("index") == data.day_index), None)
+        if not day:
+            raise HTTPException(status_code=400, detail="Die dag bestaat niet")
+        day.setdefault("extras", []).append(item)
+        await db.camps.update_one({"camp_id": data.camp_id}, {"$set": {"days": days}})
+    return {"ok": True}
+
+
+class ProductToDish(BaseModel):
+    dish_id: str
+    qty_adult: float = 1
+    qty_child: float = 0
+
+
+@api_router.post("/products/{product_id}/to-dish")
+async def product_to_dish(product_id: str, data: ProductToDish, user: dict = Depends(get_current_user)):
+    # Vanaf een product aan een eigen gerecht toevoegen (beheerders ook aan standaardgerechten)
+    await _global_products()
+    p = (_product_cache.get("by_pid") or {}).get(product_id) or await db.products.find_one({"product_id": product_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Product niet gevonden")
+    await _editable_dish(data.dish_id, user)
+    ing = {"name": p["name"], "unit": "stuks", "qty_adult": data.qty_adult, "qty_child": data.qty_child, "aisle": p.get("aisle") or "Overig",
+           "price": 0, "product_id": product_id, "diet": "all", "store": product_source(p), "recipe_text": None}
+    await db.dishes.update_one({"dish_id": data.dish_id}, {"$push": {"ingredients": ing}})
+    return dish_public(await db.dishes.find_one({"dish_id": data.dish_id}, {"_id": 0}))
+
+
 @api_router.post("/dishes/match")
 async def dish_match(data: DishMatchInput, user: dict = Depends(get_current_user)):
     # Ingrediënten zonder product (bijv. app-gerechten): meteen het best passende product in jouw winkel
