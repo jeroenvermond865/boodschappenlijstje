@@ -15,6 +15,8 @@ import { isOwnDish, type Dish } from "@/app/(tabs)/dishes";
 import type { Package } from "@/app/package/edit";
 import type { Product } from "@/app/(tabs)/products";
 import { useAuth } from "@/src/auth";
+import { dietConflicts, useDiet } from "@/src/diet";
+import { GOLD, usePremium } from "@/src/premium";
 import { goBack } from "@/src/nav";
 import { VegaPicker } from "@/src/VegaPicker";
 import { DateField } from "@/src/DateField";
@@ -63,6 +65,12 @@ export default function CampDetailScreen() {
   const [vegaDish, setVegaDish] = useState<Dish | null>(null);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuCats, setMenuCats] = useState<MealCategory[]>(["avondeten"]);
+  const [menuOverwrite, setMenuOverwrite] = useState(false);
+  const [menuBusy, setMenuBusy] = useState(false);
+  const premium = usePremium();
+  const { selected: diet } = useDiet();
 
   const canViewBudget = has("view_budget");
   const canManageBudget = has("manage_budget");
@@ -93,6 +101,31 @@ export default function CampDetailScreen() {
     (dishesData?.dishes ?? []).forEach((d) => (m[d.id] = d));
     return m;
   }, [dishesData]);
+
+  const runAutoMenu = async () => {
+    setMenuBusy(true);
+    try {
+      const exclude = (dishesData?.dishes ?? []).filter((d) => dietConflicts(d.ingredients, diet).length).map((d) => d.id);
+      const res = await api<{ filled: number; promo_dishes: string[] }>(`/camps/${id}/auto-menu`, {
+        method: "POST",
+        body: { categories: menuCats, exclude, overwrite: menuOverwrite },
+      });
+      qc.invalidateQueries({ queryKey: ["camp", id] });
+      qc.invalidateQueries({ queryKey: ["shopping", id] });
+      qc.invalidateQueries({ queryKey: ["budget", id] });
+      setMenuOpen(false);
+      toast.show(
+        res.filled
+          ? `${res.filled} maaltijden ingevuld${res.promo_dishes.length ? `, ${res.promo_dishes.length} met aanbiedingen` : ""}`
+          : "Er was niets leeg om in te vullen",
+        res.filled ? "success" : "info",
+      );
+    } catch (e: any) {
+      toast.show(e?.message ?? "Invullen mislukt", "error");
+    } finally {
+      setMenuBusy(false);
+    }
+  };
 
   const update = useMutation({
     mutationFn: (days: Day[]) => api(`/camps/${id}`, { method: "PUT", body: { days } }),
@@ -278,6 +311,11 @@ export default function CampDetailScreen() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32, gap: 14 }}>
+        <Pressable testID="auto-menu-button" onPress={() => (premium ? setMenuOpen(true) : router.push("/premium"))} style={styles.autoMenuBtn}>
+          <Icon name="calendar-star" size={18} color={GOLD.icon} />
+          <Text style={styles.autoMenuText}>Menu automatisch invullen</Text>
+          <Icon name={premium ? "chevron-right" : "star"} size={18} color={GOLD.icon} />
+        </Pressable>
         {canViewBudget && budget ? (
           budget.budget_target > 0 ? (
             <Pressable
@@ -544,6 +582,32 @@ export default function CampDetailScreen() {
         onClose={() => setExtraTarget(null)}
         onAdd={addExtra}
       />
+
+      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
+        <Pressable style={styles.menuBackdrop} onPress={() => setMenuOpen(false)}>
+          <Pressable style={styles.menuCard} onPress={() => {}}>
+            <Text style={styles.menuTitle}>Menu automatisch invullen</Text>
+            <Text style={styles.menuText}>
+              We kiezen gerechten waarvan nu zoveel mogelijk ingrediënten in de aanbieding zijn, en zo min mogelijk dubbel.
+              {diet.length ? " Gerechten die niet passen bij je allergieën of dieet slaan we over." : ""}
+            </Text>
+            {MEAL_CATEGORIES.map((c) => {
+              const on = menuCats.includes(c);
+              return (
+                <Pressable key={c} testID={`auto-menu-cat-${c}`} style={styles.menuRow} onPress={() => setMenuCats((v) => (on ? v.filter((x) => x !== c) : [...v, c]))}>
+                  <Icon name={on ? "checkbox-marked" : "checkbox-blank-outline"} size={22} color={on ? colors.brandPrimary : colors.muted} />
+                  <Text style={styles.menuRowText}>{CATEGORY_LABELS[c]}</Text>
+                </Pressable>
+              );
+            })}
+            <Pressable testID="auto-menu-overwrite" style={styles.menuRow} onPress={() => setMenuOverwrite((v) => !v)}>
+              <Icon name={menuOverwrite ? "checkbox-marked" : "checkbox-blank-outline"} size={22} color={menuOverwrite ? colors.brandPrimary : colors.muted} />
+              <Text style={styles.menuRowText}>Ook maaltijden vervangen die al gekozen zijn</Text>
+            </Pressable>
+            <Button label="Invullen" onPress={runAutoMenu} loading={menuBusy} disabled={!menuCats.length} testID="auto-menu-run" />
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       <Modal visible={budgetOpen} transparent animationType="slide" onRequestClose={() => setBudgetOpen(false)}>
         <View style={[styles.modalBackdrop, { justifyContent: "flex-end" }]}>
@@ -1200,6 +1264,14 @@ const useStyles = makeStyles((colors) => ({
   budgetTrack: { height: 8, borderRadius: 999, backgroundColor: colors.surface, overflow: "hidden" },
   budgetFill: { height: 8, borderRadius: 999 },
   budgetSub: { fontSize: 12, fontFamily: fonts.regular, color: colors.onBrandTertiary },
+  autoMenuBtn: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 14, borderWidth: 1, borderColor: GOLD.border, backgroundColor: GOLD.bg },
+  autoMenuText: { flex: 1, fontSize: 14, fontFamily: fonts.semibold, color: GOLD.text },
+  menuBackdrop: { flex: 1, backgroundColor: "rgba(28,27,26,0.5)", justifyContent: "center", padding: 20 },
+  menuCard: { backgroundColor: colors.surface, borderRadius: 20, padding: 20, gap: 8, width: "100%", maxWidth: 440, alignSelf: "center" },
+  menuTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
+  menuText: { fontSize: 14, lineHeight: 20, fontFamily: fonts.regular, color: colors.onSurfaceSecondary, marginBottom: 4 },
+  menuRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 6 },
+  menuRowText: { fontSize: 15, fontFamily: fonts.medium, color: colors.onSurface, flex: 1 },
   budgetSetBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, borderRadius: 14, borderWidth: 1, borderStyle: "dashed", borderColor: colors.brandPrimary },
   budgetSetText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.brandPrimary },
   budgetField: { backgroundColor: colors.surfaceTertiary, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, fontFamily: fonts.regular, color: colors.onSurface, borderWidth: 1, borderColor: colors.border },

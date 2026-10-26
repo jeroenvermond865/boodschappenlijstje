@@ -14,6 +14,7 @@ import math
 import itertools
 import time
 import uuid
+import random
 import re
 import secrets
 import base64
@@ -1402,6 +1403,62 @@ async def update_camp(camp_id: str, data: CampUpdate, user: dict = Depends(get_c
         await db.camps.update_one({"camp_id": camp_id}, {"$set": update})
     updated = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0})
     return camp_public(updated)
+
+
+class AutoMenuInput(BaseModel):
+    categories: List[str] = ["avondeten"]
+    exclude: List[str] = []  # gerechten die niet passen (bijv. allergieën, die kent alleen het apparaat)
+    overwrite: bool = False
+
+
+@api_router.post("/camps/{camp_id}/auto-menu")
+async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_current_user)):
+    # Premium: lege maaltijden vullen met gerechten waarvan nu veel ingrediënten in de aanbieding zijn
+    await require_premium(user)
+    camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+    cats = [c for c in data.categories if c in MEAL_CATEGORIES]
+    if not cats:
+        raise HTTPException(status_code=400, detail="Kies minstens één maaltijd")
+    exclude = set(data.exclude[:2000])
+    dishes = await db.dishes.find({"deleted_at": None, "category": {"$in": cats}, "online": {"$ne": True}, "camp_id": None,
+                                   "$or": [{"is_standard": True}, {"owner_id": user["user_id"]}]}, {"_id": 0}).to_list(2000)
+    dishes = [d for d in dishes if d["dish_id"] not in exclude and d.get("ingredients")]
+    pids = list({i["product_id"] for d in dishes for i in d["ingredients"] if i.get("product_id")})
+    on_promo = set()
+    async for p in db.products.find({"product_id": {"$in": pids}, "deleted_at": None}, {"_id": 0}):
+        if _hist_now(p)[1] is not None:
+            on_promo.add(p["product_id"])
+
+    def score(d):
+        hits = sum(1 for i in d["ingredients"] if i.get("product_id") in on_promo)
+        return hits + random.random() * 0.9  # bij gelijke stand wat afwisseling
+
+    used = {did for day in camp.get("days", []) for ids in (day.get("meals") or {}).values() for did in ids}
+    filled, promo_dishes = 0, set()
+    days = camp.get("days", [])
+    for cat in cats:
+        pool = sorted((d for d in dishes if d["category"] == cat), key=score, reverse=True)
+        if not pool:
+            continue
+        fresh = [d for d in pool if d["dish_id"] not in used] or pool
+        k = 0
+        for day in days:
+            meals = day.setdefault("meals", {})
+            if meals.get(cat) and not data.overwrite:
+                continue
+            pick = fresh[k % len(fresh)]
+            k += 1
+            meals[cat] = [pick["dish_id"]]
+            used.add(pick["dish_id"])
+            filled += 1
+            if any(i.get("product_id") in on_promo for i in pick["ingredients"]):
+                promo_dishes.add(pick["name"])
+    if filled:
+        await db.camps.update_one({"camp_id": camp_id}, {"$set": {"days": days}})
+    updated = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0})
+    return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes)}
 
 
 @api_router.delete("/camps/{camp_id}")
