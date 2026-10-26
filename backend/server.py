@@ -3540,6 +3540,19 @@ async def _warm_search() -> None:
                 if key not in _search_cache:
                     _search_cache[key] = await asyncio.to_thread(_run_search, docs, "", "", aisle, None, "", "", False, False, "", store)
                 await asyncio.sleep(0.2)
+        for pq in [x for x in os.environ.get("SEARCH_PROBE", "").split(",") if x.strip()]:
+            # Controle zoekresultaten in de logs (SEARCH_PROBE=brood,kaas)
+            for src in ("Dirk", "Albert Heijn", "Jumbo"):
+                res = (await asyncio.to_thread(_run_search, docs, pq, src, "", None, "", "", False, False, "", src))[0][:15]
+                logger.info("PROBE %s %s: %s", pq, src, [(d["name"], d.get("brand"), d.get("subcategory"),
+                                                         round(_food_penalty(d, 0, _norm_text(pq).split()), 1)) for d in res])
+        if os.environ.get("SEARCH_PROBE"):
+            for src in ("Dirk", "Albert Heijn", "Jumbo"):
+                pool = [d for d in docs if d.get("_src") == src and d.get("aisle") == "Brood, beleg & koek"]
+                subs: Dict[str, list] = {}
+                for d in pool:
+                    subs.setdefault(d.get("subcategory") or "-", []).append(d["name"])
+                logger.info("PROBE soorten %s: %s", src, {k: (len(v), v[:4]) for k, v in sorted(subs.items(), key=lambda kv: -len(kv[1]))[:25]})
     except Exception as e:
         logger.info("Producten klaarzetten: %r", e)
 
