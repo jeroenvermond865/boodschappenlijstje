@@ -13,7 +13,8 @@ import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Style = "vertrouwd" | "mix" | "nieuw";
-type Prefs = { categories?: MealCategory[]; style?: Style; diet?: string; store?: string; cook_twice?: boolean; cheap?: boolean; promos?: boolean; prefer?: string[]; avoid?: string[] };
+type Kind = "gewoon" | "recepten" | "alles";
+type Prefs = { categories?: MealCategory[]; style?: Style; diet?: string; store?: string; stores?: string[]; kind?: Kind; cook_twice?: boolean; cheap?: boolean; promos?: boolean; prefer?: string[]; avoid?: string[] };
 
 const STYLES: { key: Style; label: string; sub: string; icon: string }[] = [
   { key: "vertrouwd", label: "Vertrouwd", sub: "Wat je vaker eet", icon: "home-heart" },
@@ -21,9 +22,15 @@ const STYLES: { key: Style; label: string; sub: string; icon: string }[] = [
   { key: "nieuw", label: "Iets nieuws", sub: "Gerechten die je nog niet had", icon: "star-shooting-outline" },
 ];
 
-// Recepten van welke winkel? Standaard je eigen supermarkt
+// Soort gerechten: gewone maaltijden, uitgebreide recepten van de winkels, of allebei
+const KINDS: { key: Kind; label: string; sub: string; icon: string }[] = [
+  { key: "gewoon", label: "Gewoon en betaalbaar", sub: "Brood met beleg, stamppot, pasta, nasi", icon: "bread-slice-outline" },
+  { key: "recepten", label: "Uitgebreide recepten", sub: "Recepten van de supermarkten", icon: "chef-hat" },
+  { key: "alles", label: "Allebei", sub: "Gewone maaltijden en recepten door elkaar", icon: "silverware-fork-knife" },
+];
+
+// Recepten van welke winkels? Je eigen supermarkt staat altijd aan als je dit opent
 const STORES: { key: string; label: string }[] = [
-  { key: "", label: "Alle winkels" },
   { key: "ah", label: "Albert Heijn" },
   { key: "jumbo", label: "Jumbo" },
   { key: "dirk", label: "Dirk" },
@@ -61,7 +68,9 @@ export function MenuWizard({
   const [style, setStyle] = useState<Style>("mix");
   const [dietPick, setDietPick] = useState("");
   const { user } = useAuth();
-  const [store, setStore] = useState(storeKey(user?.store));
+  const own = storeKey(user?.store);
+  const [stores, setStores] = useState<string[]>(own ? [own] : []);
+  const [kind, setKind] = useState<Kind>("alles");
   const [cheap, setCheap] = useState(false);
   const [twice, setTwice] = useState(true);
   const [promos, setPromos] = useState(true);
@@ -80,7 +89,9 @@ export function MenuWizard({
         if (p.categories?.length) setCats(p.categories);
         if (p.style) setStyle(p.style);
         setDietPick(p.diet ?? "");
-        setStore(p.store !== undefined ? p.store : storeKey(user?.store));
+        const saved = p.stores ?? (p.store ? [p.store] : []);
+        setStores([...new Set([...(own ? [own] : []), ...saved])]);
+        setKind(p.kind ?? "alles");
         setCheap(!!p.cheap);
         setTwice(p.cook_twice ?? true);
         setPromos(p.promos ?? true);
@@ -110,7 +121,8 @@ export function MenuWizard({
           days: allDays ? null : pickDays,
           style,
           diet: dietPick,
-          store,
+          stores,
+          kind,
           cheap,
           promos,
           cook_twice: twice,
@@ -199,12 +211,34 @@ export function MenuWizard({
               </Pressable>
             ))}
 
-            <Text style={styles.head}>Recepten van</Text>
-            <View style={styles.chips}>
-              {STORES.map((s) => (
-                <Chip key={s.key || "all"} on={store === s.key} label={s.label} onPress={() => setStore(s.key)} />
-              ))}
-            </View>
+            <Text style={styles.head}>Soort gerechten</Text>
+            {KINDS.map((k) => (
+              <Pressable key={k.key} onPress={() => setKind(k.key)} style={[styles.style, kind === k.key && styles.styleOn]}>
+                <Icon name={k.icon} size={20} color={kind === k.key ? colors.brandPrimary : colors.muted} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowText}>{k.label}</Text>
+                  <Text style={styles.sub}>{k.sub}</Text>
+                </View>
+                {kind === k.key ? <Icon name="check" size={18} color={colors.brandPrimary} /> : null}
+              </Pressable>
+            ))}
+
+            {kind !== "gewoon" ? (
+              <>
+                <Text style={styles.head}>Recepten van</Text>
+                <View style={styles.chips}>
+                  {STORES.map((s) => (
+                    <Chip
+                      key={s.key}
+                      on={stores.includes(s.key)}
+                      label={s.label}
+                      onPress={() => setStores((v) => (v.includes(s.key) ? v.filter((x) => x !== s.key) : [...v, s.key]))}
+                    />
+                  ))}
+                </View>
+                <Text style={styles.sub}>Zet een of meer winkels aan. Staat er geen aan, dan zoeken we bij alle winkels.</Text>
+              </>
+            ) : null}
 
             <Text style={styles.head}>Voorkeuren</Text>
             <View style={styles.chips}>

@@ -916,7 +916,7 @@ async def logout(authorization: Optional[str] = Header(None)):
 # Dishes
 # ---------------------------------------------------------------------------
 # Vlees en vis in een gerecht: daar hebben vega-eters een vervanger voor nodig
-_MEAT_RE = re.compile(r"kip|gehakt|rookworst|worst|spek|\bham\b|hamlap|beenham|bacon|biefstuk|varken|rund|kalkoen|kalfs|lams|\blam\b|"
+_MEAT_RE = re.compile(r"kip|gehakt|rookworst|worst|spek|\bham\b|hamlap|beenham|achterham|schouderham|hamblokjes|hamreepjes|bacon|biefstuk|varken|rund|kalkoen|kalfs|lams|\blam\b|"
                       r"hamburger|burger|schnitzel|shoarma|gyros|saucijs|slavink|frikandel|kroket|salami|chorizo|pancetta|prosciutto|"
                       r"filet americain|ossenhaas|entrecote|steak|stoofvlees|riblap|sukade|vlees|karbonade|speklap|braadworst|knakworst|"
                       r"\bvis\b|visstick|zalm|tonijn|kabeljauw|pangasius|koolvis|tilapia|garnaal|garnalen|kibbeling|lekkerbek|makreel|haring|mosselen|inktvis|ansjovis|surimi")
@@ -1429,16 +1429,18 @@ class AutoMenuInput(BaseModel):
     days: Optional[List[int]] = None  # alleen deze dagen (index); leeg = alle dagen
     style: str = "mix"  # vertrouwd (wat je vaker eet), mix, nieuw (iets nieuws proberen)
     diet: str = ""  # "", vega, vegan
-    store: str = ""  # recepten van deze winkel (ah, jumbo, dirk); leeg = alle winkels
+    store: str = ""  # oud: één winkel (ah, jumbo, dirk)
+    stores: List[str] = []  # recepten van deze winkels (ah, jumbo, dirk); leeg = alle winkels
     cook_twice: bool = True  # kleine groep: één keer koken voor twee dagen (lunch en avondeten), dan blijft er minder over
     cheap: bool = False  # goedkope gerechten eerst
+    kind: str = "alles"  # gewoon (brood met beleg, stamppot, pasta), recepten (uitgebreid van de winkels) of alles
     promos: bool = True  # gerechten met aanbiedingen eerst
     prefer: List[str] = []  # hier hebben we zin in (woorden in gerecht of ingrediënten)
     avoid: List[str] = []  # liever niet
     remember: bool = True
 
 
-_MENU_PREF_KEYS = ("categories", "style", "diet", "store", "cook_twice", "cheap", "promos", "prefer", "avoid")
+_MENU_PREF_KEYS = ("categories", "style", "diet", "store", "stores", "cook_twice", "cheap", "kind", "promos", "prefer", "avoid")
 
 
 @api_router.get("/menu-prefs")
@@ -1494,12 +1496,20 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     avoid = [w for w in (_norm_text(x) for x in data.avoid[:30]) if w]
     prefer = [w for w in (_norm_text(x) for x in data.prefer[:30]) if w]
 
-    store = data.store if data.store in _RECIPE_SOURCES else ""
+    stores = [x for x in dict.fromkeys(data.stores or ([data.store] if data.store else [])) if x in _RECIPE_SOURCES]
+    if len(stores) == len(_RECIPE_SOURCES):
+        stores = []  # alle winkels aan
+    kind = data.kind if data.kind in ("gewoon", "recepten") else "alles"
 
     def fits(d):
-        # Gekozen winkel: geen recepten van een andere winkel (je eigen gerechten en standaardgerechten wel)
+        # Gekozen winkels: geen recepten van een andere winkel (je eigen gerechten en de gewone gerechten wel)
         src = (d.get("source") or {}).get("store")
-        if store and src and src != store:
+        if stores and src and src not in stores:
+            return False
+        # Soort gerechten: alleen gewone maaltijden, of juist de uitgebreide recepten van de winkels
+        if kind == "gewoon" and src:
+            return False
+        if kind == "recepten" and d.get("basic"):
             return False
         if avoid and any(w in text_of(d) for w in avoid):
             return False
@@ -1526,15 +1536,17 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         have = sum(1 for d in dishes if d["category"] == cat and d["dish_id"] not in keep)
         want = min(slots, MENU_MAX_DIFFERENT)
         need = want - have if data.style != "nieuw" else want - min(have, slots // 2)
-        if need <= 0:
+        if need <= 0 or kind == "gewoon":
             continue
         if added_online >= MENU_ONLINE_MAX or time.time() - t_start > MENU_ONLINE_SECONDS:
             break
-        try:
-            found = await _menu_recipes(cat, prefer, avoid, need * 3, store)
-        except Exception as e:
-            logger.warning("Menu aanvullen met recepten: %r", e)
-            found = []
+        found = []
+        for st in stores or [""]:
+            try:
+                found += await _menu_recipes(cat, prefer, avoid, max(3, need * 3 // max(1, len(stores))), st)
+            except Exception as e:
+                logger.warning("Menu aanvullen met recepten: %r", e)
+        random.shuffle(found)
         have_rec = {(d.get("source") or {}).get("recipe_id") for d in dishes}
         picks = [r for r in found if r["id"] not in have_rec][: need + 3]
 
@@ -1609,6 +1621,8 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
             s += 3
         if data.cheap and costs.get(did):
             s += 2.5 * (1 - (costs[did] - lo) / ((hi - lo) or 1))
+        if data.cheap and d.get("basic"):
+            s += 1  # gewone maaltijden (brood met beleg, stamppot) zijn meestal goedkoper dan uitgebreide recepten
         return s + random.random() * 0.9  # bij gelijke stand wat afwisseling
 
     used = set(keep)
@@ -8659,6 +8673,70 @@ async def to_own_domain(request, call_next):
 # ---------------------------------------------------------------------------
 # Startup: indexes + seed standard dishes
 # ---------------------------------------------------------------------------
+# Gewone maaltijden zoals de meeste mensen thuis eten: (naam, maaltijd, [(ingrediënt, eenheid, per volwassene, per kind, afdeling)])
+_AF, _AV, _AB, _AZ, _AM, _AD = "Aardappelen, groente & fruit", "Voorraadkast", "Brood, beleg & koek", "Zuivel & kaas", "Vlees & vis", "Diepvries"
+_BROOD = ("Volkoren brood", "gram", 105, 70, _AB)  # 3 of 2 boterhammen
+_BOTER = ("Roomboter", "gram", 10, 7, _AZ)
+BASIC_DISHES = [
+    ("Boterham met kaas", "ontbijt", [_BROOD, _BOTER, ("Jong belegen kaas plakken", "plak", 2, 1, _AZ)]),
+    ("Boterham met hagelslag", "ontbijt", [_BROOD, _BOTER, ("Hagelslag melk", "gram", 25, 20, _AB)]),
+    ("Boterham met chocoladepasta", "ontbijt", [_BROOD, ("Chocoladepasta", "gram", 25, 20, _AB)]),
+    ("Boterham met pindakaas", "ontbijt", [_BROOD, ("Pindakaas", "gram", 20, 15, _AB)]),
+    ("Boterham met jam", "ontbijt", [_BROOD, _BOTER, ("Aardbeienjam", "gram", 25, 20, _AB)]),
+    ("Yoghurt met muesli", "ontbijt", [("Halfvolle yoghurt", "ml", 200, 150, _AZ), ("Muesli", "gram", 50, 35, _AV)]),
+    ("Havermout met banaan", "ontbijt", [("Havermout", "gram", 50, 35, _AV), ("Halfvolle melk", "ml", 250, 200, _AZ), ("Bananen", "stuks", 0.5, 0.5, _AF)]),
+    ("Krentenbollen met boter", "ontbijt", [("Krentenbollen", "stuks", 2, 1, _AB), _BOTER]),
+    ("Cornflakes met melk", "ontbijt", [("Cornflakes", "gram", 40, 30, _AV), ("Halfvolle melk", "ml", 200, 150, _AZ)]),
+    ("Broodje ham-kaas", "lunch", [("Bruine bolletjes", "stuks", 2, 1, _AB), _BOTER, ("Achterham", "plak", 2, 1, _AM),
+                                   ("Jong belegen kaas plakken", "plak", 2, 1, _AZ)]),
+    ("Boterham met kipfilet", "lunch", [_BROOD, _BOTER, ("Gerookte kipfilet", "plak", 3, 2, _AM)]),
+    ("Tosti ham-kaas", "lunch", [("Volkoren brood", "gram", 70, 70, _AB), ("Achterham", "plak", 1, 1, _AM),
+                                 ("Jong belegen kaas plakken", "plak", 2, 1, _AZ)]),
+    ("Broodje gezond", "lunch", [("Bruine bolletjes", "stuks", 2, 1, _AB), ("Jong belegen kaas plakken", "plak", 2, 1, _AZ),
+                                 ("Achterham", "plak", 1, 1, _AM), ("Komkommer", "stuks", 0.15, 0.1, _AF), ("Tomaten", "stuks", 0.5, 0.5, _AF),
+                                 ("IJsbergsla", "gram", 15, 10, _AF)]),
+    ("Boterham met ei", "lunch", [_BROOD, _BOTER, ("Eieren", "stuks", 1, 1, _AZ)]),
+    ("Crackers met smeerkaas", "lunch", [("Volkoren crackers", "gram", 40, 25, _AB), ("Smeerkaas", "gram", 30, 20, _AZ)]),
+    ("Tomatensoep met stokbrood", "lunch", [("Tomatensoep", "ml", 300, 200, _AV), ("Afbakstokbrood", "stuks", 0.25, 0.15, _AB)]),
+    ("Pannenkoeken met stroop", "lunch", [("Pannenkoekenmix", "gram", 100, 75, _AV), ("Halfvolle melk", "ml", 200, 150, _AZ),
+                                          ("Eieren", "stuks", 1, 0.5, _AZ), ("Schenkstroop", "gram", 20, 20, _AV)]),
+    ("Spaghetti bolognese", "avondeten", [("Spaghetti", "gram", 100, 70, _AV), ("Rundergehakt", "gram", 100, 60, _AM),
+                                          ("Pastasaus", "ml", 125, 80, _AV), ("Uien", "stuks", 0.25, 0.15, _AF)]),
+    ("Macaroni met ham en kaas", "avondeten", [("Macaroni", "gram", 100, 70, _AV), ("Hamblokjes", "gram", 75, 50, _AM),
+                                               ("Pastasaus", "ml", 125, 80, _AV), ("Geraspte kaas", "gram", 30, 20, _AZ)]),
+    ("Boerenkoolstamppot met rookworst", "avondeten", [("Kruimige aardappelen", "gram", 250, 150, _AF), ("Boerenkool", "gram", 200, 120, _AF),
+                                                       ("Rookworst", "gram", 100, 60, _AM), ("Halfvolle melk", "ml", 50, 30, _AZ)]),
+    ("Hutspot met gehaktbal", "avondeten", [("Kruimige aardappelen", "gram", 250, 150, _AF), ("Hutspotgroente", "gram", 200, 120, _AF),
+                                            ("Gehaktballen", "stuks", 1, 1, _AM)]),
+    ("Aardappelen, sperziebonen en kipfilet", "avondeten", [("Vastkokende aardappelen", "gram", 250, 150, _AF),
+                                                             ("Sperziebonen", "gram", 150, 100, _AF), ("Kipfilet", "gram", 125, 75, _AM)]),
+    ("Nasi goreng", "avondeten", [("Rijst", "gram", 75, 50, _AV), ("Nasi bami groente", "gram", 150, 100, _AF),
+                                  ("Kipreepjes", "gram", 100, 60, _AM), ("Nasi kruiden", "gram", 10, 7, _AV)]),
+    ("Bami goreng", "avondeten", [("Mie", "gram", 75, 50, _AV), ("Nasi bami groente", "gram", 150, 100, _AF),
+                                  ("Kipreepjes", "gram", 100, 60, _AM), ("Ketjap manis", "ml", 15, 10, _AV)]),
+    ("Wraps met gehakt", "avondeten", [("Wraps", "stuks", 2, 1, _AB), ("Rundergehakt", "gram", 100, 60, _AM), ("Taco kruiden", "gram", 10, 7, _AV),
+                                       ("IJsbergsla", "gram", 30, 20, _AF), ("Geraspte kaas", "gram", 30, 20, _AZ)]),
+    ("Pizza uit de oven", "avondeten", [("Diepvriespizza", "stuks", 0.5, 0.33, _AD)]),
+    ("Hamburgers met sla", "avondeten", [("Hamburgers", "stuks", 1, 1, _AM), ("Hamburgerbroodjes", "stuks", 1, 1, _AB),
+                                         ("IJsbergsla", "gram", 20, 10, _AF), ("Ketchup", "ml", 20, 15, _AV)]),
+    ("Patat met frikandel", "avondeten", [("Friet", "gram", 200, 125, _AD), ("Frikandellen", "stuks", 2, 1, _AD),
+                                          ("Mayonaise", "ml", 25, 15, _AV), ("Appelmoes", "gram", 100, 75, _AV)]),
+    ("Kip met rijst en broccoli", "avondeten", [("Rijst", "gram", 75, 50, _AV), ("Broccoli", "gram", 150, 100, _AF),
+                                                ("Kipfilet", "gram", 125, 75, _AM)]),
+    ("Vissticks met puree en doperwten", "avondeten", [("Vissticks", "stuks", 4, 3, _AD), ("Kruimige aardappelen", "gram", 250, 150, _AF),
+                                                        ("Doperwten", "gram", 100, 75, _AD)]),
+    ("Erwtensoep met roggebrood", "avondeten", [("Erwtensoep", "ml", 400, 250, _AV), ("Roggebrood", "gram", 40, 20, _AB)]),
+    ("Pasta pesto met groente", "avondeten", [("Penne", "gram", 100, 70, _AV), ("Groene pesto", "gram", 40, 25, _AV),
+                                              ("Cherrytomaten", "gram", 75, 50, _AF), ("Spinazie", "gram", 75, 50, _AF)]),
+    ("Appel of mandarijn", "snacks", [("Appels", "stuks", 1, 1, _AF)]),
+    ("Plak ontbijtkoek", "snacks", [("Ontbijtkoek", "gram", 30, 25, _AB)]),
+    ("Biscuitjes", "snacks", [("Biscuits", "gram", 20, 15, _AB)]),
+    ("Chips", "snacks", [("Chips naturel", "gram", 30, 20, "Snacks & snoep")]),
+    ("Groentelasagne", "avondeten", [("Lasagnebladen", "gram", 75, 50, _AV), ("Pastasaus", "ml", 150, 100, _AV),
+                                     ("Courgette", "stuks", 0.3, 0.2, _AF), ("Geraspte kaas", "gram", 40, 25, _AZ)]),
+]
+
+
 STANDARD_DISHES = [
     ("Brood met beleg", "ontbijt", [
         ("Boterhammen", "stuks", 3, 2, "Brood & Banket"),
@@ -8890,6 +8968,17 @@ async def startup():
             })
         await db.dishes.insert_many(docs)
         logger.info("Seeded %d standard dishes", len(docs))
+
+    # Gewone, betaalbare gerechten voor iedereen (eenmalig; producten zoekt de boodschappenlijst per winkel op naam)
+    if not await db.settings.find_one({"key": "basic_dishes_v1"}):
+        have = {d["name"] async for d in db.dishes.find({"basic": True}, {"_id": 0, "name": 1})}
+        docs = [{"dish_id": f"dish_{uuid.uuid4().hex[:12]}", "name": name, "category": category, "is_standard": True, "basic": True,
+                 "owner_id": None, "ingredients": [{"name": n, "unit": u, "qty_adult": a, "qty_child": c, "aisle": ai} for (n, u, a, c, ai) in ings],
+                 "deleted_at": None, "created_at": now_utc()} for name, category, ings in BASIC_DISHES if name not in have]
+        if docs:
+            await db.dishes.insert_many(docs)
+        await db.settings.update_one({"key": "basic_dishes_v1"}, {"$set": {"value": True, "at": now_utc()}}, upsert=True)
+        logger.info("%d gewone gerechten toegevoegd", len(docs))
 
     await db.products.create_index("product_id", unique=True)
     await db.products.create_index("barcode")
