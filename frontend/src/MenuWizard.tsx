@@ -1,7 +1,8 @@
 // Weekmenu automatisch invullen (Premium): eerst je voorkeuren kiezen, dan vult de app de maaltijden.
 // Houdt rekening met wat je eerder at, je smaak, aanbiedingen op je inkoopdag en je allergieën.
 import { useEffect, useState } from "react";
-import { Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { Button, Icon } from "@/src/components/ui";

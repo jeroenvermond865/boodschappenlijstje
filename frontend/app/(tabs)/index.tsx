@@ -163,23 +163,25 @@ export default function HomeScreen() {
         ))}
       </View>
 
-      {/* Premium: voorraad en besparing */}
-      {premium ? (
-        <View style={[styles.pad, styles.actions]}>
-          <Pressable testID="home-pantry" onPress={() => router.push("/pantry")} style={styles.premTile}>
-            <Icon name="fridge-outline" size={22} color={GOLD.icon} />
-            <Text style={styles.premTileText}>Voorraadkast</Text>
-          </Pressable>
-          <Pressable testID="home-savings" onPress={() => router.push("/savings")} style={styles.premTile}>
-            <Icon name="piggy-bank-outline" size={22} color={GOLD.icon} />
-            <Text style={styles.premTileText}>Bespaaroverzicht</Text>
-          </Pressable>
-          <Pressable testID="home-alerts" onPress={() => router.push("/alerts")} style={styles.premTile}>
-            <Icon name="bell-ring-outline" size={22} color={GOLD.icon} />
-            <Text style={styles.premTileText}>Prijsalarmen</Text>
-          </Pressable>
-        </View>
-      ) : null}
+      {/* Besparing (voor iedereen), voorraad en prijsalarm (Premium) */}
+      <View style={[styles.pad, styles.actions]}>
+        <Pressable testID="home-savings" onPress={() => router.push("/savings")} style={[styles.premTile, styles.stdTile]}>
+          <Icon name="piggy-bank-outline" size={22} color={colors.brandPrimary} />
+          <Text style={[styles.premTileText, { color: colors.onSurface }]}>Bespaaroverzicht</Text>
+        </Pressable>
+        {premium ? (
+          <>
+            <Pressable testID="home-pantry" onPress={() => router.push("/pantry")} style={styles.premTile}>
+              <Icon name="fridge-outline" size={22} color={GOLD.icon} />
+              <Text style={styles.premTileText}>Voorraadkast</Text>
+            </Pressable>
+            <Pressable testID="home-alerts" onPress={() => router.push("/alerts")} style={styles.premTile}>
+              <Icon name="bell-ring-outline" size={22} color={GOLD.icon} />
+              <Text style={styles.premTileText}>Prijsalarmen</Text>
+            </Pressable>
+          </>
+        ) : null}
+      </View>
 
       {/* Admin-taken */}
       {todoRows.length ? (
@@ -337,6 +339,7 @@ const useStyles = makeStyles((colors) => ({
   campBtnGhostText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onBrandPrimary },
   emptyCamp: { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.brandTertiary },
   actions: { flexDirection: "row", gap: 10 },
+  stdTile: { backgroundColor: colors.surface, borderColor: colors.border },
   premTile: { flex: 1, alignItems: "center", gap: 6, paddingVertical: 12, borderRadius: 14, backgroundColor: GOLD.bg, borderWidth: 1, borderColor: GOLD.border },
   premTileText: { fontSize: 12, fontFamily: fonts.semibold, color: GOLD.text, textAlign: "center" },
   action: { flex: 1, alignItems: "center", gap: 6, paddingVertical: 12, paddingHorizontal: 4, borderRadius: 16, borderWidth: 1, borderColor: colors.border },

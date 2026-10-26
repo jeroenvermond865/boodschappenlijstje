@@ -1,7 +1,8 @@
 // "Waar is je lijst het goedkoopst?": op de startpagina en bij je boodschappenlijst.
 // Per winkel wat je lijst kost (met de echte hoeveelheden), zelf producten wisselen, en alles bij één winkel halen.
 import { useState } from "react";
-import { ActivityIndicator, Image, Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -143,7 +144,12 @@ export function CompareCard({
     <>
       {pending ? (
         <View style={{ gap: 10 }}>
-          {noTitle ? null : <Text style={styles.section}>Waar is je lijst het goedkoopst?</Text>}
+          {noTitle ? null : (
+            <View style={{ gap: 2 }}>
+              <Text style={styles.section}>Waar is je lijst het goedkoopst?</Text>
+              <Text style={styles.small}>Over je eerstvolgende lijstje: "{campName}"</Text>
+            </View>
+          )}
           <View style={[styles.compareCard, { flexDirection: "row", alignItems: "center", gap: 10 }]}>
             <ActivityIndicator color={colors.brandPrimary} />
             <Text style={styles.small}>We zoeken je producten op bij AH, Jumbo en Dirk…</Text>
@@ -152,7 +158,12 @@ export function CompareCard({
       ) : null}
       {compare.length ? (
         <View style={{ gap: 10 }}>
-          {noTitle ? null : <Text style={styles.section}>Waar is je lijst het goedkoopst?</Text>}
+          {noTitle ? null : (
+            <View style={{ gap: 2 }}>
+              <Text style={styles.section}>Waar is je lijst het goedkoopst?</Text>
+              <Text style={styles.small}>Over je eerstvolgende lijstje: "{campName}"</Text>
+            </View>
+          )}
           <View style={styles.compareCard}>
             {compare.map((c) => (
               <Pressable key={c.store} testID={`compare-${c.store}`} onPress={() => setOpenStore((v) => (v === c.store ? null : c.store))} style={{ gap: 4 }}>
@@ -406,5 +417,5 @@ const useStyles = makeStyles((colors) => ({
   barTrack: { height: 8, borderRadius: 4, backgroundColor: colors.surfaceTertiary, overflow: "hidden" },
   bar: { height: 8, borderRadius: 4, backgroundColor: colors.brandPrimary },
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
-  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 10, width: "100%", maxWidth: 640, alignSelf: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "92%", padding: 16, gap: 10, width: "100%", maxWidth: 640, alignSelf: "center" },
 }));

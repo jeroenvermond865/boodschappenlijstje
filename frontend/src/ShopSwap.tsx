@@ -2,7 +2,8 @@
 // Lukt scannen niet (geen camera of geen toestemming), dan typ je de cijfers. Is de barcode onbekend, dan zoek je het product
 // zelf in alle winkels; de barcode wordt dan voorgesteld voor dat product (een beheerder keurt het goed).
 import { useState } from "react";
-import { ActivityIndicator, Image, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -237,7 +238,7 @@ export function ShopSwapSheet({
 
 const useStyles = makeStyles((colors) => ({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center" },
-  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 10 },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "92%", padding: 16, gap: 10 },
   head: { flexDirection: "row", alignItems: "center", gap: 10 },
   title: { flex: 1, fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   search: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surfaceSecondary, borderRadius: 12, paddingHorizontal: 12, minHeight: 44 },

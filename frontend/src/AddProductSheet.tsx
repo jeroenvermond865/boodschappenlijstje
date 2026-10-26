@@ -1,7 +1,8 @@
 // Vanaf een product (bijv. uit de aanbiedingen) meteen op een lijstje of aan een gerecht toevoegen.
 // Beheerders kunnen het ook aan standaardgerechten (app-gerechten) toevoegen.
 import { useState } from "react";
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -196,7 +197,7 @@ function AddSheet({ mode, onClose, productId, productName }: { mode: "camp" | "d
 
 const useStyles = makeStyles((colors) => ({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center" },
-  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 18 },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "92%", padding: 18 },
   title: { fontSize: 20, fontFamily: fonts.bold, color: colors.onSurface },
   body: { fontSize: 15, fontFamily: fonts.regular, color: colors.onSurface },
   muted: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },

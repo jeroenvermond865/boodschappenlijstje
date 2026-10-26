@@ -1,7 +1,6 @@
 import React from "react";
 import {
   ActivityIndicator,
-  Modal,
   Pressable,
   ScrollView,
   StyleProp,
@@ -11,6 +10,7 @@ import {
   View,
   ViewStyle,
 } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useState } from "react";
 import * as Haptics from "expo-haptics";
 import MaterialDesignIcons from "@react-native-vector-icons/material-design-icons";
@@ -275,7 +275,7 @@ const useStyles = makeStyles((colors) => ({
   btnSecondary: { backgroundColor: colors.brandSecondary },
   btnGhost: { backgroundColor: "transparent", borderWidth: 1.5, borderColor: colors.borderStrong },
   btnDisabled: { opacity: 0.5 },
-  btnPressed: { opacity: 0.85 },
+  btnPressed: { opacity: 0.85, transform: [{ scale: 0.97 }] },
   btnText: { fontSize: 16, fontFamily: fonts.semibold },
 
   stepper: {

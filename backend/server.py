@@ -212,7 +212,8 @@ def public_user(doc: dict) -> dict:
         "phone": doc.get("phone"),
         "picture": doc.get("picture"),
         "role": doc.get("role", DEFAULT_ROLE),
-        "store": doc.get("store", DEFAULT_STORE),
+        # Geen standaardwinkel tonen: een nieuwe gebruiker heeft nog geen keuze gemaakt
+        "store": doc.get("store"),
         "email_opt_out": doc.get("email_opt_out", False),
         "terms_ok": doc.get("terms_version") == TERMS_VERSION,
         "onboarded": bool(doc.get("onboarded_at")),
@@ -2396,33 +2397,55 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
         for d in per_day:
             priced(d["by_store"])
     await asyncio.to_thread(price_all)
-    # Voor het bespaaroverzicht: per lijst onthouden wat de aanbiedingen schelen
-    sv = {"promo": round(sum(b.get("saving") or 0 for b in by_store), 2), "total": round(sum(b.get("total") or 0 for b in by_store), 2)}
-    old = camp.get("savings") or {}
-    if (old.get("promo"), old.get("total")) != (sv["promo"], sv["total"]):
-        await db.camps.update_one({"camp_id": camp_id}, {"$set": {"savings": {**sv, "at": now_utc()}}})
-    # Premium: wat je al in je voorraadkast hebt, zetten we erbij
-    has_pantry = False
-    if user.get("premium"):
-        pantry = await _pantry_index(user["user_id"])
-        if pantry:
-            for b in by_store + general + [x for d in per_day for x in d["by_store"]]:
-                for it in b["flat"]:
-                    have = _pantry_have(pantry, it["name"], it.get("unit") or "")
-                    if have:
+    # Voorraadkast (Premium): wat je al in huis hebt, zetten we erbij. Zonder Premium rekenen we alleen uit wat het had gescheeld
+    is_premium = bool(user.get("premium"))
+    has_pantry, pantry_value = False, 0.0
+    pantry = await _pantry_index(user["user_id"])
+    if pantry:
+        for b in by_store + general + [x for d in per_day for x in d["by_store"]]:
+            for it in b["flat"]:
+                have = _pantry_have(pantry, it["name"], it.get("unit") or "")
+                if have:
+                    if b in by_store and it.get("price") and it.get("qty"):
+                        pantry_value += it["price"] * min(1.0, have / float(it["qty"]))
+                    if is_premium:
                         it["in_pantry"] = round(have, 2)
                         has_pantry = True
     # Premium: ga je later boodschappen doen (bijv. volgende week)? Dan zie je welke producten op die dag in de aanbieding zijn
-    shop_day, promo_then = _first_shop_day(camp), 0
-    if user.get("premium") and shop_day and shop_day > _iso_day(now_utc().isoformat()):
+    shop_day, promo_then, then_value = _first_shop_day(camp), 0, 0.0
+    if shop_day and shop_day > _iso_day(now_utc().isoformat()):
         await _folders_fresh(wait=False)
         for b in by_store:
             for it in b["flat"]:
                 p = prods.get(it.get("product_id") or "")
                 then = _promo_on_day(p, shop_day) if p else None
                 if then and (_promo_public(p, it.get("pack_price") or 0)[0] or {}).get("label") != then["label"]:
-                    it["promo_then"] = then
-                    promo_then += 1
+                    nxt = _promo_public(p, it.get("pack_price") or 0)[1]
+                    if nxt and nxt.get("label") == then["label"]:
+                        then_value += _deal_saving(nxt, it.get("pack_price") or 0, it.get("packs") or 1)
+                    if is_premium:
+                        it["promo_then"] = then
+                        promo_then += 1
+    # Voor het bespaaroverzicht: per lijst onthouden wat de app scheelt
+    # Standaard: aanbiedingen en slim kiezen waar je wat haalt. Premium: voorraadkast en acties op je boodschappendag.
+    smart = 0.0
+    for b in by_store:
+        for it in b["flat"]:
+            w = it.get("was")
+            if w and (w.get("price") or 0) > (it.get("price") or 0):
+                smart += float(w["price"]) - float(it["price"])
+    if shop_store and shop_store != "split" and not _for_compare:
+        hit = next((v for k, v in _home_cache.items() if isinstance(k, tuple) and k[:2] == ("compare3", camp_id)), None)
+        rows = {r.get("store"): r for r in (hit[1] if hit else []) or []}
+        own, chosen = rows.get(primary_store), rows.get(shop_store)
+        if own and chosen and shop_store != primary_store:
+            smart += max(0.0, float(own.get("total_fair") or own.get("total") or 0) - float(chosen.get("total_fair") or chosen.get("total") or 0))
+    sv = {"promo": round(sum(b.get("saving") or 0 for b in by_store), 2), "smart": round(smart, 2),
+          "pantry": round(pantry_value, 2), "promo_day": round(then_value, 2),
+          "total": round(sum(b.get("total") or 0 for b in by_store), 2), "premium": is_premium}
+    old = camp.get("savings") or {}
+    if not _for_compare and any(old.get(k) != v for k, v in sv.items()):
+        await db.camps.update_one({"camp_id": camp_id}, {"$set": {"savings": {**sv, "at": now_utc()}}})
     return {
         "by_store": by_store,
         "general": general,
@@ -2534,7 +2557,11 @@ async def delete_pantry(item_id: str, user: dict = Depends(get_current_user)):
 def _promo_saving(p: dict, price: float, packs: int) -> float:
     # Wat een aanbieding je op dit aantal verpakkingen scheelt (lagere prijs, of bijv. 1+1 gratis als je er genoeg koopt)
     now_p, _ = _promo_public(p, price)
-    if not now_p:
+    return _deal_saving(now_p, price, packs) if now_p else 0.0
+
+
+def _deal_saving(now_p: dict, price: float, packs: int) -> float:
+    if not price:
         return 0.0
     regular = float(now_p.get("regular") or 0)
     pay = min(price, float(now_p.get("price") or price))
@@ -2551,8 +2578,11 @@ def _promo_saving(p: dict, price: float, packs: int) -> float:
 
 @api_router.get("/savings")
 async def savings_overview(user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    # Voor iedereen: wat de app je scheelt. Premium-delen (voorraadkast, acties op je boodschappendag) tellen alleen mee met Premium;
+    # zonder Premium laten we zien wat je er extra mee had kunnen besparen.
+    is_premium = bool(user.get("premium"))
     camps = await db.camps.find(camp_access_filter(user["user_id"]), {"_id": 0, "camp_id": 1, "name": 1, "start_date": 1, "created_at": 1, "savings": 1}).to_list(500)
+    keys = ("promo", "smart", "pantry", "promo_day", "total")
     months: Dict[str, dict] = {}
     for c in camps:
         sv = c.get("savings") or {}
@@ -2562,15 +2592,22 @@ async def savings_overview(user: dict = Depends(get_current_user)):
         m = (when or "")[:7]
         if not m:
             continue
-        row = months.setdefault(m, {"month": m, "saving": 0.0, "total": 0.0, "lists": []})
-        row["saving"] += sv.get("promo") or 0
-        row["total"] += sv.get("total") or 0
-        row["lists"].append({"id": c["camp_id"], "name": c.get("name"), "saving": sv.get("promo") or 0, "total": sv.get("total") or 0})
+        row = months.setdefault(m, {"month": m, "lists": [], **{k: 0.0 for k in keys}})
+        for k in keys:
+            row[k] += float(sv.get(k) or 0)
+        std = float(sv.get("promo") or 0) + float(sv.get("smart") or 0)
+        prem = float(sv.get("pantry") or 0) + float(sv.get("promo_day") or 0)
+        row["lists"].append({"id": c["camp_id"], "name": c.get("name"), "standard": round(std, 2), "premium": round(prem, 2),
+                             "saving": round(std + (prem if is_premium else 0), 2), "total": float(sv.get("total") or 0)})
     out = sorted(months.values(), key=lambda r: r["month"], reverse=True)[:12]
     for r in out:
-        r["saving"] = round(r["saving"], 2)
-        r["total"] = round(r["total"], 2)
-    return {"months": out, "saving": round(sum(r["saving"] for r in out), 2), "total": round(sum(r["total"] for r in out), 2)}
+        for k in keys:
+            r[k] = round(r[k], 2)
+        r["standard"] = round(r["promo"] + r["smart"], 2)
+        r["premium"] = round(r["pantry"] + r["promo_day"], 2)
+        r["saving"] = round(r["standard"] + (r["premium"] if is_premium else 0), 2)
+    tot = {k: round(sum(r[k] for r in out), 2) for k in keys + ("standard", "premium", "saving")}
+    return {"months": out, "is_premium": is_premium, **tot}
 
 
 @api_router.get("/camps/{camp_id}/budget")
@@ -3032,7 +3069,13 @@ async def premium_seen(user: dict = Depends(get_current_user)):
 async def admin_list_users(user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_users")
     docs = await db.users.find({"deleted_at": None}, {"_id": 0}).sort("created_at", 1).to_list(5000)
-    return {"users": [public_user(d) for d in docs]}
+
+    def iso(v):
+        return v.isoformat() if isinstance(v, datetime) else None
+
+    # Voor de beheerder: wanneer iemand de voorwaarden en privacyverklaring accepteerde, en welke versie
+    return {"users": [{**public_user(d), "terms_version": d.get("terms_version"), "terms_accepted_at": iso(d.get("terms_accepted_at")),
+                       "created_at": iso(d.get("created_at")), "last_seen_at": iso(d.get("last_seen_at"))} for d in docs]}
 
 
 class AdminUserUpdate(BaseModel):

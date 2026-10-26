@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Modal, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1098,7 +1099,7 @@ function DishPickerModal({
   return (
     <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
       <Pressable style={styles.modalBackdrop} onPress={onClose} />
-      <View style={[styles.sheet, { height: "88%", paddingHorizontal: 0, paddingBottom: insets.bottom + 12 }]}>
+      <View style={[styles.sheet, { height: "92%", paddingHorizontal: 0, paddingBottom: insets.bottom + 12 }]}>
         <View style={styles.sheetHandle} />
         <View style={[styles.sheetHeader, { paddingHorizontal: 16 }]}>
           <Text style={styles.sheetTitle}>{category ? CATEGORY_LABELS[category] : ""} kiezen</Text>
@@ -1301,7 +1302,7 @@ const useStyles = makeStyles((colors) => ({
     maxWidth: 560,
     alignSelf: "center",
     marginVertical: "auto",
-    maxHeight: "88%",
+    maxHeight: "92%",
     padding: 16,
   },
   sheetHandle: {

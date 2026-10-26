@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Modal, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -23,13 +24,14 @@ export default function ProfileScreen() {
     queryKey: ["stores"],
     queryFn: () => api<{ stores: string[] }>("/stores"),
   });
-  const stores = storeData?.stores ?? ["Albert Heijn"];
+  const NO_STORE = "Nog geen keuze";
+  const stores = [NO_STORE, ...(storeData?.stores ?? [])];
 
   const [name, setName] = useState(user?.name ?? "");
   const [username, setUsername] = useState(user?.username ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
   const [phone, setPhone] = useState(user?.phone ?? "");
-  const [store, setStore] = useState(user?.store ?? "Albert Heijn");
+  const [store, setStore] = useState(user?.store ?? NO_STORE);
   const [picture, setPicture] = useState(user?.picture ?? "");
   const [emailOn, setEmailOn] = useState(!(user?.email_opt_out ?? false));
   const [personalOn, setPersonalOn] = useState(!(user?.no_personal ?? false));
@@ -45,7 +47,7 @@ export default function ProfileScreen() {
     try {
       await api("/auth/profile", {
         method: "PUT",
-        body: { name, username, email, phone, store, picture, email_opt_out: !emailOn, no_personal: !personalOn },
+        body: { name, username, email, phone, store: store === NO_STORE ? undefined : store, picture, email_opt_out: !emailOn, no_personal: !personalOn },
       });
       await refresh();
       toast.show("Profiel opgeslagen", "success");

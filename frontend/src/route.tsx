@@ -1,7 +1,8 @@
 // Looproute (Premium): de boodschappenlijst in de volgorde waarin je door de winkel loopt.
 // Per winkel een gewone indeling; zelf aanpassen kan, dat wordt op dit toestel onthouden.
 import { useEffect, useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Icon } from "@/src/components/ui";
@@ -134,7 +135,7 @@ export function RouteSheet({ store, order, onChange, onClose }: { store: string;
 
 const useStyles = makeStyles((colors) => ({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
-  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 10, width: "100%", maxWidth: 640, alignSelf: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "92%", padding: 16, gap: 10, width: "100%", maxWidth: 640, alignSelf: "center" },
   title: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },
   sub: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
   row: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.divider },

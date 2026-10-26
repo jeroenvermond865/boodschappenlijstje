@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Image, Linking, Modal, Platform, Pressable, ScrollView, Share, Text, View } from "react-native";
+import { ActivityIndicator, Image, Linking, Platform, Pressable, ScrollView, Share, Text, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -488,7 +489,7 @@ export default function ShoppingScreen() {
               <Text style={styles.totalLabel}>Geschat totaal</Text>
               <Text style={styles.totalValue}>{euro(grandTotal)}</Text>
               <Text style={styles.totalHint}>Hele verpakkingen tegen de huidige winkelprijs. Producten zonder prijs tellen niet mee.</Text>
-              {premium && promoSaving > 0 ? (
+              {promoSaving > 0 ? (
                 <Pressable onPress={() => router.push("/savings")} testID="promo-saving">
                   <Text style={styles.savingText}>Aanbiedingen schelen je {euro(promoSaving)} op deze lijst. Bekijk je bespaaroverzicht</Text>
                 </Pressable>

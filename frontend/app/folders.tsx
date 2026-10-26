@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, Image, Linking, Modal, Pressable, ScrollView, SectionList, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, Image, Linking, Pressable, ScrollView, SectionList, Text, TextInput, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueries, useQuery } from "@tanstack/react-query";
@@ -433,7 +434,7 @@ const useStyles = makeStyles((colors) => ({
   deal: { fontSize: 12, fontFamily: fonts.semibold, color: colors.onSurface },
   combi: { fontSize: 12, fontFamily: fonts.medium, color: colors.brandPrimary },
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
-  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16 },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "92%", padding: 16 },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   row: { flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 8 },
   rowImage: { width: 40, height: 40, borderRadius: 8, backgroundColor: "#fff" },

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Modal, Text, View } from "react-native";
+import { Text, View } from "react-native";
+import Modal from "@/src/components/Modal";
 
 import { Button, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";

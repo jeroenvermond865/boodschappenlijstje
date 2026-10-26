@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Image, Linking, Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Image, Linking, Pressable, ScrollView, Text, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -348,7 +349,7 @@ function CampSheet({
   return (
     <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
       <Pressable style={styles.backdrop} onPress={close}>
-        <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16, maxHeight: "85%" }]} onPress={() => {}}>
+        <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16, maxHeight: "92%" }]} onPress={() => {}}>
           {done ? (
             <View style={{ gap: 12, alignItems: "center", paddingVertical: 10 }}>
               <Icon name="check-circle" size={44} color={colors.success} />
@@ -550,7 +551,7 @@ const useStyles = makeStyles((colors) => ({
   primary: { flexDirection: "row", gap: 8, alignItems: "center", justifyContent: "center", backgroundColor: colors.brandPrimary, borderRadius: 14, paddingVertical: 15 },
   primaryText: { color: colors.onBrandPrimary, fontSize: 16, fontFamily: fonts.semibold },
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
-  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 10 },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "92%", padding: 16, gap: 10 },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   catRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 12, borderWidth: 1, borderColor: colors.border },
   catRowSuggested: { borderColor: colors.brandPrimary },

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, Image, Modal, Pressable, ScrollView, Share, Text, TextInput, View } from "react-native";
+import { FlatList, Image, Pressable, ScrollView, Share, Text, TextInput, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Linking from "expo-linking";
@@ -710,7 +711,7 @@ function SwapSheet({ ing, onClose, onPick }: { ing: Ing | null; onClose: () => v
   return (
     <Modal visible={open} animationType="fade" transparent onRequestClose={close}>
       <View style={styles.pickerBackdrop}>
-        <View style={[styles.pickerSheet, { paddingBottom: insets.bottom + 16, maxHeight: "90%" }]}>
+        <View style={[styles.pickerSheet, { paddingBottom: insets.bottom + 16, maxHeight: "92%" }]}>
           <View style={styles.pickerHeader}>
             <Text style={styles.pickerTitle} numberOfLines={1}>
               Ander product voor {ing?.name}
@@ -938,7 +939,7 @@ const useStyles = makeStyles((colors) => ({
   linkedPrice: { flexDirection: "row", alignItems: "center", gap: 6 },
   linkedPriceText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandSecondary },
   pickerBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
-  pickerSheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 12 },
+  pickerSheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "92%", padding: 16, gap: 12 },
   pickerHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   pickerTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   pickerSearch: {

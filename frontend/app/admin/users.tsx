@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -10,7 +11,11 @@ import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type AdminUser = { id: string; name: string; email: string; username?: string | null; phone?: string | null; role: string; premium?: boolean };
+type AdminUser = { id: string; name: string; email: string; username?: string | null; phone?: string | null; role: string; premium?: boolean;
+  terms_ok?: boolean; terms_version?: string | null; terms_accepted_at?: string | null; created_at?: string | null };
+
+const nlDate = (iso?: string | null) =>
+  iso ? new Date(iso).toLocaleString("nl-NL", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : null;
 type Role = { name: string; label: string };
 
 export default function AdminUsersScreen() {
@@ -159,6 +164,11 @@ export default function AdminUsersScreen() {
                   <Text style={styles.email} numberOfLines={1}>
                     {u.email}
                   </Text>
+                  <Text style={[styles.email, { color: u.terms_ok ? colors.muted : colors.error }]} numberOfLines={2}>
+                    {u.terms_accepted_at
+                      ? `Voorwaarden akkoord: ${nlDate(u.terms_accepted_at)}${u.terms_ok ? "" : ` (oude versie ${u.terms_version ?? "?"})`}`
+                      : "Voorwaarden nog niet geaccepteerd"}
+                  </Text>
                 </View>
                 <Pressable
                   testID={`user-premium-${u.id}`}
@@ -286,8 +296,8 @@ const useStyles = makeStyles((colors) => ({
   chipTextActive: { color: colors.onBrandPrimary },
   editBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
   modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
-  sheetScroll: { maxHeight: "88%" },
-  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "88%", padding: 16, gap: 12 },
+  sheetScroll: { maxHeight: "92%" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "92%", padding: 16, gap: 12 },
   sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   pwBlock: { gap: 10, borderTopWidth: 1, borderTopColor: colors.divider, paddingTop: 14, marginTop: 2 },
