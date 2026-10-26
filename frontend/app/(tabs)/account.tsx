@@ -84,6 +84,7 @@ export default function AccountScreen() {
             <View style={styles.rolePill}>
               <Icon name="shield-account-outline" size={13} color={colors.onBrandTertiary} />
               <Text style={styles.rolePillText}>{roleLabel}</Text>
+              {user?.premium ? <Text style={styles.rolePillText}> · Premium</Text> : null}
             </View>
           </View>
         </Card>

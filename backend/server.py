@@ -56,14 +56,14 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "onboarding@resend.dev")
 
 ADMIN_SEED_EMAILS = ["jeroenvermond865@gmail.com"]
-DEFAULT_ROLE = "leidingslid"
+DEFAULT_ROLE = "gebruiker"
 ALL_PERMISSIONS = ["manage_standard_dishes", "review_submissions", "manage_users", "manage_roles", "view_budget", "manage_budget", "manage_settings", "manage_products"]
+# Drie rollen: de beheerder (alles), medebeheerders (alles behalve rollen aanpassen) en standaard gebruikers.
+# Premium is geen rol maar een schakelaar per gebruiker (zie /admin/users/{id}/premium).
 DEFAULT_ROLES = [
     {"name": "beheerder", "label": "Beheerder", "permissions": list(ALL_PERMISSIONS), "is_system": True},
-    {"name": "hoofdleiding", "label": "Hoofdleiding", "permissions": [], "is_system": True},
-    {"name": "penningmeester", "label": "Penningmeester", "permissions": ["view_budget", "manage_budget"], "is_system": True},
-    {"name": "leidingslid", "label": "Leidingslid", "permissions": [], "is_system": True},
-    {"name": "kind", "label": "Kind", "permissions": [], "is_system": True},
+    {"name": "medebeheerder", "label": "Medebeheerder", "permissions": [p for p in ALL_PERMISSIONS if p != "manage_roles"], "is_system": True},
+    {"name": "gebruiker", "label": "Standaard gebruiker", "permissions": ["view_budget", "manage_budget"], "is_system": True},
 ]
 
 MEAL_CATEGORIES = ["ontbijt", "lunch", "avondeten", "snacks"]
@@ -217,6 +217,7 @@ def public_user(doc: dict) -> dict:
         "onboarded": bool(doc.get("onboarded_at")),
         "has_password": bool(doc.get("password_hash")),
         "no_personal": doc.get("no_personal", False),
+        "premium": bool(doc.get("premium")),
     }
 
 
@@ -1922,6 +1923,29 @@ async def delete_role(name: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+def guard_target(actor: dict, target: dict, new_role: Optional[str] = None) -> None:
+    # Medebeheerders mogen veel, maar niet aan beheerders komen of iemand beheerder maken
+    if actor.get("role") == "beheerder":
+        return
+    if target.get("role") == "beheerder" or new_role == "beheerder":
+        raise HTTPException(status_code=403, detail="Alleen de beheerder kan dit")
+
+
+class PremiumInput(BaseModel):
+    premium: bool
+
+
+@api_router.put("/admin/users/{target_id}/premium")
+async def admin_set_premium(target_id: str, data: PremiumInput, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    target = await db.users.find_one({"user_id": target_id, "deleted_at": None})
+    if not target:
+        raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
+    update = {"$set": {"premium": data.premium, "premium_by": user["user_id"], "premium_at": now_utc()}}
+    await db.users.update_one({"user_id": target_id}, update)
+    return {"ok": True, "premium": data.premium}
+
+
 @api_router.get("/admin/users")
 async def admin_list_users(user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_users")
@@ -1943,6 +1967,7 @@ async def admin_update_user(target_id: str, data: AdminUserUpdate, user: dict = 
     target = await db.users.find_one({"user_id": target_id})
     if not target:
         raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
+    guard_target(user, target, data.role)
     update: dict = {}
     if data.name is not None:
         update["name"] = data.name.strip()
@@ -1976,6 +2001,7 @@ async def admin_delete_user(target_id: str, user: dict = Depends(get_current_use
     target = await db.users.find_one({"user_id": target_id, "deleted_at": None})
     if not target:
         raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
+    guard_target(user, target)
     # Naar "Recent verwijderd": 30 dagen terug te zetten, samen met alles van deze gebruiker
     ts = now_utc()
     await db.users.update_one({"user_id": target_id}, {"$set": {"deleted_at": ts}})
@@ -2000,6 +2026,7 @@ async def admin_set_password(target_id: str, data: AdminSetPassword, user: dict 
     target = await db.users.find_one({"user_id": target_id})
     if not target:
         raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
+    guard_target(user, target)
     await db.users.update_one(
         {"user_id": target_id},
         {"$set": {"password_hash": hash_password(data.new_password), "auth_provider": "password"}},
@@ -2016,6 +2043,9 @@ async def admin_set_role(target_id: str, data: SetRoleInput, user: dict = Depend
     target = await db.users.find_one({"user_id": target_id})
     if not target:
         raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
+    guard_target(user, target, data.role)
+    if target_id == user["user_id"] and data.role != user.get("role"):
+        raise HTTPException(status_code=400, detail="Je kunt je eigen rol niet veranderen")
     await db.users.update_one({"user_id": target_id}, {"$set": {"role": data.role}})
     return {"ok": True}
 
@@ -7182,9 +7212,15 @@ async def startup():
     # Ensure beheerder keeps all permissions
     await db.roles.update_one({"name": "beheerder"}, {"$set": {"permissions": list(ALL_PERMISSIONS), "is_system": True}})
     # Backfill role on existing users, and seed the admin account
-    pm = await db.roles.find_one({"name": "penningmeester"})
-    if pm is not None and pm.get("permissions", []) in ([], ["view_budget"]):
-        await db.roles.update_one({"name": "penningmeester"}, {"$set": {"permissions": ["view_budget", "manage_budget"]}})
+    # Eenmalig (okt 2026): alleen nog beheerder, medebeheerder en standaard gebruiker; alle anderen worden standaard gebruiker
+    if not await db.settings.find_one({"key": "roles_v2"}):
+        for r in DEFAULT_ROLES[1:]:
+            await db.roles.update_one({"name": r["name"]}, {"$set": r}, upsert=True)
+        keep = [r["name"] for r in DEFAULT_ROLES]
+        moved = await db.users.update_many({"role": {"$nin": keep}}, {"$set": {"role": DEFAULT_ROLE}})
+        gone = await db.roles.delete_many({"name": {"$nin": keep}})
+        await db.settings.update_one({"key": "roles_v2"}, {"$set": {"value": True, "at": now_utc()}}, upsert=True)
+        logger.info("Rollen opgeschoond: %d gebruikers naar standaard, %d rollen weg", moved.modified_count, gone.deleted_count)
     await db.users.update_many({"role": {"$exists": False}}, {"$set": {"role": DEFAULT_ROLE}})
     await db.users.update_many({"email": {"$in": ADMIN_SEED_EMAILS}}, {"$set": {"role": "beheerder"}})
 

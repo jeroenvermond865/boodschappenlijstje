@@ -24,6 +24,7 @@ export type User = {
   onboarded?: boolean;
   has_password?: boolean;
   no_personal?: boolean;
+  premium?: boolean;
 };
 type Status = "loading" | "authed" | "guest";
 

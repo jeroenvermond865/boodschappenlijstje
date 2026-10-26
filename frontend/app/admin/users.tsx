@@ -5,11 +5,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Field, Icon, PasswordField } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type AdminUser = { id: string; name: string; email: string; username?: string | null; phone?: string | null; role: string };
+type AdminUser = { id: string; name: string; email: string; username?: string | null; phone?: string | null; role: string; premium?: boolean };
 type Role = { name: string; label: string };
 
 export default function AdminUsersScreen() {
@@ -18,6 +19,8 @@ export default function AdminUsersScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const qc = useQueryClient();
+  const { user: me } = useAuth();
+  const iAmOwner = me?.role === "beheerder";
 
   const { data: usersData, isLoading } = useQuery({
     queryKey: ["admin-users"],
@@ -27,7 +30,18 @@ export default function AdminUsersScreen() {
     queryKey: ["roles"],
     queryFn: () => api<{ roles: Role[] }>("/roles"),
   });
-  const roles = rolesData?.roles ?? [];
+  // Alleen de beheerder kan iemand beheerder maken
+  const roles = (rolesData?.roles ?? []).filter((r) => iAmOwner || r.name !== "beheerder");
+
+  const setPremium = useMutation({
+    mutationFn: (v: { id: string; premium: boolean }) =>
+      api(`/admin/users/${v.id}/premium`, { method: "PUT", body: { premium: v.premium } }),
+    onSuccess: (_d, v) => {
+      qc.invalidateQueries({ queryKey: ["admin-users"] });
+      toast.show(v.premium ? "Premium aangezet" : "Premium uitgezet", "success");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
+  });
 
   const setRole = useMutation({
     mutationFn: (v: { id: string; role: string }) =>
@@ -110,13 +124,29 @@ export default function AdminUsersScreen() {
                   <Text style={styles.avatarText}>{(u.name ?? u.email).charAt(0).toUpperCase()}</Text>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.name} numberOfLines={1}>
-                    {u.name}
-                  </Text>
+                  <View style={styles.nameRow}>
+                    <Text style={[styles.name, { flexShrink: 1 }]} numberOfLines={1}>
+                      {u.name}
+                    </Text>
+                    {u.premium ? (
+                      <View style={styles.premiumPill}>
+                        <Icon name="star" size={11} color={colors.onBrandSecondary} />
+                        <Text style={styles.premiumText}>Premium</Text>
+                      </View>
+                    ) : null}
+                  </View>
                   <Text style={styles.email} numberOfLines={1}>
                     {u.email}
                   </Text>
                 </View>
+                <Pressable
+                  testID={`user-premium-${u.id}`}
+                  onPress={() => setPremium.mutate({ id: u.id, premium: !u.premium })}
+                  hitSlop={8}
+                  style={styles.editBtn}
+                >
+                  <Icon name={u.premium ? "star" : "star-outline"} size={22} color={u.premium ? colors.brandSecondary : colors.muted} />
+                </Pressable>
                 <Pressable testID={`user-edit-${u.id}`} onPress={() => openEdit(u)} hitSlop={8} style={styles.editBtn}>
                   <Icon name="pencil-outline" size={20} color={colors.brandPrimary} />
                 </Pressable>
@@ -206,6 +236,17 @@ const useStyles = makeStyles((colors) => ({
   },
   avatarText: { fontSize: 17, fontFamily: fonts.bold, color: colors.onBrandPrimary },
   name: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
+  nameRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  premiumPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: colors.brandSecondary,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  premiumText: { fontSize: 11, fontFamily: fonts.semibold, color: colors.onBrandSecondary },
   email: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
   chipRow: { gap: 8, alignItems: "center" },
   chip: {
