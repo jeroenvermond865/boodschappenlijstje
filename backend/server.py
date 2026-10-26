@@ -8364,7 +8364,7 @@ _SOFT_WORDS = {"fijn", "grof", "ongebrand", "gebrand", "geroosterd", "plantaardi
                "mini", "naturel", "original", "origineel", "classic", "klassiek", "bolletjes", "stand", "gekookt", "verpakt", "los", "heel",
                "stuks", "stuk", "zout", "azijn", "tomatensaus", "saus", "biologisch", "biologische", "ongezouten", "gezouten", "met",
                "vet", "romig", "romige", "fris", "frisse", "mild", "milde", "pittig", "pittige", "personen", "eetrijp", "friszoet", "sappig",
-               "tablet", "vloeibaar", "groente", "originele", "rosso", "verde", "bianco", "premium", "bosje", "kleinverpakking", "grootverpakking"}
+               "tablet", "vloeibaar", "groente", "originele", "rosso", "verde", "bianco", "gerookt", "gerookte", "gegrild", "gegrilde", "hout", "premium", "bosje", "kleinverpakking", "grootverpakking"}
 
 
 def _same_kind(base: dict, cand: dict, strict: bool = True) -> bool:
@@ -8387,12 +8387,20 @@ def _same_kind(base: dict, cand: dict, strict: bool = True) -> bool:
     # Het hoofdwoord is het laatste échte woord: bij "havermout fijn" is dat havermout, niet "fijn"
     # (anders is "zeezout fijn" ineens hetzelfde als havermout, of "mosterd grof gemalen" komijn)
     def head_of(ws):
+        # "tomatenblokjes met knoflook" is tomatenblokjes: wat na "met" of "in" komt is de smaak, niet het product
+        for k, w in enumerate(ws):
+            if w in ("met", "in") and k > 0:
+                ws = ws[:k]
+                break
         return next((w for w in reversed(ws) if w not in _DESCRIPTORS and w not in _FILLER and w not in _SOFT_WORDS and w not in _FORMS), ws[-1])
     head = head_of(bw)
     if not any(same(c, head) for c in cw):
         return False
+    if re.search(r"\b(0(?:[.,]0)?\s*%|zonder|geen)\s+" + re.escape(head), _norm_text(cand["name"])):
+        return False  # "tonic 0% suiker" is juist géén suiker
     # Het andere product moet zelf ook dat soort zijn: "kikkererwten tomatensoep" is soep, "linzen penne" is pasta
-    if not same(stem(head_of([stem(w) for w in cw])), head):
+    ch = stem(head_of([stem(w) for w in cw]))
+    if not (same(ch, head) or (len(head) >= 5 and ch.endswith(head))):  # "kristalsuiker" is ook suiker
         return False
     if not strict:
         return True  # vergelijken per winkel: "pasta gnocchi" mag voor gnocchi
