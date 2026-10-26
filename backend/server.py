@@ -5162,24 +5162,6 @@ def _nice(s: str) -> str:
     return s[:1].upper() + s[1:]
 
 
-async def _ah_schema_probe() -> None:
-    # Testsite: zoeken hoe AH de producten bij "Kies producten" doorgeeft (introspectie staat uit, dus velden proberen)
-    await asyncio.sleep(20)
-    rid = 1188190
-    tries = [f"{{recipe(id:{rid}){{ingredients{{name{{singular}} {f}}}}}}}" for f in
-             ("product{id title}", "products{id title}", "productId", "shoppableProducts{id}", "matchedProduct{id}", "productIds")]
-    tries += [f"{{recipe(id:{rid}){{id {f}}}}}" for f in ("products{id}", "shoppingList{id}", "recipeProducts{id}", "ingredientProducts{id}",
-                                                          "shoppableIngredients{id}", "basket{id}", "productSuggestions{id}")]
-    tries += [f"{{{f}}}" for f in (f"recipeProducts(recipeId:{rid}){{id}}", f"recipeShoppingList(id:{rid}){{id}}",
-                                   f"recipeIngredientProducts(recipeId:{rid}){{id}}", f"recipeProductSuggestions(recipeId:{rid}){{id}}")]
-    for q in tries:
-        try:
-            d = await _ah_gql(q)
-            logger.info("AH-probe OK %s -> %s", q, str(d)[:600])
-        except Exception as e:
-            logger.info("AH-probe fout %s -> %s", q, str(e)[:300])
-
-
 async def _ah_gql(query: str, variables: Optional[dict] = None) -> dict:
     async with httpx.AsyncClient(timeout=20, headers=AH_HEADERS) as c:
         tok = await _ah_token(c)
@@ -9236,8 +9218,6 @@ async def startup():
         logger.info("Testsite: achtergrondtaken staan uit")
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_basic_dish_info_loop())
-    if os.environ.get("BACKGROUND_JOBS", "1") == "0":
-        asyncio.create_task(_ah_schema_probe())
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_log_product_counts())
 
