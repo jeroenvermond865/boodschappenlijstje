@@ -20,7 +20,7 @@ import { CompareCard, type CompareStore } from "@/src/CompareCard";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; image?: string | null; better?: PackBetter | null; in_pantry?: number; promo_then?: { label: string; start?: string | null; period?: string | null } };
+type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; image?: string | null; better?: PackBetter | null; in_pantry?: number; was?: { store: string; price: number }; promo_then?: { label: string; start?: string | null; period?: string | null } };
 type Grouped = { aisle: string; items: Item[] };
 type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number; saving?: number };
 
@@ -665,6 +665,11 @@ function ItemRow({ item, checked, onToggle, last, by }: { item: Item; checked: b
             {packText(item.packs, item.pack_unit)}
           </Text>
         ) : null}
+        {item.was && item.price ? (
+          <Text style={styles.itemWas} numberOfLines={1}>
+            Bij {item.was.store} {euro(item.was.price)}, hier {euro(item.price)}
+          </Text>
+        ) : null}
         {by ? <Text style={styles.itemPack}>Afgevinkt door {by}</Text> : null}
         {item.promo_then ? (
           <Text style={styles.itemPromo} numberOfLines={2}>
@@ -696,6 +701,7 @@ function ItemRow({ item, checked, onToggle, last, by }: { item: Item; checked: b
 }
 
 const useStyles = makeStyles((colors) => ({
+  itemWas: { fontSize: 12, fontFamily: fonts.semibold, color: colors.success, marginTop: 1 },
   itemImg: { width: 44, height: 44, borderRadius: 8, backgroundColor: "#fff" },
   itemProduct: { fontSize: 12, fontFamily: fonts.semibold, color: colors.brandPrimary, flexShrink: 1 },
   itemPromo: { fontSize: 12, fontFamily: fonts.semibold, color: colors.warning, marginTop: 1 },
