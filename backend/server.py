@@ -2072,9 +2072,11 @@ async def _photo_candidates(name: str) -> list:
             break
     try:
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get("https://commons.wikimedia.org/w/api.php", headers={"User-Agent": "SlimBoodschappenlijstje/1.0"}, params={
+            r = await c.get("https://commons.wikimedia.org/w/api.php", headers={"User-Agent": "SlimBoodschappenlijstje/1.0 (https://slimboodschappenlijstje.nl; jeroenvermond865@users.noreply.github.com)", "Accept": "application/json"}, params={
                 "action": "query", "format": "json", "generator": "search", "gsrnamespace": 6, "gsrlimit": 6,
                 "gsrsearch": name + " filetype:bitmap", "prop": "imageinfo", "iiprop": "url", "iiurlwidth": 600})
+        if r.status_code != 200:
+            raise RuntimeError(f"status {r.status_code}")
         for pg in ((r.json().get("query") or {}).get("pages") or {}).values():
             info = (pg.get("imageinfo") or [{}])[0]
             url = info.get("thumburl") or info.get("url")
