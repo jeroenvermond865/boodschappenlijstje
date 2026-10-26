@@ -51,6 +51,10 @@ export default function AccountScreen() {
   });
   const premiumReqs = preqs?.requests.length ?? 0;
 
+  const { data: myReplies } = useQuery({
+    queryKey: ["feedback-unread"],
+    queryFn: () => api<{ count: number }>("/feedback/unread"),
+  });
   const { data: fcounts } = useQuery({
     queryKey: ["feedback-count"],
     queryFn: () => api<{ count: number }>("/admin/feedback/count"),
@@ -152,6 +156,7 @@ export default function AccountScreen() {
           testID="feedback-link"
           icon="message-draw"
           label="Feedback & verbeteringen"
+          badge={myReplies?.count}
           onPress={() => router.push("/feedback")}
         />
         <AdminRow

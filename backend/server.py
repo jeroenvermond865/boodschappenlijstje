@@ -7814,9 +7814,10 @@ async def list_feedback(user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_settings")
     docs = await db.feedback.find({"status": {"$ne": "deleted"}}, {"_id": 0}).sort("created_at", -1).to_list(500)
     for d in docs:
-        if isinstance(d.get("created_at"), datetime):
-            d["created_at"] = d["created_at"].isoformat()
-    return {"feedback": docs}
+        for k in ("created_at", "replied_at"):
+            if isinstance(d.get(k), datetime):
+                d[k] = d[k].isoformat()
+    return {"feedback": docs, "folders": FEEDBACK_FOLDERS}
 
 
 @api_router.get("/admin/feedback/count")
@@ -7832,6 +7833,67 @@ async def mark_feedback_read(feedback_id: str, user: dict = Depends(get_current_
     await require_perm(user, "manage_settings")
     await db.feedback.update_one({"feedback_id": feedback_id}, {"$set": {"status": "read"}})
     return {"ok": True}
+
+
+FEEDBACK_FOLDERS = {"gebruikt": "Gebruikt", "niet_gebruikt": "Niet gebruikt", "later": "Voor later"}
+
+
+class FeedbackReply(BaseModel):
+    reply: str = ""
+    folder: Optional[str] = None  # gebruikt, niet_gebruikt, later
+
+
+@api_router.post("/admin/feedback/{feedback_id}/reply")
+async def reply_feedback(feedback_id: str, data: FeedbackReply, user: dict = Depends(get_current_user)):
+    # Reageren op feedback en het in een map zetten; de gebruiker ziet de reactie in de app en krijgt een mail
+    await require_perm(user, "manage_settings")
+    fb = await db.feedback.find_one({"feedback_id": feedback_id}, {"_id": 0})
+    if not fb:
+        raise HTTPException(status_code=404, detail="Feedback niet gevonden")
+    if data.folder and data.folder not in FEEDBACK_FOLDERS:
+        raise HTTPException(status_code=400, detail="Onbekende map")
+    reply = data.reply.strip()[:2000]
+    upd: dict = {"status": "done" if data.folder else "read"}
+    if data.folder:
+        upd["folder"] = data.folder
+    if reply:
+        upd.update({"reply": reply, "replied_at": now_utc(), "reply_by": (user.get("name") or "").split(" ")[0] or "De beheerder", "reply_seen": False})
+    await db.feedback.update_one({"feedback_id": feedback_id}, {"$set": upd})
+    if reply:
+        u = await db.users.find_one({"user_id": fb["user_id"], "deleted_at": None}, {"_id": 0})
+        if u and u.get("email") and not u.get("email_opt_out"):
+            base = (FRONTEND_URL or "").rstrip("/")
+            html = (
+                '<div style="font-family:Arial,sans-serif;color:#1C1B1A">'
+                '<h2 style="color:#2E5E38;margin:0 0 12px">Reactie op je feedback</h2>'
+                f'<p>Hoi {escape((u.get("name") or "").split(" ")[0])}, bedankt voor je bericht:</p>'
+                f'<p style="color:#666;border-left:3px solid #ddd;padding-left:10px">{escape(fb["message"][:500])}</p>'
+                f'<p>{escape(reply).replace(chr(10), "<br/>")}</p>'
+                + (f'<p><a href="{escape(base)}/feedback" style="color:#2E5E38">Bekijk het in de app</a></p>' if base else "")
+                + '</div>'
+            )
+            try:
+                await send_email(u["email"], "Reactie op je feedback", html)
+            except Exception as e:
+                logger.warning("Feedbackmail: %r", e)
+    return {"ok": True}
+
+
+@api_router.get("/feedback/mine")
+async def my_feedback(user: dict = Depends(get_current_user)):
+    docs = await db.feedback.find({"user_id": user["user_id"], "status": {"$ne": "deleted"}}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    out = [{"feedback_id": d["feedback_id"], "message": d["message"], "reply": d.get("reply"), "reply_by": d.get("reply_by"),
+            "folder": FEEDBACK_FOLDERS.get(d.get("folder") or ""), "new_reply": bool(d.get("reply")) and not d.get("reply_seen"),
+            "created_at": d["created_at"].isoformat() if isinstance(d.get("created_at"), datetime) else d.get("created_at"),
+            "replied_at": d["replied_at"].isoformat() if isinstance(d.get("replied_at"), datetime) else None} for d in docs]
+    if any(x["new_reply"] for x in out):
+        await db.feedback.update_many({"user_id": user["user_id"], "reply_seen": False}, {"$set": {"reply_seen": True}})
+    return {"feedback": out}
+
+
+@api_router.get("/feedback/unread")
+async def my_feedback_unread(user: dict = Depends(get_current_user)):
+    return {"count": await db.feedback.count_documents({"user_id": user["user_id"], "reply_seen": False, "status": {"$ne": "deleted"}})}
 
 
 @api_router.delete("/admin/feedback/{feedback_id}")
