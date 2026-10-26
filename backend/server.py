@@ -920,6 +920,8 @@ _MEAT_RE = re.compile(r"kip|gehakt|rookworst|worst|spek|\bham\b|hamlap|beenham|a
                       r"hamburger|burger|schnitzel|shoarma|gyros|saucijs|slavink|frikandel|kroket|salami|chorizo|pancetta|prosciutto|"
                       r"filet americain|ossenhaas|entrecote|steak|stoofvlees|riblap|sukade|vlees|karbonade|speklap|braadworst|knakworst|"
                       r"\bvis\b|visstick|zalm|tonijn|kabeljauw|pangasius|koolvis|tilapia|garnaal|garnalen|kibbeling|lekkerbek|makreel|haring|mosselen|inktvis|ansjovis|surimi")
+_FISH_RE = re.compile(r"\bvis\b|visstick|zalm|tonijn|kabeljauw|pangasius|koolvis|tilapia|garnaal|garnalen|kibbeling|lekkerbek|makreel|haring|"
+                      r"mosselen|inktvis|ansjovis|surimi|schelvis|forel|heek|scampi|sardine|vissoep|visfilet")
 _VEGA_RE = re.compile(r"vega|vegetari|plantaardig|vegan|veggie|garden gourmet|beyond|valess|like meat|vegetarische slager|vivera|quorn|"
                       r"tofu|tempeh|seitan|falafel|groenteburger|zonder vlees|vleesvervang|kikkererwt|linzen")
 
@@ -1428,7 +1430,7 @@ class AutoMenuInput(BaseModel):
     overwrite: bool = False
     days: Optional[List[int]] = None  # alleen deze dagen (index); leeg = alle dagen
     style: str = "mix"  # vertrouwd (wat je vaker eet), mix, nieuw (iets nieuws proberen)
-    diet: str = ""  # "", vega, vegan
+    diet: str = ""  # "", vega, vegan, vlees (met vlees), vis (met vis)
     store: str = ""  # oud: één winkel (ah, jumbo, dirk)
     stores: List[str] = []  # recepten van deze winkels (ah, jumbo, dirk); leeg = alle winkels
     cook_twice: bool = True  # kleine groep: één keer koken voor twee dagen (lunch en avondeten), dan blijft er minder over
@@ -1515,6 +1517,12 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
             return False
         if data.diet in ("vega", "vegan") and not _diet_of([i.get("name") or "" for i in d["ingredients"]])[1 if data.diet == "vegan" else 0]:
             return False
+        if data.diet in ("vlees", "vis") and d.get("category") in ("lunch", "avondeten"):
+            # Met vlees of met vis (bij lunch en avondeten; ontbijt en tussendoor blijven gewoon): minstens één ingrediënt daarvan
+            meat = [_norm_text(i.get("name") or "") for i in d["ingredients"] if _is_meat(i)]
+            fish = [n for n in meat if _FISH_RE.search(n)]
+            if not (fish if data.diet == "vis" else [n for n in meat if n not in fish]):
+                return False
         return True
     dishes = [d for d in dishes if fits(d)]
 

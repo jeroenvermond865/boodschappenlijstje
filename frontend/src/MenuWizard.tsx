@@ -245,6 +245,8 @@ export function MenuWizard({
               <Chip on={dietPick === ""} label="Alles" onPress={() => setDietPick("")} />
               <Chip on={dietPick === "vega"} label="Vegetarisch" onPress={() => setDietPick("vega")} />
               <Chip on={dietPick === "vegan"} label="Veganistisch" onPress={() => setDietPick("vegan")} />
+              <Chip on={dietPick === "vlees"} label="Met vlees" onPress={() => setDietPick("vlees")} />
+              <Chip on={dietPick === "vis"} label="Met vis" onPress={() => setDietPick("vis")} />
             </View>
             <Check on={promos} label="Gerechten met aanbiedingen eerst" onPress={() => setPromos((v) => !v)} />
             <Check on={cheap} label="Goedkope gerechten eerst" onPress={() => setCheap((v) => !v)} />
