@@ -1,7 +1,7 @@
 // Voorraadkast snel vullen: wat de meeste mensen al in huis hebben, met per stuk het product dat de app erbij kiest.
 // Het meeste staat al aangevinkt; tik op een product om een ander te kiezen, net als bij gerechten.
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -9,7 +9,7 @@ import Modal from "@/src/components/Modal";
 import { Button, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import type { Product } from "@/src/ProductBrowser";
-import { euro } from "@/src/search";
+import { euro, fetchProducts, useDebounced } from "@/src/search";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -32,25 +32,45 @@ export function PantrySuggestions({ onDone }: { onDone?: () => void }) {
   const [on, setOn] = useState<Set<string>>(new Set());
   const [picked, setPicked] = useState<Record<string, Product>>({});
   const [swap, setSwap] = useState<Suggestion | null>(null);
+  // Zelf zoeken (bijv. "dreft"): wat je kiest komt bovenaan, al aangevinkt
+  const [extra, setExtra] = useState<Suggestion[]>([]);
+  const [q, setQ] = useState("");
+  const dq = useDebounced(q);
+  const found = useQuery({
+    queryKey: ["products", "search", "pantry-sug", dq.trim()],
+    queryFn: () => fetchProducts({ q: dq, limit: 8 }),
+    enabled: dq.trim().length > 1,
+    placeholderData: (prev) => prev,
+  });
+  const addFound = (p: Product) => {
+    const t = q.trim();
+    let name = t ? t.charAt(0).toUpperCase() + t.slice(1) : p.name;
+    if (extra.some((x) => x.name === name)) name = p.name;
+    setExtra((cur) => [{ name, group: "Zelf gezocht", default: true, users: 0, product: p }, ...cur.filter((x) => x.name !== name)]);
+    setOn((cur) => new Set(cur).add(name));
+    setQ("");
+  };
   useEffect(() => {
-    if (data) setOn(new Set(data.items.filter((i) => i.default).map((i) => i.name)));
+    if (data) setOn((cur) => new Set([...extra.map((x) => x.name).filter((n) => cur.has(n)), ...data.items.filter((i) => i.default).map((i) => i.name)]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
+  const all = [...extra, ...(data?.items ?? [])];
 
   const groups = useMemo(() => {
     const out: { group: string; items: Suggestion[] }[] = [];
-    for (const it of data?.items ?? []) {
+    for (const it of [...extra, ...(data?.items ?? [])]) {
       const g = out.find((x) => x.group === it.group) ?? out[out.push({ group: it.group, items: [] }) - 1];
       g.items.push(it);
     }
     return out;
-  }, [data]);
+  }, [data, extra]);
 
   const save = useMutation({
     mutationFn: () =>
       api<{ added: number }>("/pantry/bulk", {
         method: "POST",
         body: {
-          items: (data?.items ?? [])
+          items: all
             .filter((i) => on.has(i.name))
             .map((i) => ({ name: i.name, qty: 100, unit: "%", product_id: (picked[i.name] ?? i.product)?.id ?? null })),
         },
@@ -60,6 +80,7 @@ export function PantrySuggestions({ onDone }: { onDone?: () => void }) {
       qc.invalidateQueries({ queryKey: ["pantry"] });
       qc.invalidateQueries({ queryKey: ["pantry-suggestions"] });
       qc.invalidateQueries({ queryKey: ["shopping"] });
+      setExtra([]);
       onDone?.();
     },
     onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
@@ -73,10 +94,45 @@ export function PantrySuggestions({ onDone }: { onDone?: () => void }) {
       return next;
     });
 
+  const search = (
+    <View style={{ gap: 6 }}>
+      <View style={styles.searchBox}>
+        <Icon name="magnify" size={20} color={colors.muted} />
+        <TextInput
+          value={q}
+          onChangeText={setQ}
+          placeholder="Zoek zelf een product, bijv. dreft"
+          placeholderTextColor={colors.muted}
+          style={styles.searchInput}
+          testID="pantry-sug-search"
+        />
+        {q ? (
+          <Pressable onPress={() => setQ("")} hitSlop={8}>
+            <Icon name="close-circle" size={18} color={colors.muted} />
+          </Pressable>
+        ) : null}
+      </View>
+      {dq.trim().length > 1 && q.trim().length > 1
+        ? (found.data?.products ?? []).map((p) => (
+            <Pressable key={p.id} onPress={() => addFound(p)} style={styles.row} testID={`pantry-sug-found-${p.id}`}>
+              <Icon name="plus-circle-outline" size={22} color={colors.brandPrimary} />
+              {p.image ? <Image source={{ uri: p.image }} style={styles.img} resizeMode="contain" /> : <View style={styles.img} />}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.name} numberOfLines={1}>{p.name}</Text>
+                <Text style={styles.small} numberOfLines={1}>{[p.source, p.unit].filter(Boolean).join(" · ")}</Text>
+              </View>
+              <Text style={styles.price}>{p.price > 0 ? euro(p.price) : ""}</Text>
+            </Pressable>
+          ))
+        : null}
+    </View>
+  );
+
   if (isLoading) return <ActivityIndicator color={colors.brandPrimary} />;
-  if (!data?.items.length)
+  if (!all.length)
     return (
       <View style={{ gap: 8 }}>
+        {search}
         <Text style={styles.muted}>{seen.length ? "Meer voorstellen hebben we niet." : "Alles wat we zouden voorstellen staat al in je voorraadkast."}</Text>
         {seen.length ? (
           <Pressable onPress={() => setSeen([])} hitSlop={8}>
@@ -88,10 +144,11 @@ export function PantrySuggestions({ onDone }: { onDone?: () => void }) {
 
   return (
     <View style={{ gap: 12 }}>
+      {search}
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-        <Text style={styles.muted}>{on.size} aangevinkt · producten van {data.store}</Text>
-        <Pressable onPress={() => setOn(on.size === data.items.length ? new Set() : new Set(data.items.map((i) => i.name)))} hitSlop={8}>
-          <Text style={styles.link}>{on.size === data.items.length ? "Alles uit" : "Alles aan"}</Text>
+        <Text style={styles.muted}>{on.size} aangevinkt{data?.store ? ` · producten van ${data.store}` : ""}</Text>
+        <Pressable onPress={() => setOn(on.size === all.length ? new Set() : new Set(all.map((i) => i.name)))} hitSlop={8}>
+          <Text style={styles.link}>{on.size === all.length ? "Alles uit" : "Alles aan"}</Text>
         </Pressable>
       </View>
       {groups.map((g) => (
@@ -121,7 +178,7 @@ export function PantrySuggestions({ onDone }: { onDone?: () => void }) {
           })}
         </View>
       ))}
-      {data.more ? (
+      {data?.more ? (
         <Button label="Andere voorstellen" icon="refresh" variant="secondary" loading={isFetching} onPress={again} testID="pantry-sug-more" />
       ) : null}
       <Button
@@ -138,7 +195,8 @@ export function PantrySuggestions({ onDone }: { onDone?: () => void }) {
         onClose={() => setSwap(null)}
         onPick={(p) => {
           if (!swap) return;
-          setPicked((cur) => ({ ...cur, [swap.name]: p }));
+          if (swap.group === "Zelf gezocht") setExtra((cur) => cur.map((x) => (x.name === swap.name ? { ...x, product: p } : x)));
+          else setPicked((cur) => ({ ...cur, [swap.name]: p }));
           setOn((cur) => new Set(cur).add(swap.name));
           setSwap(null);
         }}
@@ -151,6 +209,15 @@ function PickSheet({ item, current, onClose, onPick }: { item: Suggestion | null
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const [q, setQ] = useState("");
+  const dq = useDebounced(q);
+  const found = useQuery({
+    queryKey: ["products", "search", "pantry-pick", dq.trim()],
+    queryFn: () => fetchProducts({ q: dq, limit: 30 }),
+    enabled: !!item && dq.trim().length > 1,
+    placeholderData: (prev) => prev,
+  });
+  const searching = q.trim().length > 1;
   const alts = useQuery({
     queryKey: ["alternatives", current?.id ?? "", item?.name ?? ""],
     queryFn: () =>
@@ -180,8 +247,30 @@ function PickSheet({ item, current, onClose, onPick }: { item: Suggestion | null
               <Text style={styles.price}>{current.price > 0 ? euro(current.price) : ""}</Text>
             </View>
           ) : null}
-          <ScrollView contentContainerStyle={{ gap: 6 }}>
-            {alts.isLoading ? (
+          <View style={styles.searchBox}>
+            <Icon name="magnify" size={20} color={colors.muted} />
+            <TextInput
+              value={q}
+              onChangeText={setQ}
+              placeholder="Of zoek een ander product"
+              placeholderTextColor={colors.muted}
+              style={styles.searchInput}
+              testID="pantry-pick-search"
+            />
+          </View>
+          <ScrollView contentContainerStyle={{ gap: 6 }} keyboardShouldPersistTaps="handled">
+            {searching ? (
+              (found.data?.products ?? []).map((p) => (
+                <Pressable key={p.id} onPress={() => { setQ(""); onPick(p); }} style={styles.row}>
+                  {p.image ? <Image source={{ uri: p.image }} style={styles.img} resizeMode="contain" /> : <View style={styles.img} />}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.name} numberOfLines={2}>{p.name}</Text>
+                    <Text style={styles.small} numberOfLines={1}>{[p.source, p.unit].filter(Boolean).join(" · ")}</Text>
+                  </View>
+                  <Text style={styles.price}>{p.price > 0 ? euro(p.price) : ""}</Text>
+                </Pressable>
+              ))
+            ) : alts.isLoading ? (
               <ActivityIndicator color={colors.brandPrimary} />
             ) : (
               (alts.data?.groups ?? []).map((g) =>
@@ -213,6 +302,8 @@ function PickSheet({ item, current, onClose, onPick }: { item: Suggestion | null
 }
 
 const useStyles = makeStyles((colors) => ({
+  searchBox: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surfaceTertiary, borderRadius: 12, paddingHorizontal: 12, minHeight: 44 },
+  searchInput: { flex: 1, fontSize: 15, fontFamily: fonts.regular, color: colors.onSurface, paddingVertical: 10 },
   muted: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
   link: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
   group: { fontSize: 13, fontFamily: fonts.bold, color: colors.onSurfaceSecondary, marginTop: 4 },

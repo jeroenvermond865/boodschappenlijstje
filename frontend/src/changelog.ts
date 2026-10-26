@@ -5,6 +5,16 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-26-e",
+    date: "26 oktober 2026",
+    title: "Meer voorstellen voor je voorraadkast",
+    changes: [
+      { kind: "nieuw", text: "Bij de voorstellen voor je voorraadkast zoek je ook zelf een product, bijvoorbeeld je eigen afwasmiddel." },
+      { kind: "nieuw", text: "Bij wisselen van een product kun je ook zoeken." },
+      { kind: "beter", text: "Veel meer voorstellen (sauzen, gebakken uitjes, snoep, verzorging) en 'Andere voorstellen' geeft steeds een mix uit alle groepen." },
+    ],
+  },
+  {
     id: "2026-10-26-d",
     date: "26 oktober 2026",
     title: "Slimmere voorraadkast en echte besparing",

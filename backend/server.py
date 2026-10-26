@@ -2672,6 +2672,33 @@ PANTRY_STAPLES = [
     ("Afwasmiddel", "Huishouden", True), ("Toiletpapier", "Huishouden", True), ("Keukenpapier", "Huishouden", False), ("Aluminiumfolie", "Huishouden", False),
     ("Bakpapier", "Huishouden", False), ("Vershoudfolie", "Huishouden", False), ("Vaatwastabletten", "Huishouden", False), ("Wasmiddel", "Huishouden", False),
     ("Vuilniszakken", "Huishouden", False), ("Diepvrieszakjes", "Huishouden", False),
+    # Sauzen en erbij
+    ("Satésaus", "Sauzen en erbij", False), ("Fritessaus", "Sauzen en erbij", False), ("Knoflooksaus", "Sauzen en erbij", False),
+    ("Barbecuesaus", "Sauzen en erbij", False), ("Currysaus", "Sauzen en erbij", False), ("Pastasaus", "Sauzen en erbij", False),
+    ("Sambal oelek", "Sauzen en erbij", False), ("Ketjap manis", "Sauzen en erbij", False), ("Gebakken uitjes", "Sauzen en erbij", False),
+    ("Seroendeng", "Sauzen en erbij", False), ("Kroepoek", "Sauzen en erbij", False), ("Atjar", "Sauzen en erbij", False),
+    ("Augurken", "Sauzen en erbij", False), ("Zilveruitjes", "Sauzen en erbij", False), ("Olijven", "Sauzen en erbij", False),
+    ("Kappertjes", "Sauzen en erbij", False), ("Zongedroogde tomaten", "Sauzen en erbij", False), ("Appelmoes", "Sauzen en erbij", False),
+    ("Salsa", "Sauzen en erbij", False), ("Pindasaus", "Sauzen en erbij", False),
+    # Meer voorraad
+    ("Bruine bonen", "Pasta, rijst en blik", False), ("Linzen", "Pasta, rijst en blik", False), ("Witte bonen in tomatensaus", "Pasta, rijst en blik", False),
+    ("Soep in blik", "Pasta, rijst en blik", False), ("Cup-a-soup", "Pasta, rijst en blik", False), ("Knakworstjes", "Pasta, rijst en blik", False),
+    ("Lasagnebladen", "Pasta, rijst en blik", False), ("Noedels", "Pasta, rijst en blik", False), ("Tortilla wraps", "Pasta, rijst en blik", False),
+    ("Aardappelpuree poeder", "Pasta, rijst en blik", False), ("Bami pakket", "Pasta, rijst en blik", False),
+    ("Pannenkoekenmix", "Bakken", False), ("Puddingpoeder", "Bakken", False), ("Custardpoeder", "Bakken", False), ("Gelatine", "Bakken", False),
+    ("Chocoladestukjes", "Bakken", False), ("Amandelen", "Bakken", False),
+    ("Muisjes", "Ontbijt en beleg", False), ("Vruchtenhagel", "Ontbijt en beleg", False), ("Speculoospasta", "Ontbijt en beleg", False),
+    ("Ontbijtkoek", "Ontbijt en beleg", False), ("Rijstwafels", "Ontbijt en beleg", False), ("Muesli", "Ontbijt en beleg", False),
+    ("Koekjes", "Snoep en snacks", False), ("Stroopwafels", "Snoep en snacks", False), ("Chips", "Snoep en snacks", False),
+    ("Nootjes", "Snoep en snacks", False), ("Chocolade", "Snoep en snacks", False), ("Drop", "Snoep en snacks", False),
+    ("Popcornmais", "Snoep en snacks", False), ("Tortillachips", "Snoep en snacks", False), ("Rozijnen", "Snoep en snacks", False),
+    ("Koffiemelk", "Drinken", False), ("Suikerklontjes", "Drinken", False), ("Zoetjes", "Drinken", False), ("Frisdrank", "Drinken", False),
+    ("Bronwater", "Drinken", False), ("Cacao", "Drinken", False), ("Koffiebonen", "Drinken", False), ("Koffiepads", "Drinken", False),
+    ("Allesreiniger", "Huishouden", False), ("Wc-reiniger", "Huishouden", False), ("Handzeep", "Huishouden", False),
+    ("Wasverzachter", "Huishouden", False), ("Glasreiniger", "Huishouden", False), ("Schuursponsjes", "Huishouden", False),
+    ("Vaatdoekjes", "Huishouden", False), ("Batterijen", "Huishouden", False), ("Theelichtjes", "Huishouden", False),
+    ("Tandpasta", "Verzorging", False), ("Shampoo", "Verzorging", False), ("Douchegel", "Verzorging", False), ("Deodorant", "Verzorging", False),
+    ("Wattenstaafjes", "Verzorging", False), ("Pleisters", "Verzorging", False), ("Zakdoekjes", "Verzorging", False),
 ]
 _STAPLE_GROUP = {n.lower(): g for n, g, _ in PANTRY_STAPLES}
 _FRESH_AISLES = {"Aardappelen, groente & fruit", "Vlees & vis", "Zuivel & kaas", "Maaltijden, salades & tapas"}
@@ -2702,8 +2729,15 @@ async def pantry_suggestions(skip: str = "", user: dict = Depends(get_current_us
     for name_l, n in popular.items():
         if name_l not in _STAPLE_GROUP and _is_pantry(name_l):
             items.append({"name": name_l[:1].upper() + name_l[1:], "group": "Vaak ingevuld door anderen", "default": False, "users": n})
-    # Wat veel gebruikers hebben eerst, verder de volgorde van de lijst (de echte basis bovenaan)
+    # Eerst de echte basis (en wat veel gebruikers hebben); de rest om en om uit elke groep,
+    # zodat je bij 'Andere voorstellen' niet alleen maar kruiden krijgt
     items.sort(key=lambda i: (-min(i["users"], 50) // 5, not i["default"]))
+    first = [i for i in items if i["default"] or i["users"] >= 5]
+    by_group: Dict[str, list] = {}
+    for i in items:
+        if i not in first:
+            by_group.setdefault(i["group"], []).append(i)
+    items = first + [x for row in itertools.zip_longest(*by_group.values()) for x in row if x]
     left = [i for i in items if i["name"].lower() not in seen and not any(_same_staple(i["name"], h) for h in have_names)]
     batch = left[:12]
     store = user.get("store") or DEFAULT_STORE
