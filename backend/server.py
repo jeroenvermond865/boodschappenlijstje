@@ -1437,14 +1437,15 @@ class AutoMenuInput(BaseModel):
     stores: List[str] = []  # recepten van deze winkels (ah, jumbo, dirk); leeg = alle winkels
     cook_twice: bool = True  # kleine groep: één keer koken voor twee dagen (lunch en avondeten), dan blijft er minder over
     cheap: bool = False  # goedkope gerechten eerst
-    kind: str = "alles"  # gewoon (brood met beleg, stamppot, pasta), recepten (uitgebreid van de winkels) of alles
+    kind: str = "alles"  # oud: gewoon, recepten of alles
+    kinds: List[str] = []  # app (gewone app-gerechten), recepten (van de winkels), eigen (zelf gemaakt); leeg = alles
     promos: bool = True  # gerechten met aanbiedingen eerst
     prefer: List[str] = []  # hier hebben we zin in (woorden in gerecht of ingrediënten)
     avoid: List[str] = []  # liever niet
     remember: bool = True
 
 
-_MENU_PREF_KEYS = ("categories", "style", "diet", "store", "stores", "cook_twice", "cheap", "kind", "promos", "prefer", "avoid")
+_MENU_PREF_KEYS = ("categories", "style", "diet", "store", "stores", "cook_twice", "cheap", "kinds", "promos", "prefer", "avoid")
 
 
 @api_router.get("/menu-prefs")
@@ -1509,7 +1510,11 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     stores = [x for x in dict.fromkeys(data.stores or ([data.store] if data.store else [])) if x in _RECIPE_SOURCES]
     if len(stores) == len(_RECIPE_SOURCES):
         stores = []  # alle winkels aan
-    kind = data.kind if data.kind in ("gewoon", "recepten") else "alles"
+    kinds = {x for x in data.kinds if x in ("app", "recepten", "eigen")} or (
+        {"app", "eigen"} if data.kind == "gewoon" else {"recepten", "eigen"} if data.kind == "recepten" else {"app", "recepten", "eigen"})
+
+    def kind_of(d):
+        return "app" if d.get("basic") else "recepten" if (d.get("source") or {}).get("store") else "eigen"
 
     # Voorkeuren (meerdere tegelijk mogelijk): een gerecht past als het bij minstens één ervan hoort
     picks = {x for x in (data.diet or "").split(",") if x in ("vega", "vegan", "vlees", "vis")}
@@ -1532,9 +1537,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         if stores and src and src not in stores:
             return False
         # Soort gerechten: alleen gewone maaltijden, of juist de uitgebreide recepten van de winkels
-        if kind == "gewoon" and src:
-            return False
-        if kind == "recepten" and d.get("basic"):
+        if kind_of(d) not in kinds:
             return False
         if avoid and any(w in text_of(d) for w in avoid):
             return False
@@ -1561,7 +1564,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         have = sum(1 for d in dishes if d["category"] == cat and d["dish_id"] not in keep)
         want = min(slots, MENU_MAX_DIFFERENT)
         need = want - have if data.style != "nieuw" else want - min(have, slots // 2)
-        if need <= 0 or kind == "gewoon":
+        if need <= 0 or "recepten" not in kinds:
             continue
         if added_online >= MENU_ONLINE_MAX or time.time() - t_start > MENU_ONLINE_SECONDS:
             break

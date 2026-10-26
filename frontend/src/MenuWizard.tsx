@@ -13,8 +13,8 @@ import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Style = "vertrouwd" | "mix" | "nieuw";
-type Kind = "gewoon" | "recepten" | "alles";
-type Prefs = { categories?: MealCategory[]; style?: Style; diet?: string; store?: string; stores?: string[]; kind?: Kind; cook_twice?: boolean; cheap?: boolean; promos?: boolean; prefer?: string[]; avoid?: string[] };
+type Kind = "app" | "recepten" | "eigen";
+type Prefs = { categories?: MealCategory[]; style?: Style; diet?: string; store?: string; stores?: string[]; kinds?: Kind[]; cook_twice?: boolean; cheap?: boolean; promos?: boolean; prefer?: string[]; avoid?: string[] };
 
 const STYLES: { key: Style; label: string; sub: string; icon: string }[] = [
   { key: "vertrouwd", label: "Vertrouwd", sub: "Wat je vaker eet", icon: "home-heart" },
@@ -24,9 +24,9 @@ const STYLES: { key: Style; label: string; sub: string; icon: string }[] = [
 
 // Soort gerechten: gewone maaltijden, uitgebreide recepten van de winkels, of allebei
 const KINDS: { key: Kind; label: string; sub: string; icon: string }[] = [
-  { key: "gewoon", label: "Gewoon en betaalbaar", sub: "Brood met beleg, stamppot, pasta, nasi", icon: "bread-slice-outline" },
-  { key: "recepten", label: "Uitgebreide recepten", sub: "Recepten van de supermarkten", icon: "chef-hat" },
-  { key: "alles", label: "Allebei", sub: "Gewone maaltijden en recepten door elkaar", icon: "silverware-fork-knife" },
+  { key: "app", label: "App-gerechten", sub: "Gewoon en betaalbaar: brood met beleg, stamppot, pasta, nasi", icon: "bread-slice-outline" },
+  { key: "recepten", label: "Recepten", sub: "Uitgebreide recepten van de supermarkten", icon: "chef-hat" },
+  { key: "eigen", label: "Eigen gerechten", sub: "Gerechten die je zelf hebt gemaakt", icon: "account-heart-outline" },
 ];
 
 // Recepten van welke winkels? Je eigen supermarkt staat altijd aan als je dit opent
@@ -71,7 +71,7 @@ export function MenuWizard({
   const { user } = useAuth();
   const own = storeKey(user?.store);
   const [stores, setStores] = useState<string[]>(own ? [own] : []);
-  const [kind, setKind] = useState<Kind>("alles");
+  const [kinds, setKinds] = useState<Kind[]>(["app", "recepten", "eigen"]);
   const [cheap, setCheap] = useState(false);
   const [twice, setTwice] = useState(true);
   const [promos, setPromos] = useState(true);
@@ -99,7 +99,7 @@ export function MenuWizard({
         setDiets((p.diet ?? "").split(",").filter(Boolean));
         const saved = p.stores ?? (p.store ? [p.store] : []);
         setStores([...new Set([...(own ? [own] : []), ...saved])]);
-        setKind(p.kind ?? "alles");
+        if (p.kinds?.length) setKinds(p.kinds);
         setCheap(!!p.cheap);
         setTwice(p.cook_twice ?? true);
         setPromos(p.promos ?? true);
@@ -130,7 +130,7 @@ export function MenuWizard({
           style,
           diet: diets.join(","),
           stores,
-          kind,
+          kinds,
           cheap,
           promos,
           cook_twice: twice,
@@ -229,17 +229,21 @@ export function MenuWizard({
 
             <Text style={styles.head}>Soort gerechten</Text>
             {KINDS.map((k) => (
-              <Pressable key={k.key} onPress={() => setKind(k.key)} style={[styles.style, kind === k.key && styles.styleOn]}>
-                <Icon name={k.icon} size={20} color={kind === k.key ? colors.brandPrimary : colors.muted} />
+              <Pressable
+                key={k.key}
+                onPress={() => setKinds((v) => (v.includes(k.key) ? (v.length > 1 ? v.filter((x) => x !== k.key) : v) : [...v, k.key]))}
+                style={[styles.style, kinds.includes(k.key) && styles.styleOn]}
+              >
+                <Icon name={k.icon} size={20} color={kinds.includes(k.key) ? colors.brandPrimary : colors.muted} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowText}>{k.label}</Text>
                   <Text style={styles.sub}>{k.sub}</Text>
                 </View>
-                {kind === k.key ? <Icon name="check" size={18} color={colors.brandPrimary} /> : null}
+                <Icon name={kinds.includes(k.key) ? "checkbox-marked" : "checkbox-blank-outline"} size={20} color={kinds.includes(k.key) ? colors.brandPrimary : colors.muted} />
               </Pressable>
             ))}
 
-            {kind !== "gewoon" ? (
+            {kinds.includes("recepten") ? (
               <>
                 <Text style={styles.head}>Recepten van</Text>
                 <View style={styles.chips}>

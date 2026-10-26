@@ -33,8 +33,9 @@ export type Dish = {
 export const isOwnDish = (d: Dish, me?: string) => !d.online && !d.camp_id && (d.is_standard || !d.owner_id || d.owner_id === me);
 
 const TABS = [
-  { key: "own", label: "Eigen gerechten" },
-  { key: "online", label: "Online gerechten" },
+  { key: "app", label: "App-gerechten" },
+  { key: "own", label: "Eigen" },
+  { key: "online", label: "Online" },
   { key: "packages", label: "Pakketten" },
 ] as const;
 
@@ -53,10 +54,10 @@ export default function DishesScreen() {
   const [fitsOnly, setFitsOnly] = useState(false);
   const params = useLocalSearchParams<{ tab?: string }>();
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>(
-    params.tab === "online" || params.tab === "packages" ? params.tab : "own",
+    params.tab === "online" || params.tab === "packages" || params.tab === "own" ? params.tab : "app",
   );
   useEffect(() => {
-    if (params.tab === "online" || params.tab === "own" || params.tab === "packages") setTab(params.tab);
+    if (params.tab === "online" || params.tab === "own" || params.tab === "packages" || params.tab === "app") setTab(params.tab);
   }, [params.tab]);
   const packages = useQuery({
     queryKey: ["packages"],
@@ -70,12 +71,13 @@ export default function DishesScreen() {
   });
 
   const filtered = useMemo(() => {
-    let list = (data?.dishes ?? []).filter((d) => isOwnDish(d, user?.id)); // online gerechten en kampversies horen hier niet
+    // App-gerechten (standaard voor iedereen) of je eigen gerechten; online gerechten en kampversies horen hier niet
+    let list = (data?.dishes ?? []).filter((d) => isOwnDish(d, user?.id) && (tab === "app" ? d.is_standard : !d.is_standard));
     if (cat !== "all") list = list.filter((d) => d.category === cat);
     if (search.trim()) list = list.filter((d) => d.name.toLowerCase().includes(search.trim().toLowerCase()));
     if (fitsOnly && diet.length) list = list.filter((d) => !dietConflicts(d.ingredients, diet).length);
     return list;
-  }, [data, cat, search, fitsOnly, diet]);
+  }, [data, cat, search, fitsOnly, diet, tab]);
 
   const chips: ({ key: MealCategory | "all"; label: string })[] = [
     { key: "all", label: "Alle" },
@@ -108,7 +110,7 @@ export default function DishesScreen() {
           ))}
         </View>
 
-        {tab === "own" ? (
+        {tab === "own" || tab === "app" ? (
           <>
         <View style={styles.searchBox}>
           <Icon name="magnify" size={20} color={colors.muted} />
@@ -237,8 +239,8 @@ export default function DishesScreen() {
           ListEmptyComponent={
             <EmptyState
               icon="silverware-variant"
-              title={data?.dishes.some((d) => isOwnDish(d, user?.id)) ? "Geen gerechten gevonden" : "Nog geen eigen gerechten"}
-              subtitle={data?.dishes.some((d) => isOwnDish(d, user?.id)) ? "Pas je filters aan of voeg een nieuw gerecht toe." : "Maak een gerecht met de knop hieronder, of neem er een over uit Online gerechten."}
+              title={tab === "own" && !data?.dishes.some((d) => isOwnDish(d, user?.id) && !d.is_standard) ? "Nog geen eigen gerechten" : "Geen gerechten gevonden"}
+              subtitle={tab === "app" || data?.dishes.some((d) => isOwnDish(d, user?.id) && !d.is_standard) ? "Pas je filters aan of voeg een nieuw gerecht toe." : "Maak een gerecht met de knop hieronder, of neem er een over uit Online gerechten."}
             />
           }
         />
@@ -254,7 +256,7 @@ export default function DishesScreen() {
           <Text style={styles.fabText}>Pakket</Text>
         </Pressable>
       ) : null}
-      {tab === "own" ? (
+      {tab === "own" || tab === "app" ? (
       <Pressable
         testID="new-dish-fab"
         onPress={() => router.push("/dish/edit")}
