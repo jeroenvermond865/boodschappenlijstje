@@ -8,6 +8,7 @@ import { EmptyState, Icon } from "@/src/components/ui";
 import type { Package } from "@/app/package/edit";
 import { OnlineRecipes } from "@/src/OnlineRecipes";
 import { useHideOnScroll } from "@/src/hideOnScroll";
+import { smartFilter } from "@/src/smartSearch";
 import { api } from "@/src/api";
 import { dietConflicts, useDiet } from "@/src/diet";
 import { useAuth } from "@/src/auth";
@@ -77,7 +78,7 @@ export default function DishesScreen() {
     // App-gerechten (standaard voor iedereen) of je eigen gerechten; online gerechten en kampversies horen hier niet
     let list = (data?.dishes ?? []).filter((d) => isOwnDish(d, user?.id) && (tab === "app" ? d.is_standard : !d.is_standard));
     if (cat !== "all") list = list.filter((d) => d.category === cat);
-    if (search.trim()) list = list.filter((d) => d.name.toLowerCase().includes(search.trim().toLowerCase()));
+    if (search.trim()) list = smartFilter(list, search, (d) => [d.name, d.name, ...(d.ingredients ?? []).map((i) => i.name)]);
     if (fitsOnly && diet.length) list = list.filter((d) => !dietConflicts(d.ingredients, diet).length);
     return list;
   }, [data, cat, search, fitsOnly, diet, tab]);

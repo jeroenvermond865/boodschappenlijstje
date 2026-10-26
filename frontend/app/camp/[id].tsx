@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import Modal from "@/src/components/Modal";
+import { smartFilter } from "@/src/smartSearch";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1077,7 +1078,7 @@ function DishPickerModal({
   const { user } = useAuth();
   const mine = dishes.filter((d) => isOwnDish(d, user?.id));
   const own = category && !allCats ? mine.filter((d) => d.category === category) : mine;
-  const list = own.filter((d) => !q.trim() || d.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const list = smartFilter(own, q, (d) => [d.name, ...(d.ingredients ?? []).map((i) => i.name)]);
   const pickedRecipes = dishes
     .filter((d) => selectedIds.includes(d.id) && d.source?.recipe_id)
     .map((d) => d.source!.recipe_id.replace(":", "-"));

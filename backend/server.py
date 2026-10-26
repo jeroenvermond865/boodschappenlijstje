@@ -3540,6 +3540,85 @@ def _norm_text(s: str) -> str:
     return re.sub(r"[^a-z0-9%.,]+", " ", s).strip()
 
 
+# Zoeken: andere woorden voor hetzelfde (Engels, Vlaams, andere spelling) en tikfouten.
+# Elke groep: woorden die elkaar vinden. "curry" vindt zo ook kerrie, "zucchini" ook courgette.
+_SEARCH_GROUPS = [
+    "kerrie curry currie", "courgette zucchini", "aubergine eggplant", "kip chicken kipfilet", "rundvlees beef rund", "varkensvlees pork varken",
+    "gehakt mince minced", "kaas cheese", "melk milk", "brood bread", "rijst rice", "noedels noodles mie", "ei eieren egg eggs",
+    "aardappel aardappelen potato potatoes piepers", "ui uien onion onions", "knoflook garlic", "tomaat tomaten tomato tomatoes",
+    "champignon champignons mushroom mushrooms paddenstoelen", "room cream slagroom", "boter butter roomboter", "suiker sugar",
+    "bloem meel flour", "olie oil", "chips crisps", "koffie coffee", "thee tea", "bier beer", "wijn wine", "sap juice",
+    "appel appels apple apples", "banaan bananen banana bananas", "sinaasappel sinaasappels jus orange oranges", "citroen lemon",
+    "limoen lime", "aardbei aardbeien strawberry strawberries", "chocolade chocola chocolate choco", "ijs icecream roomijs",
+    "yoghurt yogurt joghurt", "worst sausage worstjes", "spek bacon", "tonijn tuna", "zalm salmon", "garnalen shrimp prawns scampi",
+    "spinazie spinach", "wortel wortels peen carrot carrots", "komkommer cucumber", "sla lettuce", "kool cabbage", "bonen beans",
+    "erwten peas doperwten", "mais corn", "pindakaas peanutbutter", "honing honey", "havermout oats", "saus sauce",
+    "mayonaise mayo", "mosterd mustard", "sojasaus ketjap soy", "azijn vinegar", "zout salt", "peper pepper", "kaneel cinnamon",
+    "gember ginger", "koriander coriander cilantro", "basilicum basil", "peterselie parsley", "toiletpapier wcpapier", "luiers diapers",
+    "afwasmiddel dishsoap", "wasmiddel detergent", "tandpasta toothpaste", "frisdrank soda cola", "water spa", "pannenkoek pannenkoeken pancake pancakes",
+    "taart cake", "koek koekjes cookies biscuits", "hagelslag sprinkles", "drop licorice", "snoep candy", "patat friet frietjes fries",
+    "kalkoen turkey", "lam lamb lamsvlees", "vis fish", "ham", "salami", "paprika paprikas bellpepper", "pompoen pumpkin",
+    "prei leek", "selderij bleekselderij celery", "radijs radish", "biet bieten bietjes beetroot", "peer peren pear", "druif druiven grapes",
+    "ananas pineapple", "mango", "kokos coconut kokosmelk", "noten nuts", "amandel amandelen almond almonds", "pinda pindas peanuts",
+    "cashew cashewnoten", "walnoot walnoten walnuts", "gnocchi", "lasagne lasagna", "macaroni", "spaghetti", "tortilla wraps wrap",
+]
+_SEARCH_SYN: Dict[str, list] = {}
+for _g in _SEARCH_GROUPS:
+    _ws = _g.split()
+    for _w in _ws:
+        _SEARCH_SYN.setdefault(_w, [])
+        _SEARCH_SYN[_w] += [x for x in _ws if x != _w and x not in _SEARCH_SYN[_w]]
+_search_vocab: dict = {"docs": None, "words": []}
+
+
+def _vocab_of(docs: list) -> list:
+    if _search_vocab["docs"] is not docs:
+        words = set()
+        for d in docs:
+            words.update(w for w in (d.get("_norm") or "").split() if len(w) >= 3 and not w[0].isdigit())
+        _search_vocab.update(docs=docs, words=sorted(words))
+    return _search_vocab["words"]
+
+
+def _typo_fix(term: str, vocab: list) -> Optional[str]:
+    # Tikfout? Het woord dat er het meest op lijkt ("kerie" -> "kerrie", "brocoli" -> "broccoli")
+    import difflib
+    if len(term) < 4 or term in vocab:
+        return None
+    best = difflib.get_close_matches(term, vocab + list(_SEARCH_SYN.keys()), n=1, cutoff=0.8 if len(term) >= 6 else 0.84)
+    return best[0] if best else None
+
+
+def _query_variants(q: str, vocab: Optional[list] = None) -> list:
+    # Andere zoekopdrachten die hetzelfde bedoelen: eerst andere woorden (curry -> kerrie), daarna tikfouten verbeterd
+    words = _norm_text(q).split()
+    out = []
+    for i, w in enumerate(words):
+        for alt in _SEARCH_SYN.get(w, []):
+            out.append(" ".join(words[:i] + [alt] + words[i + 1:]))
+    if vocab is not None:
+        fixed = [(_typo_fix(w, vocab) or w) for w in words]
+        if fixed != words:
+            out.append(" ".join(fixed))
+            for i, w in enumerate(fixed):
+                for alt in _SEARCH_SYN.get(w, []):
+                    out.append(" ".join(fixed[:i] + [alt] + fixed[i + 1:]))
+    return [v for v in dict.fromkeys(out) if v != " ".join(words)][:8]
+
+
+def _smart_search(docs: list, q: str, fn) -> list:
+    # Gewoon zoeken, dan aanvullen met andere woorden voor hetzelfde; vind je (bijna) niets, dan ook met tikfouten verbeterd
+    hits = fn(docs, q)
+    seen = {id(d) for d in hits}
+    variants = _query_variants(q, _vocab_of(docs) if len(hits) < 5 else None)
+    for v in variants:
+        for d in fn(docs, v):
+            if id(d) not in seen:
+                seen.add(id(d))
+                hits.append(d)
+    return hits
+
+
 def _term_score(name: str, words: list, term: str) -> int:
     # Lager is beter: "melk" geeft eerst melk, dan karnemelk, pas daarna melkchocolade
     if name == term:
@@ -3661,7 +3740,7 @@ def _run_search(docs: list, q: str, source: str, aisle: str, favs: Optional[set]
     if aisle:
         docs = [d for d in docs if d.get("aisle") == aisle]
     if q.strip():
-        docs = _relevant_products(docs, q) if sort in ("", "relevance") else _search_products(docs, q)
+        docs = _smart_search(docs, q, _relevant_products if sort in ("", "relevance") else _search_products)
 
     # Filters zoals op de sites; de keuzes (soort, merk) hangen af van de afdeling en zoekterm.
     # Elke lijst telt mee met de andere filters, maar niet met zichzelf.
@@ -5946,6 +6025,14 @@ async def search_recipes(q: str = "", store: str = "all", page: int = 0, filters
     q = (q or "").strip()[:80]
     if q:
         res = await _search_recipes(q, store, page, filters)
+        if page == 0 and len(res.get("recipes") or []) < 6:
+            # Weinig gevonden? Ook zoeken met andere woorden voor hetzelfde (curry -> kerrie) of zonder tikfout
+            seen = {r["id"] for r in res.get("recipes") or []}
+            for v in _query_variants(q, _vocab_of(await _global_products()))[:3]:
+                more = await _search_recipes(v, store, 0, filters)
+                add = [r for r in more.get("recipes") or [] if r["id"] not in seen]
+                seen.update(r["id"] for r in add)
+                res = {**res, "recipes": (res.get("recipes") or []) + add, "total": (res.get("total") or 0) + len(add)}
         return {**res, "recipes": await _with_costs(res["recipes"])}
     interest = {} if user.get("no_personal") else await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0, "rwords": 1, "rtags": 1}) or {}
     now = datetime.now(timezone.utc)

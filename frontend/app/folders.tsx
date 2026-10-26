@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Animated, FlatList, Image, Linking, Pressable, ScrollView, SectionList, Text, TextInput, View } from "react-native";
 import Modal from "@/src/components/Modal";
 import { useHideOnScroll } from "@/src/hideOnScroll";
+import { matchScore } from "@/src/smartSearch";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueries, useQuery } from "@tanstack/react-query";
@@ -96,10 +97,7 @@ export default function FoldersScreen() {
       enabled: searching && allStores,
     })),
   });
-  const matches = (it: FolderItem) => {
-    const hay = `${it.title} ${it.label} ${it.category} ${it.quantity ?? ""}`.toLowerCase();
-    return dq.split(/\s+/).every((w) => hay.includes(w));
-  };
+  const matches = (it: FolderItem) => matchScore(dq, it.title, it.label, it.category, it.quantity) >= 0;
   // Per categorie, kaarten naast elkaar (op een breed scherm meer per rij)
   const { cols } = useGrid(160);
   const sections = useMemo(() => {

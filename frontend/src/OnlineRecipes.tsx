@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Animated, FlatList, Image, NativeScrollEvent, NativeSyntheticEvent, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 import { useHideOnScroll } from "@/src/hideOnScroll";
+import { smartFilter } from "@/src/smartSearch";
 import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -109,7 +110,7 @@ export function OnlineRecipes({
   const recipes = useMemo(() => {
     const seen = new Set<string>();
     const all = (query.data?.pages ?? []).flatMap((p) => p.recipes).filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
-    return store === "fav" && q ? all.filter((r) => r.title.toLowerCase().includes(q.toLowerCase())) : all;
+    return store === "fav" && q ? smartFilter(all, q, (r) => [r.title]) : all;
   }, [query.data, store, q]);
   const first = query.data?.pages[0];
   const facets = first?.facets ?? [];
