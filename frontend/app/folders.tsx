@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, Image, Linking, Modal, Pressable, ScrollView, SectionList, Text, View } from "react-native";
+import { ActivityIndicator, FlatList, Image, Linking, Modal, Pressable, ScrollView, SectionList, Text, TextInput, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
-import { euro } from "@/src/search";
+import { euro, useDebounced } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { useGrid } from "@/src/layout";
 import type { Product } from "@/app/(tabs)/products";
@@ -54,6 +54,11 @@ export default function FoldersScreen() {
   const [periodKey, setPeriodKey] = useState<string>("current");
   const [open, setOpen] = useState<FolderItem | null>(null);
   const [cat, setCat] = useState<string | null>(null);
+  // Zoeken in de aanbiedingen: in deze winkel of in alle winkels tegelijk
+  const [q, setQ] = useState("");
+  const [allStores, setAllStores] = useState(false);
+  const dq = useDebounced(q.trim().toLowerCase());
+  const searching = dq.length >= 2;
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["folders", store],
@@ -80,11 +85,35 @@ export default function FoldersScreen() {
     }
   }, [params.promo, params.store, data]);
   const period = periods.find((p) => p.key === periodKey) ?? periods[0];
+  const storeList = data?.stores ?? ["Albert Heijn", "Dirk", "Jumbo"];
+  const others = useQueries({
+    queries: storeList.map((s) => ({
+      queryKey: ["folders", s],
+      queryFn: () => api<FoldersResponse>(`/folders?store=${encodeURIComponent(s)}`),
+      staleTime: 10 * 60 * 1000,
+      enabled: searching && allStores,
+    })),
+  });
+  const matches = (it: FolderItem) => {
+    const hay = `${it.title} ${it.label} ${it.category} ${it.quantity ?? ""}`.toLowerCase();
+    return dq.split(/\s+/).every((w) => hay.includes(w));
+  };
   // Per categorie, kaarten naast elkaar (op een breed scherm meer per rij)
   const { cols } = useGrid(160);
   const sections = useMemo(() => {
     const groups: { title: string; items: FolderItem[] }[] = [];
-    for (const it of period?.items ?? []) {
+    if (searching) {
+      // Zoekresultaten per winkel (zelfde week als gekozen, anders deze week)
+      const sources = allStores
+        ? storeList.map((s, i) => ({ store: s, periods: others[i]?.data?.periods ?? (s === store ? periods : []) }))
+        : [{ store, periods }];
+      for (const src of sources) {
+        const per = src.periods.find((p) => p.key === periodKey) ?? src.periods.find((p) => p.key === "current") ?? src.periods[0];
+        const hits = (per?.items ?? []).filter(matches);
+        if (hits.length) groups.push({ title: allStores ? src.store : per!.title, items: hits });
+      }
+    }
+    for (const it of searching ? [] : period?.items ?? []) {
       if (cat && it.category !== cat) continue;
       let g = groups.find((x) => x.title === it.category);
       if (!g) groups.push((g = { title: it.category, items: [] }));
@@ -95,7 +124,7 @@ export default function FoldersScreen() {
       for (let i = 0; i < g.items.length; i += cols) rows.push(g.items.slice(i, i + cols));
       return { title: `${g.title} (${g.items.length})`, data: rows };
     });
-  }, [period, cat, cols]);
+  }, [period, cat, cols, searching, dq, allStores, others.map((o) => o.dataUpdatedAt).join(","), periodKey, store]);
 
   const openItem = (it: FolderItem) => {
     if (it.product_ids.length === 1) router.push(`/product/${it.product_ids[0]}`);
@@ -129,6 +158,31 @@ export default function FoldersScreen() {
             </Pressable>
           ))}
         </ScrollView>
+        <View style={styles.searchBox}>
+          <Icon name="magnify" size={20} color={colors.muted} />
+          <TextInput
+            value={q}
+            onChangeText={setQ}
+            placeholder="Zoek in de aanbiedingen (bijv. kaas, koffie)"
+            placeholderTextColor={colors.muted}
+            style={styles.searchInput}
+            testID="folder-search"
+          />
+          {q ? (
+            <Pressable onPress={() => setQ("")} hitSlop={8}>
+              <Icon name="close-circle" size={18} color={colors.muted} />
+            </Pressable>
+          ) : null}
+        </View>
+        {searching ? (
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            {[false, true].map((a) => (
+              <Pressable key={String(a)} onPress={() => setAllStores(a)} style={[styles.chip, allStores === a && styles.chipActive]}>
+                <Text style={[styles.chipText, allStores === a && styles.chipTextActive]}>{a ? "Alle winkels" : `Alleen ${store}`}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
         {periods.length > 0 ? (
           <View style={styles.segment}>
             {periods.map((p) => (
@@ -174,7 +228,7 @@ export default function FoldersScreen() {
             <Text style={styles.folderLinkText}>Opnieuw laden</Text>
           </Pressable>
         </View>
-      ) : period.pages ? (
+      ) : period.pages && !searching ? (
         <FolderPages pages={period.pages} bottom={insets.bottom + 40} />
       ) : (
         <SectionList
@@ -182,7 +236,8 @@ export default function FoldersScreen() {
           keyExtractor={(row) => row.map((it) => it.id).join("|")}
           stickySectionHeadersEnabled
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: insets.bottom + 40 }}
-          ListHeaderComponent={
+          ListEmptyComponent={searching ? <Text style={[styles.muted, { paddingTop: 16 }]}>Geen aanbiedingen gevonden voor "{q.trim()}".</Text> : null}
+          ListHeaderComponent={searching ? null : (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 10 }}>
               <Pressable onPress={() => setCat(null)} style={[styles.catChip, !cat && styles.chipActive]}>
                 <Text style={[styles.chipText, !cat && styles.chipTextActive]}>Alles ({period.items.length})</Text>
@@ -195,7 +250,7 @@ export default function FoldersScreen() {
                 </Pressable>
               ))}
             </ScrollView>
-          }
+          )}
           renderSectionHeader={({ section }) => (
             <View style={styles.sectionHead}>
               <Text style={styles.sectionTitle}>{section.title}</Text>
@@ -335,6 +390,8 @@ function ItemSheet({ item, onClose, onOpenProduct }: { item: FolderItem; onClose
 }
 
 const useStyles = makeStyles((colors) => ({
+  searchBox: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surfaceSecondary, borderRadius: 12, paddingHorizontal: 12, minHeight: 44 },
+  searchInput: { flex: 1, fontSize: 15, fontFamily: fonts.regular, color: colors.onSurface, paddingVertical: 10 },
   page: { width: "100%", height: 480, borderRadius: 12, backgroundColor: colors.surfaceSecondary },
   root: { flex: 1, backgroundColor: colors.surface },
   header: {
