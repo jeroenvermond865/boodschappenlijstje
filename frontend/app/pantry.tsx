@@ -10,6 +10,8 @@ import { formatQty, UNITS } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { PremiumLock, usePremium } from "@/src/premium";
 import { PantrySuggestions } from "@/src/PantrySuggestions";
+import type { Product } from "@/src/ProductBrowser";
+import { euro, fetchProducts, useDebounced } from "@/src/search";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -28,6 +30,15 @@ export default function PantryScreen() {
   const [qty, setQty] = useState("1");
   const [unit, setUnit] = useState("stuks");
   const [sugOpen, setSugOpen] = useState(false);
+  // Zoeken naar een echt product; de naam blijft wat je typte ("Rijst"), zodat hij past bij je gerechten
+  const [pick, setPick] = useState<Product | null>(null);
+  const dq = useDebounced(name);
+  const found = useQuery({
+    queryKey: ["products", "search", "pantry", dq.trim()],
+    queryFn: () => fetchProducts({ q: dq, limit: 8 }),
+    enabled: premium && !pick && dq.trim().length > 1,
+    placeholderData: (prev) => prev,
+  });
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ["pantry"],
@@ -41,9 +52,11 @@ export default function PantryScreen() {
   const fail = (e: any) => toast.show(e?.message ?? "Mislukt", "error");
 
   const add = useMutation({
-    mutationFn: () => api("/pantry", { method: "POST", body: { name, qty: parseFloat(qty.replace(",", ".")) || 0, unit } }),
+    mutationFn: () =>
+      api("/pantry", { method: "POST", body: { name: name.trim(), qty: parseFloat(qty.replace(",", ".")) || 0, unit, product_id: pick?.id ?? null } }),
     onSuccess: () => {
       setName("");
+      setPick(null);
       setQty("1");
       done();
     },
@@ -109,7 +122,56 @@ export default function PantryScreen() {
               );
             })()}
             <View style={styles.addCard}>
-              <Field label="Product" testID="pantry-name" placeholder="Bijv. Rijst" value={name} onChangeText={setName} maxLength={80} />
+              <Field
+                label="Zoek een product"
+                testID="pantry-name"
+                placeholder="Bijv. rijst, olijfolie, koffie"
+                value={name}
+                onChangeText={(v) => {
+                  setName(v);
+                  setPick(null);
+                }}
+                maxLength={80}
+              />
+              {pick ? (
+                <View style={styles.pickRow}>
+                  {pick.image ? <Image source={{ uri: pick.image }} style={styles.pickImg} resizeMode="contain" /> : null}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowName} numberOfLines={2}>{pick.name}</Text>
+                    <Text style={styles.rowQty}>{[pick.source, pick.unit, pick.price > 0 ? euro(pick.price) : ""].filter(Boolean).join(" · ")}</Text>
+                  </View>
+                  <Pressable onPress={() => setPick(null)} hitSlop={8} testID="pantry-pick-clear">
+                    <Icon name="close-circle" size={20} color={colors.muted} />
+                  </Pressable>
+                </View>
+              ) : name.trim().length > 1 ? (
+                <View style={{ gap: 4 }}>
+                  {found.isLoading ? <ActivityIndicator color={colors.brandPrimary} /> : null}
+                  {(found.data?.products ?? []).map((p) => (
+                    <Pressable
+                      key={p.id}
+                      onPress={() => {
+                        setPick(p);
+                        // Typte je "rijst", dan heet hij in je voorraadkast "Rijst" (zo vinden je gerechten hem)
+                        const t = name.trim();
+                        setName(t.charAt(0).toUpperCase() + t.slice(1));
+                      }}
+                      style={styles.pickRow}
+                      testID={`pantry-found-${p.id}`}
+                    >
+                      {p.image ? <Image source={{ uri: p.image }} style={styles.pickImg} resizeMode="contain" /> : <View style={styles.pickImg} />}
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.rowName} numberOfLines={1}>{p.name}</Text>
+                        <Text style={styles.rowQty}>{[p.source, p.unit].filter(Boolean).join(" · ")}</Text>
+                      </View>
+                      <Text style={styles.rowName}>{p.price > 0 ? euro(p.price) : ""}</Text>
+                    </Pressable>
+                  ))}
+                  {!found.isLoading && found.data && !found.data.products.length ? (
+                    <Text style={styles.rowQty}>Geen product gevonden. Je kunt het ook gewoon met deze naam toevoegen.</Text>
+                  ) : null}
+                </View>
+              ) : null}
               <View style={{ flexDirection: "row", gap: 10 }}>
                 <Field label="Hoeveel" testID="pantry-qty" value={qty} onChangeText={setQty} keyboardType="decimal-pad" containerStyle={{ flex: 1 }} />
                 <View style={{ flex: 1, gap: 6 }}>
@@ -190,5 +252,7 @@ const useStyles = makeStyles((colors) => ({
   rowBorder: { borderBottomWidth: 1, borderBottomColor: colors.divider },
   rowName: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
   rowQty: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
+  pickRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  pickImg: { width: 40, height: 40, borderRadius: 8, backgroundColor: "#fff" },
   stepBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
 }));

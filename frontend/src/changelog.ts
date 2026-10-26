@@ -10,6 +10,7 @@ export const CHANGELOG: Release[] = [
     title: "Vegen, verversen en een snelle voorraadkast",
     changes: [
       { kind: "nieuw", text: "Voorraadkast in één keer vullen: vink aan wat je al in huis hebt uit wat veel mensen hebben, met een product erbij dat je kunt wisselen." },
+      { kind: "nieuw", text: "In de voorraadkast zoek je nu naar echte producten om toe te voegen." },
       { kind: "nieuw", text: "Bij een lijstje veeg je opzij naar de vorige of volgende dag." },
       { kind: "nieuw", text: "Bij een aanbieding blader je met Vorige en Volgende (of vegen) door de andere aanbiedingen. Na een product bekijken kom je terug bij de keuzes." },
       { kind: "beter", text: "Omlaag trekken om te verversen werkt nu ook in de webapp op je telefoon." },
