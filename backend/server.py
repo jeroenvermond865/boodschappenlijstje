@@ -4200,6 +4200,19 @@ def _pack_share(item_unit: str, pack: str, name: str = "", count: Optional[int] 
             if 0 < grams <= 50:
                 return min(1.0, 1 / grams)
         return 1.0
+    if u in ("bol", "bollen", "bolletje", "bolletjes", "schep", "scheppen", "schepje", "schepjes"):
+        # Een bol (of schep) ijs is zo'n 60 ml: 8 bollen passen in één bak van een liter, niet in 8 bakken
+        icy = bool(re.search(r"ijs|sorbet|gelato|sorbetto|gruvi", _norm_text(name)))
+        m = _UNIT_RE.search((pack or "").lower())
+        if m and m.group(3) in ("ml", "cl", "l", "liter", "ltr"):
+            ml = float(m.group(2).replace(",", ".")) * int(m.group(1) or 1) * {"cl": 10, "l": 1000, "liter": 1000, "ltr": 1000}.get(m.group(3), 1)
+            if ml > 0:
+                return min(1.0, 60 / ml)
+        n = _pack_count(pack) or count
+        if n and n > 1:
+            return 1 / (n * 2) if icy else 1 / n  # pots ijs: zo'n twee bollen per stuk; 3 bollen knoflook: één ervan
+        if icy or u.startswith("schep"):
+            return 60 / 900  # onbekend: een gewone bak van 900 ml
     if u in _PART_OF_PACK:
         if u == "plak":
             m = re.search(r"(\d+)\s*(plakken|plakjes|st)\b", (pack or "").lower()) or re.search(r"(\d+)\s*(plakken|plakjes)\b", (name or "").lower())
@@ -6329,6 +6342,9 @@ def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False)
         for suf in ("sche", "se"):
             if w.endswith(suf) and len(w) - len(suf) >= 4:
                 levels.append(([w[: -len(suf)]], 1.6))
+    # "brioche brood" of "pita brood": de soort brood heet in de winkel vaak alleen zo ("AH Brioche")
+    if len(core) > 1 and core[-1] in ("brood", "broden", "broodje", "broodjes"):
+        levels.append((core[:-1], 0.9))
     levels.append((core[-1:], 1.2 if len(core) == 1 else 2.5))
     best: dict = {}
     seen = set()
