@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { ActivityIndicator, Image, Pressable, RefreshControl, Text, View } from "react-native";
+import { useMemo, useState } from "react";
+import { ActivityIndicator, Image, Pressable, RefreshControl, Switch, Text, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -15,7 +16,27 @@ import { euro, fetchProducts, useDebounced } from "@/src/search";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type PItem = { id: string; name: string; qty: number; unit: string; learned?: boolean; product_name?: string | null; image?: string | null };
+type PItem = {
+  id: string;
+  name: string;
+  qty: number;
+  unit: string;
+  learned?: boolean;
+  product_id?: string | null;
+  product_name?: string | null;
+  image?: string | null;
+  weekly?: number | null; // eigen verbruik per week (in dezelfde eenheid)
+  for_dishes?: boolean; // telt mee voor gerechten
+  group?: string;
+  restock?: number; // bijna op: zoveel voorstellen om te kopen
+};
+
+// Kort zeggen hoeveel er nog is en wat je per week gebruikt
+function stockText(i: PItem) {
+  const left = i.unit === "%" ? `${i.qty >= 80 ? "Vol" : i.qty >= 20 ? "Nog wat" : i.qty > 0 ? "Bijna op" : "Op"} (±${Math.round(i.qty)}%)` : `${formatQty(i.qty)} ${i.unit}`;
+  const use = i.weekly ? ` · ${i.unit === "%" ? `${formatQty(i.weekly)}%` : `${formatQty(i.weekly)} ${i.unit}`} per week` : "";
+  return left + use;
+}
 
 const USE_STEPS = [0, 5, 10, 15, 20, 25, 30, 40, 50];
 
@@ -63,7 +84,11 @@ export default function PantryScreen() {
     onError: fail,
   });
   const update = useMutation({
-    mutationFn: (i: PItem) => api(`/pantry/${i.id}`, { method: "PUT", body: { name: i.name, qty: i.qty, unit: i.unit } }),
+    mutationFn: (i: PItem) =>
+      api(`/pantry/${i.id}`, {
+        method: "PUT",
+        body: { name: i.name, qty: i.qty, unit: i.unit, product_id: i.product_id ?? null, weekly: i.weekly ?? null, for_dishes: i.for_dishes !== false },
+      }),
     onSuccess: done,
     onError: fail,
   });
@@ -77,6 +102,17 @@ export default function PantryScreen() {
     onSuccess: done,
     onError: fail,
   });
+  const [edit, setEdit] = useState<PItem | null>(null);
+  // Overzicht in groepen (kruiden, olie en sauzen, ...); wat bijna op is apart bovenaan
+  const groups = useMemo(() => {
+    const out: { group: string; items: PItem[] }[] = [];
+    for (const it of data?.items ?? []) {
+      const g = it.group || "Overig";
+      (out.find((x) => x.group === g) ?? out[out.push({ group: g, items: [] }) - 1]).items.push(it);
+    }
+    return out.sort((a, b) => (a.group === "Overig" ? 1 : b.group === "Overig" ? -1 : a.group.localeCompare(b.group, "nl")));
+  }, [data]);
+  const low = (data?.items ?? []).filter((i) => (i.restock ?? 0) > 0);
   const step = (i: PItem, dir: 1 | -1) => {
     const by = i.unit === "%" ? 10 : i.unit === "gram" || i.unit === "ml" ? 100 : 1;
     const next = Math.min(i.unit === "%" ? 100 : Infinity, Math.max(0, Math.round((i.qty + dir * by) * 100) / 100));
@@ -99,10 +135,55 @@ export default function PantryScreen() {
         ) : (
           <>
             <Text style={styles.intro}>
-              Zet hier wat je al in huis hebt. Op je boodschappenlijst zie je dan bij elk product hoeveel je nog hebt, en vink je in één keer af wat je niet
-              hoeft te kopen. Gebruik dezelfde naam als in je gerechten, bijvoorbeeld "Rijst" of "Melk". Neem je bij een recept iets niet mee omdat je het al
-              in huis hebt, dan zet de app het hier vanzelf bij.
+              Wat je al in huis hebt, hoef je voor je gerechten niet te kopen. Tik op een product om in te stellen hoeveel je er zelf per week van gebruikt.
+              Is iets bijna op, dan stellen we voor het in je volgende boodschappenlijst te zetten.
             </Text>
+            {low.length ? (
+              <View style={[styles.addCard, { borderColor: colors.warning }]} testID="pantry-low">
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Icon name="cart-arrow-down" size={20} color={colors.warning} />
+                  <Text style={[styles.rowName, { flex: 1 }]}>Bijna op: volgende keer kopen</Text>
+                </View>
+                {low.map((i) => (
+                  <Pressable key={i.id} onPress={() => setEdit(i)} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    {i.image ? <Image source={{ uri: i.image }} style={styles.thumb} resizeMode="contain" /> : <View style={styles.thumb} />}
+                    <Text style={[styles.rowQty, { flex: 1 }]} numberOfLines={1}>
+                      <Text style={styles.rowName}>{i.name}</Text> · {stockText(i)}
+                    </Text>
+                  </Pressable>
+                ))}
+                <Text style={styles.rowQty}>Je ziet ze ook bovenaan je boodschappenlijst; daar zet je ze er met één tik bij.</Text>
+              </View>
+            ) : null}
+            {isLoading ? (
+              <ActivityIndicator color={colors.brandPrimary} />
+            ) : (data?.items ?? []).length === 0 ? null : (
+              groups.map((g) => (
+                <View key={g.group} style={{ gap: 6 }}>
+                  <Text style={styles.groupTitle}>
+                    {g.group} <Text style={styles.rowQty}>({g.items.length})</Text>
+                  </Text>
+                  <View style={styles.list}>
+                    {g.items.map((i, n, arr) => (
+                      <Pressable key={i.id} onPress={() => setEdit(i)} style={[styles.row, n < arr.length - 1 && styles.rowBorder]} testID={`pantry-row-${i.id}`}>
+                        {i.image ? <Image source={{ uri: i.image }} style={styles.thumb} resizeMode="contain" /> : <View style={styles.thumb}><Icon name="fridge-outline" size={18} color={colors.muted} /></View>}
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.rowName} numberOfLines={1}>{i.name}</Text>
+                          <Text style={[styles.rowQty, (i.restock ?? 0) > 0 && { color: colors.warning }]} numberOfLines={1}>{stockText(i)}</Text>
+                          {i.for_dishes === false ? <Text style={styles.rowQty}>Niet voor gerechten</Text> : null}
+                        </View>
+                        <Pressable onPress={() => step(i, -1)} hitSlop={6} style={styles.stepBtn} testID={`pantry-minus-${i.id}`}>
+                          <Icon name="minus" size={18} color={colors.onSurface} />
+                        </Pressable>
+                        <Pressable onPress={() => step(i, 1)} hitSlop={6} style={styles.stepBtn} testID={`pantry-plus-${i.id}`}>
+                          <Icon name="plus" size={18} color={colors.onSurface} />
+                        </Pressable>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ))
+            )}
             {(() => {
               // Lege voorraadkast: de voorstellen staan meteen open, zo is hij in één keer grotendeels gevuld
               const empty = !isLoading && (data?.items ?? []).length === 0;
@@ -112,7 +193,7 @@ export default function PantryScreen() {
                   <Pressable onPress={() => setSugOpen((v) => !v)} disabled={empty} style={{ flexDirection: "row", alignItems: "center", gap: 8 }} testID="pantry-sug-toggle">
                     <Icon name="lightbulb-on-outline" size={20} color={colors.brandPrimary} />
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.rowName}>Wat veel mensen al in huis hebben</Text>
+                      <Text style={styles.rowName}>Voorstellen: wat veel mensen al in huis hebben</Text>
                       <Text style={styles.rowQty}>Vink aan wat jij hebt en zet het in één keer in je voorraadkast.</Text>
                     </View>
                     {empty ? null : <Icon name={show ? "chevron-up" : "chevron-down"} size={20} color={colors.muted} />}
@@ -182,9 +263,9 @@ export default function PantryScreen() {
               <Button label="Toevoegen" onPress={() => add.mutate()} loading={add.isPending} disabled={!name.trim()} testID="pantry-add" />
             </View>
             <View style={styles.addCard}>
-              <Text style={styles.label}>Verbruik per week</Text>
+              <Text style={styles.label}>Standaard verbruik voor flessen en potten</Text>
               <Text style={styles.rowQty}>
-                Sommige dingen gebruik je ook als ze niet in je gerechten staan, zoals olie of kruiden. Zoveel gaat er elke week van je voorraad af.
+                Voor producten zonder eigen verbruik (zoals olie of kruiden in %): zoveel gaat er elke week vanaf. Per product stel je het zelf in door erop te tikken.
               </Text>
               <Select
                 testID="pantry-weekly"
@@ -193,40 +274,21 @@ export default function PantryScreen() {
                 onChange={(v) => setUse.mutate(parseInt(v, 10) || 0)}
               />
             </View>
-            {isLoading ? (
-              <ActivityIndicator color={colors.brandPrimary} />
-            ) : (data?.items ?? []).length === 0 ? (
-              <EmptyState icon="fridge-outline" title="Je voorraadkast is leeg" subtitle="Vink hierboven aan wat je al in huis hebt, of voeg zelf iets toe." />
-            ) : (
-              <View style={styles.list}>
-                {(data?.items ?? []).map((i, n, arr) => (
-                  <View key={i.id} style={[styles.row, n < arr.length - 1 && styles.rowBorder]} testID={`pantry-row-${i.id}`}>
-                    {i.image ? <Image source={{ uri: i.image }} style={{ width: 36, height: 36, borderRadius: 8, backgroundColor: "#fff" }} resizeMode="contain" /> : null}
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.rowName}>{i.name}</Text>
-                      {i.product_name ? <Text style={styles.rowQty} numberOfLines={1}>{i.product_name}</Text> : null}
-                      <Text style={styles.rowQty}>
-                        {i.unit === "%"
-                          ? `${i.qty >= 80 ? "Vol" : i.qty >= 20 ? "Nog wat" : "Bijna op"} · ±${Math.round(i.qty)}%${i.learned ? " · geleerd uit je recepten" : ""}`
-                          : `${formatQty(i.qty)} ${i.unit}`}
-                      </Text>
-                    </View>
-                    <Pressable onPress={() => step(i, -1)} hitSlop={6} style={styles.stepBtn} testID={`pantry-minus-${i.id}`}>
-                      <Icon name="minus" size={18} color={colors.onSurface} />
-                    </Pressable>
-                    <Pressable onPress={() => step(i, 1)} hitSlop={6} style={styles.stepBtn} testID={`pantry-plus-${i.id}`}>
-                      <Icon name="plus" size={18} color={colors.onSurface} />
-                    </Pressable>
-                    <Pressable onPress={() => remove.mutate(i.id)} hitSlop={6} style={styles.stepBtn} testID={`pantry-del-${i.id}`}>
-                      <Icon name="trash-can-outline" size={18} color={colors.error} />
-                    </Pressable>
-                  </View>
-                ))}
-              </View>
-            )}
           </>
         )}
       </KeyboardAwareScrollView>
+      <EditSheet
+        item={edit}
+        onClose={() => setEdit(null)}
+        onSave={(i) => {
+          update.mutate(i);
+          setEdit(null);
+        }}
+        onDelete={(i) => {
+          remove.mutate(i.id);
+          setEdit(null);
+        }}
+      />
     </View>
   );
 }
@@ -252,7 +314,114 @@ const useStyles = makeStyles((colors) => ({
   rowBorder: { borderBottomWidth: 1, borderBottomColor: colors.divider },
   rowName: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
   rowQty: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
+  headerTitle2: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
+  quick: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceTertiary },
+  quickOn: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  quickText: { fontSize: 13, fontFamily: fonts.medium, color: colors.onSurfaceTertiary },
+  quickTextOn: { color: colors.onBrandPrimary },
+  thumb: { width: 38, height: 38, borderRadius: 8, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  groupTitle: { fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface, marginTop: 4 },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
+  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, gap: 14, maxHeight: "92%" },
   pickRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   pickImg: { width: 40, height: 40, borderRadius: 8, backgroundColor: "#fff" },
   stepBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
 }));
+
+// Eén product instellen: hoeveel je hebt, hoeveel je er zelf per week van gebruikt en of het meetelt voor gerechten
+function EditSheet({ item, onClose, onSave, onDelete }: { item: PItem | null; onClose: () => void; onSave: (i: PItem) => void; onDelete: (i: PItem) => void }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [qty, setQty] = useState("");
+  const [unit, setUnit] = useState("stuks");
+  const [weekly, setWeekly] = useState("");
+  const [forDishes, setForDishes] = useState(true);
+  const [key, setKey] = useState<string | null>(null);
+  if (item && key !== item.id) {
+    // Nieuw product geopend: velden vullen
+    setKey(item.id);
+    setQty(formatQty(item.qty));
+    setUnit(item.unit);
+    setWeekly(item.weekly ? formatQty(item.weekly) : "");
+    setForDishes(item.for_dishes !== false);
+  }
+  if (!item && key !== null) setKey(null);
+  const num = (v: string) => parseFloat(v.replace(",", ".")) || 0;
+  const unitText = unit === "%" ? "%" : unit;
+  const w = num(weekly);
+  return (
+    <Modal visible={!!item} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.backdrop} onPress={onClose}>
+        <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
+          {item ? (
+            <>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                {item.image ? <Image source={{ uri: item.image }} style={styles.thumb} resizeMode="contain" /> : null}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.headerTitle2}>{item.name}</Text>
+                  {item.product_name ? <Text style={styles.rowQty} numberOfLines={1}>{item.product_name}</Text> : null}
+                </View>
+                <Pressable onPress={onClose} hitSlop={10}>
+                  <Icon name="close" size={24} color={colors.onSurface} />
+                </Pressable>
+              </View>
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                <Field label="Hoeveel heb je nu" value={qty} onChangeText={setQty} keyboardType="decimal-pad" containerStyle={{ flex: 1 }} testID="pantry-edit-qty" />
+                <View style={{ flex: 1, gap: 6 }}>
+                  <Text style={styles.label}>Eenheid</Text>
+                  <Select value={unit} options={UNITS.includes("%") ? UNITS : [...UNITS, "%"]} onChange={setUnit} testID="pantry-edit-unit" />
+                </View>
+              </View>
+              <View style={{ gap: 6 }}>
+                <Field
+                  label={`Zelf gebruikt per week (${unitText})`}
+                  value={weekly}
+                  onChangeText={setWeekly}
+                  keyboardType="decimal-pad"
+                  placeholder="Bijv. 8"
+                  testID="pantry-edit-weekly"
+                />
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  <Pressable onPress={() => setWeekly("")} style={[styles.quick, !w && styles.quickOn]}>
+                    <Text style={[styles.quickText, !w && styles.quickTextOn]}>Niet bijhouden</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setWeekly(unit === "%" ? "100" : qty || "1")} style={styles.quick} testID="pantry-edit-allweek">
+                    <Text style={styles.quickText}>Elke week helemaal op</Text>
+                  </Pressable>
+                </View>
+                <Text style={styles.rowQty}>
+                  {w
+                    ? `Elke week gaat er ${formatQty(w)} ${unitText} af. Komt het onder één week verbruik, dan stellen we voor om het te kopen.`
+                    : "Gebruik je dit ook buiten je gerechten (zoals eieren bij het ontbijt of een krop sla)? Vul dan in hoeveel per week."}
+                </Text>
+              </View>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowName}>Telt mee voor gerechten</Text>
+                  <Text style={styles.rowQty}>
+                    {forDishes
+                      ? w
+                        ? `Wat je zelf per week gebruikt houden we apart. Gebruik je ${formatQty(w)} per week en heeft een gerecht er nog 6 nodig, dan zorgen we dat er genoeg is voor allebei.`
+                        : "Wat je hebt, hoef je voor je gerechten niet te kopen."
+                      : "Voor gerechten kopen we het gewoon, ook al heb je het in huis."}
+                  </Text>
+                </View>
+                <Switch value={forDishes} onValueChange={setForDishes} testID="pantry-edit-dishes" />
+              </View>
+              <Button
+                label="Opslaan"
+                onPress={() => onSave({ ...item, qty: num(qty), unit, weekly: w > 0 ? w : null, for_dishes: forDishes })}
+                testID="pantry-edit-save"
+              />
+              <Pressable onPress={() => onDelete(item)} style={{ alignSelf: "center", flexDirection: "row", gap: 6, alignItems: "center" }} testID="pantry-edit-delete">
+                <Icon name="trash-can-outline" size={18} color={colors.error} />
+                <Text style={[styles.rowName, { color: colors.error }]}>Uit je voorraadkast halen</Text>
+              </Pressable>
+            </>
+          ) : null}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}

@@ -88,6 +88,8 @@ export function PullToRefresh() {
         show(LIMIT, true);
         ring.style.animation = "ptr-spin 0.8s linear infinite";
         const started = Date.now();
+        // Pagina's die bij verversen iets nieuws willen laten zien (Home: andere recepten en acties) luisteren hiernaar
+        window.dispatchEvent(new Event("app:pull-refresh"));
         queryClient
           .refetchQueries({ type: "active" })
           .catch(() => undefined)

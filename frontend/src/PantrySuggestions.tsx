@@ -21,10 +21,14 @@ export function PantrySuggestions({ onDone }: { onDone?: () => void }) {
   const { colors } = useTheme();
   const toast = useToast();
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({
-    queryKey: ["pantry-suggestions"],
-    queryFn: () => api<{ store: string; items: Suggestion[] }>("/pantry/suggestions"),
+  // Opnieuw voorstellen: wat je al zag laten we weg, zo krijg je steeds andere dingen
+  const [seen, setSeen] = useState<string[]>([]);
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: ["pantry-suggestions", seen.join("|")],
+    queryFn: () => api<{ store: string; items: Suggestion[]; more: boolean }>(`/pantry/suggestions?skip=${encodeURIComponent(seen.join("|"))}`),
+    placeholderData: (prev) => prev,
   });
+  const again = () => setSeen((cur) => [...cur, ...(data?.items ?? []).map((i) => i.name)]);
   const [on, setOn] = useState<Set<string>>(new Set());
   const [picked, setPicked] = useState<Record<string, Product>>({});
   const [swap, setSwap] = useState<Suggestion | null>(null);
@@ -70,7 +74,17 @@ export function PantrySuggestions({ onDone }: { onDone?: () => void }) {
     });
 
   if (isLoading) return <ActivityIndicator color={colors.brandPrimary} />;
-  if (!data?.items.length) return <Text style={styles.muted}>Alles wat we zouden voorstellen staat al in je voorraadkast.</Text>;
+  if (!data?.items.length)
+    return (
+      <View style={{ gap: 8 }}>
+        <Text style={styles.muted}>{seen.length ? "Meer voorstellen hebben we niet." : "Alles wat we zouden voorstellen staat al in je voorraadkast."}</Text>
+        {seen.length ? (
+          <Pressable onPress={() => setSeen([])} hitSlop={8}>
+            <Text style={styles.link}>Opnieuw beginnen</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    );
 
   return (
     <View style={{ gap: 12 }}>
@@ -107,6 +121,9 @@ export function PantrySuggestions({ onDone }: { onDone?: () => void }) {
           })}
         </View>
       ))}
+      {data.more ? (
+        <Button label="Andere voorstellen" icon="refresh" variant="secondary" loading={isFetching} onPress={again} testID="pantry-sug-more" />
+      ) : null}
       <Button
         label={on.size ? `Zet ${on.size} in je voorraadkast` : "Vink aan wat je in huis hebt"}
         icon="fridge-outline"

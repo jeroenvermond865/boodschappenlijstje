@@ -5,6 +5,19 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-26-d",
+    date: "26 oktober 2026",
+    title: "Slimmere voorraadkast en echte besparing",
+    changes: [
+      { kind: "nieuw", text: "Voorraadkast: stel per product in hoeveel je er zelf per week van gebruikt, en of het meetelt voor je gerechten." },
+      { kind: "nieuw", text: "Bijna op? Dan zie je het bovenaan je boodschappenlijst en zet je het er met één tik bij." },
+      { kind: "nieuw", text: "Bespaaroverzicht: al bespaard (wat je hebt afgevinkt) apart van wat je nog gaat besparen." },
+      { kind: "nieuw", text: "Bij het verwijderen van een lijstje kies je of de gekochte besparing bewaard blijft." },
+      { kind: "beter", text: "Verversen op Home geeft andere recepten en aanbiedingen die bij je passen." },
+      { kind: "beter", text: "De voorraadkast staat overzichtelijk in groepen, en 'Andere voorstellen' laat steeds nieuwe dingen zien." },
+    ],
+  },
+  {
     id: "2026-10-26-c",
     date: "26 oktober 2026",
     title: "Vegen, verversen en een snelle voorraadkast",

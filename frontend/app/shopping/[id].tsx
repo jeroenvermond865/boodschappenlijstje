@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Image, Linking, Platform, Pressable, RefreshControl, ScrollView, Share, Text, View } from "react-native";
 import Modal from "@/src/components/Modal";
 import { useHideOnScroll } from "@/src/hideOnScroll";
+import { RestockCard } from "@/src/RestockCard";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -401,6 +402,7 @@ export default function ShoppingScreen() {
           refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch(); cmp.refetch(); live.refetch(); }} tintColor={colors.brandPrimary} />}
           contentContainerStyle={{ padding: 16, paddingTop: 16 + hide.padTop, paddingBottom: insets.bottom + 32, gap: 16 }}
         >
+          {id ? <RestockCard campId={String(id)} /> : null}
           {data?.offline_at ? (
             <View style={styles.multiBanner}>
               <Icon name="wifi-off" size={16} color={colors.onBrandTertiary} />

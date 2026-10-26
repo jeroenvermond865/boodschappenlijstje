@@ -1,10 +1,13 @@
-import { Image, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from "react-native";
+import { useEffect, useRef } from "react";
+import { Image, Platform, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
+import Animated, { FadeInRight } from "react-native-reanimated";
 
 import { Icon } from "@/src/components/ui";
 import { niceDate } from "@/src/DateField";
+import { api } from "@/src/api";
 import { cachedApi } from "@/src/offline";
 import { AdSlot, GOLD, usePremium } from "@/src/premium";
 import { useTerms } from "@/src/settings";
@@ -62,13 +65,30 @@ export default function HomeScreen() {
   const router = useRouter();
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
 
+  // Verversen (omlaag trekken): andere recepten en acties die nog steeds bij je passen
+  const shuffle = useRef(0);
   const { data, refetch, isRefetching, isLoading } = useQuery({
     queryKey: ["home"],
-    queryFn: () => cachedApi<Home>("/home"),
+    queryFn: () => {
+      const s = shuffle.current;
+      shuffle.current = 0;
+      return s ? api<Home>(`/home?shuffle=${s}`) : cachedApi<Home>("/home");
+    },
     staleTime: 60 * 1000,
     // De vergelijking wordt op de achtergrond uitgerekend: even later nog eens vragen
     refetchInterval: (q) => (q.state.data?.compare_pending ? 4000 : false),
   });
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const on = () => (shuffle.current = Date.now() % 1e9);
+    window.addEventListener("app:pull-refresh", on);
+    return () => window.removeEventListener("app:pull-refresh", on);
+  }, []);
+  const pullRefresh = () => {
+    shuffle.current = Date.now() % 1e9;
+    refetch();
+  };
 
   const premium = usePremium();
   const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
@@ -91,7 +111,7 @@ export default function HomeScreen() {
     <ScrollView
       style={styles.root}
       contentContainerStyle={{ paddingTop: insets.top + 8, paddingBottom: bottomChrome + 40, gap: 22 }}
-      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={colors.brandPrimary} />}
+      refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={pullRefresh} tintColor={colors.brandPrimary} />}
     >
       <View style={styles.pad}>
         <Text style={styles.date}>{today.charAt(0).toUpperCase() + today.slice(1)}</Text>
@@ -205,8 +225,9 @@ export default function HomeScreen() {
           {/* Eén rij om opzij te scrollen; op een laptop met zichtbare schuifbalk */}
           <ScrollView horizontal showsHorizontalScrollIndicator={wide} contentContainerStyle={styles.hRow}>
             {data.promos.map((p, i) => (
+              // Na verversen schuiven de nieuwe acties één voor één in beeld
+              <Animated.View key={`${p.store}-${p.id}`} entering={FadeInRight.delay(Math.min(i, 8) * 45).springify()}>
               <Pressable
-                key={i}
                 onPress={() =>
                   p.product_ids.length === 1
                     ? router.push(`/product/${p.product_ids[0]}`)
@@ -235,6 +256,7 @@ export default function HomeScreen() {
                   </View>
                 ) : null}
               </Pressable>
+              </Animated.View>
             ))}
           </ScrollView>
         </View>
@@ -249,8 +271,9 @@ export default function HomeScreen() {
             onPress={() => router.push({ pathname: "/dishes", params: { tab: "online" } })}
           />
           <ScrollView horizontal showsHorizontalScrollIndicator={wide} contentContainerStyle={styles.hRow}>
-            {data.recipes.map((r) => (
-              <Pressable key={r.id} onPress={() => router.push({ pathname: "/recipe/[id]", params: { id: r.id } })} style={styles.recipe}>
+            {data.recipes.map((r, i) => (
+              <Animated.View key={r.id} entering={FadeInRight.delay(i * 60).springify()}>
+              <Pressable onPress={() => router.push({ pathname: "/recipe/[id]", params: { id: r.id } })} style={styles.recipe}>
                 {r.image ? <Image source={{ uri: r.image }} style={styles.recipeImg} resizeMode="cover" /> : <View style={styles.recipeImg} />}
                 <View style={styles.storeBadge}>
                   <Text style={styles.storeBadgeText}>{STORE_LABEL[r.store] ?? r.store}</Text>
@@ -272,6 +295,7 @@ export default function HomeScreen() {
                   ) : null}
                 </View>
               </Pressable>
+              </Animated.View>
             ))}
           </ScrollView>
         </View>

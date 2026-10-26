@@ -480,6 +480,7 @@ class ExtraItem(BaseModel):
     store: Optional[str] = None
     meal: Optional[str] = None  # bij welke maaltijd van de dag (ontbijt, lunch, ...); leeg = los voor de dag
     auto: bool = False  # door "menu automatisch invullen" gezet (brood met beleg); wordt bij opnieuw invullen vervangen
+    pantry_id: Optional[str] = None  # bijgekocht omdat dit in je voorraadkast bijna op was
 
 
 class DayInput(BaseModel):
@@ -1803,14 +1804,15 @@ async def _menu_recipes(cat: str, prefer: list, avoid: list, n: int, store: str 
 
 
 @api_router.delete("/camps/{camp_id}")
-async def delete_camp(camp_id: str, user: dict = Depends(get_current_user)):
+async def delete_camp(camp_id: str, keep_savings: bool = True, user: dict = Depends(get_current_user)):
     uid = user["user_id"]
     doc = await db.camps.find_one({"camp_id": camp_id, "deleted_at": None, "$or": [{"owner_id": uid}, {"member_ids": uid}]})
     if not doc:
         raise HTTPException(status_code=404, detail="Kamp niet gevonden")
     if doc.get("owner_id") == uid:
         # Owner removes the whole camp
-        await db.camps.update_one({"camp_id": camp_id}, {"$set": {"deleted_at": now_utc()}})
+        # keep_savings: wat al is afgevinkt (gekocht) blijft meetellen in je bespaaroverzicht
+        await db.camps.update_one({"camp_id": camp_id}, {"$set": {"deleted_at": now_utc(), "savings_keep": bool(keep_savings)}})
         return {"ok": True, "left": False}
     # Member leaves the camp (removes it from their own list)
     await db.camps.update_one({"camp_id": camp_id}, {"$pull": {"member_ids": uid}, "$addToSet": {"left_ids": uid}})
@@ -2445,14 +2447,19 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
     # Voorraadkast (Premium): wat je al in huis hebt, zetten we erbij. Zonder Premium rekenen we alleen uit wat het had gescheeld
     is_premium = bool(user.get("premium"))
     has_pantry, pantry_value = False, 0.0
+    pantry_of: Dict[int, float] = {}  # per regel: wat de voorraadkast scheelt (voor 'al bespaard')
     pantry = await _pantry_index(user["user_id"], user)
     if pantry:
         for b in by_store + general + [x for d in per_day for x in d["by_store"]]:
             for it in b["flat"]:
                 have = _pantry_have(pantry, it["name"], it.get("unit") or "")
+                if have >= PANTRY_ENOUGH:
+                    have = float(it.get("qty") or 0)
                 if have:
                     if b in by_store and it.get("price") and it.get("qty"):
-                        pantry_value += it["price"] * min(1.0, have / float(it["qty"]))
+                        v = it["price"] * min(1.0, have / float(it["qty"]))
+                        pantry_value += v
+                        pantry_of[id(it)] = v
                     if is_premium:
                         it["in_pantry"] = round(have, 2)
                         has_pantry = True
@@ -2485,7 +2492,15 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
         own, chosen = rows.get(primary_store), rows.get(shop_store)
         if own and chosen and shop_store != primary_store:
             smart += max(0.0, float(own.get("total_fair") or own.get("total") or 0) - float(chosen.get("total_fair") or chosen.get("total") or 0))
-    sv = {"promo": round(sum(b.get("saving") or 0 for b in by_store), 2), "smart": round(smart, 2),
+    # Per regel (zelfde sleutel als het afvinken): zo weten we later wat al gekocht en dus echt bespaard is
+    per_item = {}
+    for b in by_store:
+        for it in b["flat"]:
+            w = it.get("was")
+            sp = float(w["price"]) - float(it["price"]) if w and (w.get("price") or 0) > (it.get("price") or 0) else 0.0
+            per_item[f"{b['store']}|{(it.get('name') or '').lower()}|{it.get('unit') or ''}"] = [
+                round(float(it.get("saving") or 0), 2), round(sp, 2), round(pantry_of.get(id(it), 0.0), 2), round(float(it.get("price") or 0), 2)]
+    sv = {"promo": round(sum(b.get("saving") or 0 for b in by_store), 2), "smart": round(smart, 2), "items": per_item,
           "pantry": round(pantry_value, 2), "promo_day": round(then_value, 2), "split": round(split_value, 2),
           "total": round(sum(b.get("total") or 0 for b in by_store), 2), "premium": is_premium}
     old = camp.get("savings") or {}
@@ -2526,16 +2541,32 @@ def _pantry_rate(user: Optional[dict]) -> float:
     return max(0.0, min(100.0, float(PANTRY_WEEKLY_USE if v is None else v))) / 100
 
 
-def _pantry_now(p: dict, rate: float) -> float:
-    # Hoeveel er nu nog is: de opgeslagen hoeveelheid min het wekelijkse verbruik sinds de laatste keer bijwerken
-    qty = float(p.get("qty") or 0)
-    at = p.get("updated_at")
-    if not rate or not isinstance(at, datetime):
-        return qty
+def _weeks_since(at) -> float:
+    if not isinstance(at, datetime):
+        return 0.0
     if at.tzinfo is None:
         at = at.replace(tzinfo=timezone.utc)
-    weeks = max(0.0, (now_utc() - at).total_seconds() / (7 * 86400))
+    return max(0.0, (now_utc() - at).total_seconds() / (7 * 86400))
+
+
+def _pantry_now(p: dict, rate: float) -> float:
+    # Hoeveel er nu nog is: de opgeslagen hoeveelheid min het verbruik sinds de laatste keer bijwerken.
+    # Eigen verbruik per product (bijv. 8 eieren per week) gaat er gewoon af; anders het algemene percentage per week.
+    qty = float(p.get("qty") or 0)
+    weeks = _weeks_since(p.get("updated_at"))
+    if p.get("weekly") is not None:
+        return max(0.0, qty - float(p["weekly"]) * weeks)
+    if not rate:
+        return qty
     return qty * (1 - rate) ** weeks
+
+
+def _pantry_spare(p: dict, rate: float) -> float:
+    # Wat er over is voor gerechten: je eigen verbruik voor de komende week houden we apart.
+    # (8 eieren per week zelf, 6 voor een gerecht: dan moeten er 14 zijn)
+    if p.get("for_dishes") is False:
+        return 0.0
+    return max(0.0, _pantry_now(p, rate) - float(p.get("weekly") or 0))
 
 
 async def _pantry_index(user_id: str, user: Optional[dict] = None) -> dict:
@@ -2543,10 +2574,10 @@ async def _pantry_index(user_id: str, user: Optional[dict] = None) -> dict:
     if user is None:
         user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "pantry_weekly_use": 1}) or {}
     rate = _pantry_rate(user)
-    async for p in db.pantry.find({"user_id": user_id}, {"_id": 0}):
+    async for p in db.pantry.find({"user_id": user_id, "for_dishes": {"$ne": False}}, {"_id": 0}):
         base, f = _unit_base(p.get("unit") or "")
         k = (_norm_text(p.get("name") or ""), base)
-        out[k] = out.get(k, 0) + _pantry_now(p, rate) * f
+        out[k] = out.get(k, 0) + _pantry_spare(p, rate) * f
     return out
 
 
@@ -2583,10 +2614,16 @@ async def _pantry_stock(user: dict, names: list) -> dict:
     return out
 
 
+PANTRY_ENOUGH = 1e9  # "nog genoeg": een fles of pot die nog voor minstens een vijfde vol is (bijgehouden in %)
+
+
 def _pantry_have(index: dict, name: str, unit: str) -> float:
     # Hoeveel van dit product je in huis hebt, in de eenheid van de boodschappenlijst
     base, f = _unit_base(unit)
-    have = index.get((_norm_text(name), base), 0)
+    n = _norm_text(name)
+    have = index.get((n, base), 0)
+    if have <= 0 and base != "%" and index.get((n, "%"), 0) >= 20:
+        return PANTRY_ENOUGH
     return have / f if have > 0 else 0
 
 
@@ -2600,52 +2637,87 @@ class PantryInput(BaseModel):
     qty: float = 1
     unit: str = "stuks"
     product_id: Optional[str] = None
+    weekly: Optional[float] = None  # eigen verbruik per week, in dezelfde eenheid (8 eieren, 100% voor een krop sla)
+    for_dishes: bool = True  # telt mee voor je gerechten (anders kopen we voor gerechten gewoon alles)
 
 
-# Wat de meeste mensen al in huis hebben: om een lege voorraadkast in één keer te vullen.
-# (naam zoals in gerechten, groep, standaard aangevinkt)
+# Wat de meeste mensen al in huis hebben: om de voorraadkast snel te vullen. Geen vers (groente, fruit, zuivel):
+# dat heeft niemand standaard in huis. (naam zoals in gerechten, groep, standaard aangevinkt)
 PANTRY_STAPLES = [
     ("Zout", "Kruiden en smaakmakers", True), ("Peper", "Kruiden en smaakmakers", True), ("Paprikapoeder", "Kruiden en smaakmakers", True),
-    ("Kerrie", "Kruiden en smaakmakers", False), ("Italiaanse kruiden", "Kruiden en smaakmakers", True), ("Oregano", "Kruiden en smaakmakers", False),
-    ("Kaneel", "Kruiden en smaakmakers", False), ("Nootmuskaat", "Kruiden en smaakmakers", False), ("Bouillonblokjes", "Kruiden en smaakmakers", True),
-    ("Knoflook", "Kruiden en smaakmakers", False),
-    ("Olijfolie", "Olie, azijn en sauzen", True), ("Zonnebloemolie", "Olie, azijn en sauzen", True), ("Azijn", "Olie, azijn en sauzen", False),
-    ("Ketjap", "Olie, azijn en sauzen", True), ("Sojasaus", "Olie, azijn en sauzen", False), ("Mosterd", "Olie, azijn en sauzen", True),
-    ("Mayonaise", "Olie, azijn en sauzen", True), ("Ketchup", "Olie, azijn en sauzen", True), ("Tomatenpuree", "Olie, azijn en sauzen", False),
+    ("Italiaanse kruiden", "Kruiden en smaakmakers", True), ("Bouillonblokjes", "Kruiden en smaakmakers", True), ("Kerrie", "Kruiden en smaakmakers", False),
+    ("Oregano", "Kruiden en smaakmakers", False), ("Kaneel", "Kruiden en smaakmakers", False), ("Nootmuskaat", "Kruiden en smaakmakers", False),
+    ("Komijn", "Kruiden en smaakmakers", False), ("Kurkuma", "Kruiden en smaakmakers", False), ("Provençaalse kruiden", "Kruiden en smaakmakers", False),
+    ("Gerookt paprikapoeder", "Kruiden en smaakmakers", False), ("Chilivlokken", "Kruiden en smaakmakers", False), ("Cayennepeper", "Kruiden en smaakmakers", False),
+    ("Knoflookpoeder", "Kruiden en smaakmakers", False), ("Uienpoeder", "Kruiden en smaakmakers", False), ("Laurierblaadjes", "Kruiden en smaakmakers", False),
+    ("Tijm gedroogd", "Kruiden en smaakmakers", False), ("Rozemarijn gedroogd", "Kruiden en smaakmakers", False), ("Basilicum gedroogd", "Kruiden en smaakmakers", False),
+    ("Gember gemalen", "Kruiden en smaakmakers", False), ("Kipkruiden", "Kruiden en smaakmakers", False), ("Gehaktkruiden", "Kruiden en smaakmakers", False),
+    ("Nasi kruiden", "Kruiden en smaakmakers", False), ("Groentebouillon", "Kruiden en smaakmakers", False), ("Kippenbouillon", "Kruiden en smaakmakers", False),
+    ("Olijfolie", "Olie, azijn en sauzen", True), ("Zonnebloemolie", "Olie, azijn en sauzen", True), ("Ketjap", "Olie, azijn en sauzen", True),
+    ("Mosterd", "Olie, azijn en sauzen", True), ("Mayonaise", "Olie, azijn en sauzen", True), ("Ketchup", "Olie, azijn en sauzen", True),
+    ("Azijn", "Olie, azijn en sauzen", False), ("Balsamicoazijn", "Olie, azijn en sauzen", False), ("Sojasaus", "Olie, azijn en sauzen", False),
+    ("Sambal", "Olie, azijn en sauzen", False), ("Tomatenpuree", "Olie, azijn en sauzen", False), ("Sweet chilisaus", "Olie, azijn en sauzen", False),
+    ("Worcestershiresaus", "Olie, azijn en sauzen", False), ("Pesto", "Olie, azijn en sauzen", False),
     ("Suiker", "Bakken", True), ("Bloem", "Bakken", True), ("Bakpoeder", "Bakken", False), ("Maizena", "Bakken", False), ("Vanillesuiker", "Bakken", False),
-    ("Rijst", "Voorraad", True), ("Spaghetti", "Voorraad", True), ("Macaroni", "Voorraad", False), ("Havermout", "Voorraad", False),
-    ("Honing", "Voorraad", False), ("Pindakaas", "Voorraad", True), ("Hagelslag", "Voorraad", True), ("Jam", "Voorraad", False),
-    ("Koffie", "Drinken", True), ("Thee", "Drinken", True),
-    ("Roomboter", "Koelkast", True), ("Melk", "Koelkast", False), ("Eieren", "Koelkast", False),
-    ("Aluminiumfolie", "Huishouden", False), ("Bakpapier", "Huishouden", False), ("Afwasmiddel", "Huishouden", True),
+    ("Zelfrijzend bakmeel", "Bakken", False), ("Poedersuiker", "Bakken", False), ("Basterdsuiker", "Bakken", False), ("Gedroogde gist", "Bakken", False),
+    ("Cacaopoeder", "Bakken", False), ("Paneermeel", "Bakken", False),
+    ("Rijst", "Pasta, rijst en blik", True), ("Spaghetti", "Pasta, rijst en blik", True), ("Macaroni", "Pasta, rijst en blik", False),
+    ("Penne", "Pasta, rijst en blik", False), ("Mie", "Pasta, rijst en blik", False), ("Couscous", "Pasta, rijst en blik", False),
+    ("Gepelde tomaten", "Pasta, rijst en blik", False), ("Kidneybonen", "Pasta, rijst en blik", False), ("Kikkererwten", "Pasta, rijst en blik", False),
+    ("Mais in blik", "Pasta, rijst en blik", False), ("Kokosmelk", "Pasta, rijst en blik", False), ("Tonijn in blik", "Pasta, rijst en blik", False),
+    ("Pindakaas", "Ontbijt en beleg", True), ("Hagelslag", "Ontbijt en beleg", True), ("Jam", "Ontbijt en beleg", False), ("Honing", "Ontbijt en beleg", False),
+    ("Havermout", "Ontbijt en beleg", False), ("Cornflakes", "Ontbijt en beleg", False), ("Beschuit", "Ontbijt en beleg", False),
+    ("Crackers", "Ontbijt en beleg", False), ("Appelstroop", "Ontbijt en beleg", False), ("Chocoladepasta", "Ontbijt en beleg", False),
+    ("Koffie", "Drinken", True), ("Thee", "Drinken", True), ("Limonadesiroop", "Drinken", False),
+    ("Afwasmiddel", "Huishouden", True), ("Toiletpapier", "Huishouden", True), ("Keukenpapier", "Huishouden", False), ("Aluminiumfolie", "Huishouden", False),
+    ("Bakpapier", "Huishouden", False), ("Vershoudfolie", "Huishouden", False), ("Vaatwastabletten", "Huishouden", False), ("Wasmiddel", "Huishouden", False),
+    ("Vuilniszakken", "Huishouden", False), ("Diepvrieszakjes", "Huishouden", False),
 ]
+_STAPLE_GROUP = {n.lower(): g for n, g, _ in PANTRY_STAPLES}
+_FRESH_AISLES = {"Aardappelen, groente & fruit", "Vlees & vis", "Zuivel & kaas", "Maaltijden, salades & tapas"}
+
+
+def _same_staple(a: str, b: str) -> bool:
+    # "Olijfolie" en "AH Olijfolie extra vierge" zijn hetzelfde; "Italiaanse kruiden" en "Provençaalse kruiden" niet
+    wa, wb = set(_norm_text(a).split()), set(_norm_text(b).split())
+    return bool(wa and wb) and (wa <= wb or wb <= wa)
 
 
 @api_router.get("/pantry/suggestions")
-async def pantry_suggestions(user: dict = Depends(get_current_user)):
+async def pantry_suggestions(skip: str = "", user: dict = Depends(get_current_user)):
     # Voorstellen voor je voorraadkast: wat de meeste mensen al in huis hebben (vaste lijst + wat andere gebruikers vaak invullen),
-    # met per stuk het product dat de app erbij kiest in jouw winkel. Wat je al hebt laten we weg.
+    # met per stuk het product dat de app erbij kiest in jouw winkel. Steeds 12 nieuwe: wat je al hebt (ook van een ander merk)
+    # en wat je eerder te zien kreeg (skip) laten we weg.
     await require_premium(user)
-    have = {p["name_l"] async for p in db.pantry.find({"user_id": user["user_id"]}, {"_id": 0, "name_l": 1})}
+    mine = await db.pantry.find({"user_id": user["user_id"]}, {"_id": 0, "name": 1, "product_id": 1}).to_list(1000)
+    by_pid = _product_cache.get("by_pid") or {}
+    have_names = [m["name"] for m in mine] + [by_pid[m["product_id"]]["name"] for m in mine if m.get("product_id") in by_pid]
+    seen = {x.strip().lower() for x in skip.split("|") if x.strip()}
     popular: Dict[str, int] = {}
     async for row in db.pantry.aggregate([{"$group": {"_id": "$name_l", "n": {"$addToSet": "$user_id"}}},
                                           {"$project": {"n": {"$size": "$n"}}}, {"$match": {"n": {"$gte": 3}}},
-                                          {"$sort": {"n": -1}}, {"$limit": 30}]):
+                                          {"$sort": {"n": -1}}, {"$limit": 40}]):
         popular[row["_id"]] = row["n"]
     items = [{"name": n, "group": g, "default": d, "users": popular.get(n.lower(), 0)} for n, g, d in PANTRY_STAPLES]
-    known = {n.lower() for n, _, _ in PANTRY_STAPLES}
     for name_l, n in popular.items():
-        if name_l not in known and _is_pantry(name_l):
+        if name_l not in _STAPLE_GROUP and _is_pantry(name_l):
             items.append({"name": name_l[:1].upper() + name_l[1:], "group": "Vaak ingevuld door anderen", "default": False, "users": n})
-    items = [i for i in items if i["name"].lower() not in have]
+    # Wat veel gebruikers hebben eerst, verder de volgorde van de lijst (de echte basis bovenaan)
+    items.sort(key=lambda i: (-min(i["users"], 50) // 5, not i["default"]))
+    left = [i for i in items if i["name"].lower() not in seen and not any(_same_staple(i["name"], h) for h in have_names)]
+    batch = left[:12]
     store = user.get("store") or DEFAULT_STORE
     docs = await _global_products()
     pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
     favs = set(user.get("favorite_products") or [])
-    hits = await asyncio.to_thread(lambda: [_cheapest_good(pool, i["name"], store) for i in items])
-    for i, d in zip(items, hits):
+    hits = await asyncio.to_thread(lambda: [_cheapest_good(pool, i["name"], store) for i in batch])
+    out = []
+    for i, d in zip(batch, hits):
+        if d and (d.get("aisle") in _FRESH_AISLES or any(_same_staple(d["name"], h) for h in have_names)):
+            continue  # toch vers, of dit product heb je al
         i["product"] = product_public(_clean(d), store, user["user_id"], favs) if d else None
-    return {"store": store, "items": items}
+        out.append(i)
+    return {"store": store, "items": out, "more": len(left) > len(batch)}
 
 
 class PantryBulk(BaseModel):
@@ -2670,12 +2742,42 @@ async def add_pantry_bulk(data: PantryBulk, user: dict = Depends(get_current_use
     return {"added": len(docs)}
 
 
+def _pantry_group(p: dict, prod: Optional[dict]) -> str:
+    # Voor het overzicht: de groep uit de voorstellen, anders de afdeling van het product
+    g = _STAPLE_GROUP.get((p.get("name") or "").lower())
+    if g:
+        return g
+    if prod and prod.get("aisle"):
+        return prod["aisle"]
+    for n, grp, _ in PANTRY_STAPLES:
+        if _same_staple(n, p.get("name") or ""):
+            return grp
+    return "Overig"
+
+
+def _pantry_restock_amount(p: dict, rate: float) -> float:
+    # Bijna op? Dan voorstellen om te kopen, genoeg voor deze én de volgende week.
+    # Met eigen verbruik: 8 eieren per week en nog 10 in huis: na deze week 2 over, dus 6 erbij.
+    # Een krop sla die elke week op is (1 per week): elke week 1.
+    now = _pantry_now(p, rate)
+    if p.get("weekly"):
+        weekly = float(p["weekly"])
+        buy = weekly - max(0.0, now - weekly)
+        return round(buy, 2) if buy >= weekly * 0.5 else 0.0
+    if p.get("unit") == "%":
+        return 1.0 if now - rate * 100 < 20 else 0.0  # fles of pot bijna leeg: een nieuwe
+    return 0.0
+
+
 def _pantry_public(p: dict, rate: float = 0) -> dict:
     left = _pantry_now(p, rate)
     prod = (_product_cache.get("by_pid") or {}).get(p.get("product_id") or "")
+    buy = _pantry_restock_amount(p, rate)
     return {"id": p["item_id"], "name": p["name"], "qty": round(left, 0 if p.get("unit") == "%" else 2), "unit": p.get("unit") or "stuks",
-            "learned": bool(p.get("learned")), "updated_at": p.get("updated_at"),
-            "product_id": p.get("product_id"), "product_name": prod["name"] if prod else None, "image": prod.get("image") if prod else None}
+            "learned": bool(p.get("learned")), "updated_at": p.get("updated_at"), "weekly": p.get("weekly"),
+            "for_dishes": p.get("for_dishes") is not False, "group": _pantry_group(p, prod), "restock": buy,
+            "product_id": p.get("product_id"), "product_name": prod["name"] if prod else None, "image": prod.get("image") if prod else None,
+            "price": resolve_price(prod.get("prices") or {}, prod.get("_src") or DEFAULT_STORE, prod.get("unavailable") or []) if prod else None}
 
 
 @api_router.get("/pantry")
@@ -2688,6 +2790,57 @@ async def list_pantry(user: dict = Depends(get_current_user)):
 
 class PantrySettings(BaseModel):
     weekly_use: float = PANTRY_WEEKLY_USE
+
+
+@api_router.get("/pantry/restock")
+async def pantry_restock(camp_id: str = "", user: dict = Depends(get_current_user)):
+    # Bijna op in je voorraadkast: voorstel om mee te nemen in je volgende boodschappenlijst
+    if not user.get("premium"):
+        return {"items": []}
+    rate = _pantry_rate(user)
+    on_list = set()
+    if camp_id:
+        c = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "general": 1})
+        on_list = {(e.get("pantry_id") or "") for e in (c or {}).get("general") or []}
+    out = []
+    async for p in db.pantry.find({"user_id": user["user_id"]}, {"_id": 0}):
+        if p["item_id"] in on_list:
+            continue
+        buy = _pantry_restock_amount(p, rate)
+        if buy > 0:
+            pub = _pantry_public(p, rate)
+            out.append({**pub, "buy": buy, "buy_unit": "stuks" if p.get("unit") == "%" else p.get("unit") or "stuks"})
+    out.sort(key=lambda x: x["name"].lower())
+    return {"items": out}
+
+
+class RestockInput(BaseModel):
+    ids: List[str]
+
+
+@api_router.post("/camps/{camp_id}/restock")
+async def camp_restock(camp_id: str, data: RestockInput, user: dict = Depends(get_current_user)):
+    # Wat bijna op is bij de algemene boodschappen van dit lijstje zetten (onthoudt van welk voorraadproduct het komt)
+    await require_premium(user)
+    camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "general": 1})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
+    rate = _pantry_rate(user)
+    by_pid = _product_cache.get("by_pid") or {}
+    have = {e.get("pantry_id") for e in camp.get("general") or []}
+    added = []
+    async for p in db.pantry.find({"user_id": user["user_id"], "item_id": {"$in": data.ids[:100]}}, {"_id": 0}):
+        buy = _pantry_restock_amount(p, rate)
+        if p["item_id"] in have or buy <= 0:
+            continue
+        prod = by_pid.get(p.get("product_id") or "")
+        # Productnaam als naam, zodat de voorraadkast dit niet meteen weer van de lijst afhaalt
+        added.append({"name": prod["name"] if prod else f"{p['name']} (voorraad)", "unit": "stuks" if p.get("unit") == "%" else p.get("unit") or "stuks",
+                      "qty": buy, "aisle": (prod or {}).get("aisle") or "Overig", "product_id": p.get("product_id"),
+                      "store": product_source(prod) if prod else None, "meal": None, "auto": False, "pantry_id": p["item_id"]})
+    if added:
+        await db.camps.update_one({"camp_id": camp_id}, {"$push": {"general": {"$each": added}}})
+    return {"added": len(added)}
 
 
 @api_router.put("/pantry/settings")
@@ -2707,7 +2860,8 @@ def _pantry_clean(data: PantryInput) -> dict:
     if not name:
         raise HTTPException(status_code=400, detail="Vul een productnaam in")
     qty = max(0.0, min(float(data.qty or 0), 100000))
-    out = {"name": name, "name_l": name.lower(), "qty": round(qty, 2), "unit": (data.unit or "stuks").strip()[:20], "updated_at": now_utc()}
+    out = {"name": name, "name_l": name.lower(), "qty": round(qty, 2), "unit": (data.unit or "stuks").strip()[:20], "updated_at": now_utc(),
+           "weekly": round(max(0.0, min(float(data.weekly), 100000)), 2) if data.weekly is not None else None, "for_dishes": bool(data.for_dishes)}
     if data.product_id:
         out["product_id"] = data.product_id[:60]
     return out
@@ -2775,13 +2929,31 @@ async def savings_overview(user: dict = Depends(get_current_user)):
     # Voor iedereen: wat de app je scheelt. Premium-delen (voorraadkast, acties op je boodschappendag) tellen alleen mee met Premium;
     # zonder Premium laten we zien wat je er extra mee had kunnen besparen.
     is_premium = bool(user.get("premium"))
-    camps = await db.camps.find(camp_access_filter(user["user_id"]), {"_id": 0, "camp_id": 1, "name": 1, "start_date": 1, "created_at": 1, "savings": 1}).to_list(500)
+    # Ook verwijderde lijstjes: wat daar was afgevinkt (gekocht) is echt bespaard, tenzij je bij het verwijderen koos om het te vergeten.
+    uid = user["user_id"]
+    camps = await db.camps.find({"$and": [{"$or": [{"owner_id": uid}, {"member_ids": uid}]},
+                                          {"$or": [{"deleted_at": None}, {"savings_keep": {"$ne": False}}]}]},
+                                {"_id": 0, "camp_id": 1, "name": 1, "start_date": 1, "created_at": 1, "savings": 1, "checked": 1, "deleted_at": 1}).to_list(1000)
     keys = ("promo", "smart", "pantry", "promo_day", "split", "total")
     months: Dict[str, dict] = {}
     for c in camps:
-        sv = c.get("savings") or {}
+        sv = dict(c.get("savings") or {})
         if not sv.get("total"):
             continue
+        # Al bespaard: wat je hebt afgevinkt. Nog te besparen: de rest van je lopende lijstjes.
+        items = sv.get("items") or {}
+        checked = {x.get("k") for x in (c.get("checked") or {}).values() if isinstance(x, dict)}
+        got = [sum(v[i] for k, v in items.items() if k in checked) for i in range(4)]
+        f = min(1.0, got[3] / float(sv["total"])) if sv.get("total") else 0.0
+        b_std = got[0] + float(sv.get("smart") or 0) * f
+        b_prem = got[2] + got[1] + float(sv.get("promo_day") or 0) * f
+        deleted = c.get("deleted_at") is not None
+        if deleted:
+            if not checked or b_std + b_prem <= 0 and got[3] <= 0:
+                continue
+            # Van een verwijderd lijstje telt alleen wat gekocht is
+            sv = {"promo": got[0], "smart": float(sv.get("smart") or 0) * f, "pantry": got[2], "split": got[1],
+                  "promo_day": float(sv.get("promo_day") or 0) * f, "total": got[3]}
         when = c.get("start_date") or (c.get("created_at").isoformat() if isinstance(c.get("created_at"), datetime) else str(c.get("created_at") or ""))
         m = (when or "")[:7]
         if not m:
@@ -2791,8 +2963,13 @@ async def savings_overview(user: dict = Depends(get_current_user)):
             row[k] += float(sv.get(k) or 0)
         std = float(sv.get("promo") or 0) + float(sv.get("smart") or 0)
         prem = float(sv.get("pantry") or 0) + float(sv.get("promo_day") or 0) + float(sv.get("split") or 0)
+        bought = b_std + (b_prem if is_premium else 0)
+        saving = std + (prem if is_premium else 0)
+        row["bought"] = row.get("bought", 0.0) + bought
+        row["pending"] = row.get("pending", 0.0) + max(0.0, saving - bought)
         row["lists"].append({"id": c["camp_id"], "name": c.get("name"), "standard": round(std, 2), "premium": round(prem, 2),
-                             "saving": round(std + (prem if is_premium else 0), 2), "total": float(sv.get("total") or 0)})
+                             "saving": round(saving, 2), "total": float(sv.get("total") or 0), "deleted": deleted,
+                             "bought": round(bought, 2), "pending": round(max(0.0, saving - bought), 2)})
     out = sorted(months.values(), key=lambda r: r["month"], reverse=True)[:12]
     for r in out:
         for k in keys:
@@ -2800,7 +2977,9 @@ async def savings_overview(user: dict = Depends(get_current_user)):
         r["standard"] = round(r["promo"] + r["smart"], 2)
         r["premium"] = round(r["pantry"] + r["promo_day"] + r["split"], 2)
         r["saving"] = round(r["standard"] + (r["premium"] if is_premium else 0), 2)
-    tot = {k: round(sum(r[k] for r in out), 2) for k in keys + ("standard", "premium", "saving")}
+        r["bought"] = round(r.get("bought", 0.0), 2)
+        r["pending"] = round(r.get("pending", 0.0), 2)
+    tot = {k: round(sum(r[k] for r in out), 2) for k in keys + ("standard", "premium", "saving", "bought", "pending")}
     return {"months": out, "is_premium": is_premium, **tot}
 
 
@@ -7167,8 +7346,11 @@ async def _track_interest(user_id: str, doc: dict) -> None:
         await db.user_interest.update_one({"user_id": user_id}, {"$inc": inc, "$set": {"at": now_utc()}}, upsert=True)
 
 
-def _pick_promos(cands: list, interest: dict, fav_store: str, fav_ids: set, used_ids: set, used_stores: dict, n: int = 24) -> list:
+def _pick_promos(cands: list, interest: dict, fav_store: str, fav_ids: set, used_ids: set, used_stores: dict, n: int = 24,
+                 rnd=None, spread: float = 0.25) -> list:
+    # spread: hoeveel toeval; bij verversen meer, zodat je andere acties ziet die nog steeds bij je passen
     import random
+    rnd = rnd or random
     stores = dict(interest.get("stores") or {})
     for st, c in used_stores.items():
         stores[_ikey(st)] = stores.get(_ikey(st), 0) + c
@@ -7193,7 +7375,7 @@ def _pick_promos(cands: list, interest: dict, fav_store: str, fav_ids: set, used
             + 1.5 * max([brands.get(_ikey(b), 0) for b in c.get("_brands") or []], default=0) \
             + 1.5 * max([subs.get(_ikey(x), 0) for x in c.get("_subs") or []], default=0) \
             + 1.0 * max([aisles.get(_ikey(a), 0) for a in c.get("_aisles") or []], default=0)
-        scored.append((sw(c["store"]) * (1 + personal) * random.uniform(0.75, 1.25), personal, c))
+        scored.append((sw(c["store"]) * (1 + personal) * rnd.uniform(1 - spread, 1 + spread), personal, c))
     scored.sort(key=lambda x: -x[0])
     out, others, rest = [], 0, []
     for score, personal, c in scored:
@@ -7245,9 +7427,12 @@ async def _home_inspiration() -> tuple:
     try:
         import random
         dirk = await _dirk_all_recipes()
-        recipes += [{k: v for k, v in r.items() if not k.startswith("_")} for r in random.sample(dirk, min(3, len(dirk)))]
-        ah = await _store_recipes("ah", "", {"veel-gebruikt": ["makkelijk"]}, random.randint(0, 20), 12)
-        recipes += random.sample(ah["recipes"], min(3, len(ah["recipes"])))
+        # Een flinke voorraad; per gebruiker kiest de startpagina er 6 uit (bij verversen weer andere)
+        recipes += [{k: v for k, v in r.items() if not k.startswith("_")} for r in random.sample(dirk, min(30, len(dirk)))]
+        for pg in random.sample(range(0, 20), 3):
+            ah = await _store_recipes("ah", "", {"veel-gebruikt": ["makkelijk"]}, pg, 12)
+            recipes += ah["recipes"]
+        recipes = list({r["id"]: r for r in recipes}.values())
         random.shuffle(recipes)
     except Exception as e:
         logger.warning("Home recepten: %r", e)
@@ -7354,7 +7539,8 @@ async def camp_shop_store(camp_id: str, data: ShopStoreInput, user: dict = Depen
 
 
 @api_router.get("/home")
-async def home(user: dict = Depends(get_current_user)):
+async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
+    # shuffle: verversen (omlaag trekken) geeft andere recepten en acties die bij je passen; anders blijft het een uur hetzelfde
     perms = await user_permissions(user)
     camps = await db.camps.find(camp_access_filter(user["user_id"]), {"_id": 0}).sort("created_at", -1).to_list(50)
     camp = None
@@ -7431,10 +7617,15 @@ async def home(user: dict = Depends(get_current_user)):
             st = (by_pid.get(pid) or {}).get("_src")
             if st:
                 used_stores[st] = used_stores.get(st, 0) + 1
-        promos = _pick_promos(promos, interest, user.get("store") or DEFAULT_STORE, set(user.get("favorite_products") or []), used_ids, used_stores)
+        import random
+        rnd = random.Random(shuffle or f"{user['user_id']}{datetime.now(timezone.utc):%Y%m%d%H}")
+        promos = _pick_promos(promos, interest, user.get("store") or DEFAULT_STORE, set(user.get("favorite_products") or []), used_ids, used_stores,
+                              rnd=rnd, spread=0.6 if shuffle else 0.25)
+        recipes = _personal_recipes(recipes, interest, str(shuffle or f"{user['user_id']}{datetime.now(timezone.utc):%Y%m%d%H}"))[:6]
     except Exception as e:
         logger.warning("Persoonlijke acties: %r", e)
         promos = [{k: v for k, v in c.items() if not k.startswith("_")} for c in promos[:24]]
+        recipes = recipes[:6]
     return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "compare_pending": compare_pending, "shop_store": (c or {}).get("shop_store") if camp else None, "promos": promos,
             "recipes": await _with_costs(recipes), "todo": todo, "own_dishes": own_dishes, "alerts_hit": alerts_hit}
 

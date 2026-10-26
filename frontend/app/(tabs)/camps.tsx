@@ -1,4 +1,5 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
+import Modal from "@/src/components/Modal";
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -47,9 +48,13 @@ export default function CampsScreen() {
     onError: (e: any) => toast.show(e?.message ?? "Kopiëren mislukt", "error"),
   });
 
+  // Verwijderen: wat al is afgevinkt (gekocht) mag blijven meetellen in je bespaaroverzicht
+  const [ask, setAsk] = useState<Camp | null>(null);
   const del = useMutation({
-    mutationFn: (id: string) => api(`/camps/${id}`, { method: "DELETE" }),
-    onSuccess: (_d, id) => {
+    mutationFn: ({ id, keep }: { id: string; keep: boolean }) => api(`/camps/${id}?keep_savings=${keep}`, { method: "DELETE" }),
+    onSuccess: (_d, { id }) => {
+      setAsk(null);
+      qc.invalidateQueries({ queryKey: ["savings"] });
       qc.invalidateQueries({ queryKey: ["camps"] });
       toast.show(`${T.One} verwijderd`, "info", { label: "Ongedaan maken", onPress: () => restore.mutate(id) });
     },
@@ -101,7 +106,7 @@ export default function CampsScreen() {
               <Pressable
                 testID={`camp-delete-${item.id}`}
                 hitSlop={8}
-                onPress={() => del.mutate(item.id)}
+                onPress={() => setAsk(item)}
                 style={styles.cardActionBtn}
               >
                 <Icon name="trash-can-outline" size={20} color={colors.muted} />
@@ -157,11 +162,42 @@ export default function CampsScreen() {
         <Icon name="plus" size={22} color={colors.onBrandPrimary} />
         <Text style={styles.fabText}>{`${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`}</Text>
       </Pressable>
+      <Modal visible={!!ask} transparent animationType="fade" onRequestClose={() => setAsk(null)}>
+        <Pressable style={styles.askBackdrop} onPress={() => setAsk(null)}>
+          <Pressable style={styles.askBox} onPress={() => {}}>
+            <Text style={styles.cardTitle}>"{ask?.name}" verwijderen?</Text>
+            <Text style={styles.askText}>
+              Wat je op dit lijstje al hebt afgevinkt, heb je gekocht. Die besparing kan blijven meetellen in je bespaaroverzicht.
+            </Text>
+            <Button
+              label="Verwijderen, besparing bewaren"
+              icon="piggy-bank-outline"
+              loading={del.isPending && del.variables?.keep === true}
+              onPress={() => ask && del.mutate({ id: ask.id, keep: true })}
+              testID="camp-delete-keep"
+            />
+            <Button
+              label="Verwijderen en alles vergeten"
+              icon="trash-can-outline"
+              variant="secondary"
+              loading={del.isPending && del.variables?.keep === false}
+              onPress={() => ask && del.mutate({ id: ask.id, keep: false })}
+              testID="camp-delete-forget"
+            />
+            <Pressable onPress={() => setAsk(null)} hitSlop={8} style={{ alignSelf: "center" }}>
+              <Text style={styles.askText}>Annuleren</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
 
 const useStyles = makeStyles((colors) => ({
+  askBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", padding: 24 },
+  askBox: { backgroundColor: colors.surface, borderRadius: 20, padding: 18, gap: 12, maxWidth: 440, width: "100%", alignSelf: "center" },
+  askText: { fontSize: 14, lineHeight: 20, fontFamily: fonts.regular, color: colors.onSurfaceSecondary },
   root: { flex: 1, backgroundColor: colors.surface },
   header: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 },
   title: { fontSize: 32, fontFamily: fonts.bold, color: colors.onSurface },
