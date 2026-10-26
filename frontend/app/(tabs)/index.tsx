@@ -56,6 +56,35 @@ type CompareStore = {
 
 const SHORT: Record<string, string> = { "Albert Heijn": "AH", Jumbo: "Jumbo", Dirk: "Dirk" };
 
+// Slim splitsen: bij welke twee winkels samen is je lijst het goedkoopst? Alleen tonen als het echt scheelt.
+function bestSplit(compare: CompareStore[], bestSingle: number) {
+  let top: { stores: string[]; total: number; saving: number; lines: { name: string; product: string | null; store: string; price: number }[] } | null = null;
+  for (let a = 0; a < compare.length; a++) {
+    for (let b = a + 1; b < compare.length; b++) {
+      const A = compare[a], B = compare[b];
+      const lines: { name: string; product: string | null; store: string; price: number }[] = [];
+      let total = 0;
+      (A.items ?? []).forEach((ia, k) => {
+        const ib = B.items?.[k];
+        // Alleen echte prijzen kiezen; heeft geen van beide het, dan telt de schatting mee (zoals bij één winkel)
+        const pa = ia.price, pb = ib?.price ?? null;
+        if (pa == null && pb == null && ia.estimate == null) return;
+        const useB = pb != null && (pa == null || pb < pa);
+        const it = useB ? ib! : ia;
+        const price = (useB ? pb : pa ?? ia.estimate) as number;
+        total += price;
+        lines.push({ name: it.name, product: it.product, store: useB ? B.store : A.store, price });
+      });
+      const used = new Set(lines.map((l) => l.store));
+      const saving = bestSingle - total;
+      if (used.size === 2 && saving >= 1 && (!top || total < top.total)) {
+        top = { stores: [A.store, B.store], total: Math.round(total * 100) / 100, saving: Math.round(saving * 100) / 100, lines };
+      }
+    }
+  }
+  return top;
+}
+
 function greeting() {
   const h = new Date().getHours();
   return h < 6 ? "Goedenacht" : h < 12 ? "Goedemorgen" : h < 18 ? "Goedemiddag" : "Goedenavond";
@@ -92,6 +121,8 @@ export default function HomeScreen() {
   const fairTotal = (c: CompareStore) => c.total_fair ?? c.total;
   const best = compare.length > 1 ? compare.reduce((a, b) => (fairTotal(b) < fairTotal(a) ? b : a)) : null;
   const maxTotal = Math.max(1, ...compare.map(fairTotal));
+  const split = bestSplit(compare, best ? fairTotal(best) : 0);
+  const [splitOpen, setSplitOpen] = useState(false);
   const todo = data?.todo ?? {};
   const todoRows = [
     todo.dishes ? { n: todo.dishes, label: "gerechten wachten op goedkeuring", to: "/admin/submissions" } : null,
@@ -318,6 +349,40 @@ export default function HomeScreen() {
                   : null}
               </Pressable>
             ))}
+            {split ? (
+              <Pressable testID="compare-split" onPress={() => setSplitOpen((v) => !v)} style={styles.splitBox}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Icon name="call-split" size={20} color={colors.success} />
+                  <Text style={[styles.body, { flex: 1, fontFamily: fonts.bold }]}>
+                    Slim splitsen: {split.stores.map((s) => SHORT[s] ?? s).join(" + ")}
+                  </Text>
+                  <Text style={[styles.body, { fontFamily: fonts.bold, color: colors.success }]}>{euro(split.total)}</Text>
+                </View>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={styles.small}>
+                    Haal elk product waar het het goedkoopst is: {euro(split.saving)} minder dan alles bij {best?.store}.
+                  </Text>
+                  <Icon name={splitOpen ? "chevron-up" : "chevron-down"} size={18} color={colors.muted} />
+                </View>
+                {splitOpen
+                  ? split.stores.map((st) => (
+                      <View key={st} style={{ gap: 2 }}>
+                        <Text style={[styles.body, { fontFamily: fonts.semibold, marginTop: 6 }]}>
+                          {st} · {euro(split.lines.filter((l) => l.store === st).reduce((a, l) => a + l.price, 0))}
+                        </Text>
+                        {split.lines
+                          .filter((l) => l.store === st)
+                          .map((l) => (
+                            <View key={l.name} style={styles.cmpRow}>
+                              <Text style={[styles.cmpName, { flex: 1 }]} numberOfLines={1}>{l.product ?? l.name}</Text>
+                              <Text style={styles.cmpPrice}>{euro(l.price)}</Text>
+                            </View>
+                          ))}
+                      </View>
+                    ))
+                  : null}
+              </Pressable>
+            ) : null}
             <Text style={styles.small}>
               Indicatie voor "{data.camp.name}": per product één verpakking. Staat iets niet in een winkel, dan rekenen we met het best
               passende alternatief daar. Tik op een winkel voor de details.
@@ -405,6 +470,7 @@ const useStyles = makeStyles((colors) => ({
   cmpImg: { width: 34, height: 34, borderRadius: 8, backgroundColor: "#fff" },
   cmpName: { fontSize: 14, fontFamily: fonts.medium, color: colors.onSurface },
   cmpPrice: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },
+  splitBox: { borderRadius: 12, backgroundColor: colors.brandTertiary, padding: 12, gap: 6 },
   compareCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 14 },
   barTrack: { height: 8, borderRadius: 4, backgroundColor: colors.surfaceTertiary, overflow: "hidden" },
   bar: { height: 8, borderRadius: 4, backgroundColor: colors.brandPrimary },
