@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Animated, FlatList, Image, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 import Modal from "@/src/components/Modal";
+import { useHideOnScroll } from "@/src/hideOnScroll";
 import { useRouter } from "expo-router";
 import type { ReactNode } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -98,7 +99,7 @@ export function ProductBrowser({
 
   const debouncedSearch = useDebounced(search);
   const queryKey = ["products", "search", storeFilter, aisle, onlyFavorites, debouncedSearch.trim(), filters];
-  const { data, isLoading, isPlaceholderData, isError, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
+  const { data, isLoading, isPlaceholderData, isError, fetchNextPage, hasNextPage, isFetchingNextPage, refetch, isRefetching } = useInfiniteQuery({
     queryKey,
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
@@ -151,9 +152,15 @@ export function ProductBrowser({
     onError: () => qc.invalidateQueries({ queryKey: ["products", "search"] }),
   });
 
+  const hide = useHideOnScroll();
+  const listProps = {
+    ...hide.scrollProps,
+    refreshControl: <RefreshControl refreshing={isRefetching} onRefresh={() => { refetch(); qc.invalidateQueries({ queryKey: ["products"] }); }} tintColor={colors.brandPrimary} />,
+  };
+
   return (
     <View style={{ flex: 1 }}>
-      <View style={styles.header}>
+      <Animated.View {...hide.blockProps} style={[styles.header, { backgroundColor: colors.surface, paddingBottom: 2 }, hide.blockProps.style]}>
         {header}
         <View style={{ flexDirection: "row", alignItems: "center" }}>
           <Pressable testID="store-selector" onPress={() => setStoreOpen((v) => !v)} style={styles.storeRow}>
@@ -270,7 +277,7 @@ export function ProductBrowser({
           ))}
         </ScrollView>
         )}
-      </View>
+      </Animated.View>
 
       {/* Bij een andere afdeling nooit de soorten van de vorige laten staan: eerst laden, of zeggen dat het mislukte */}
       {isLoading || (isPlaceholderData && mode === "subs") ? (
@@ -283,6 +290,7 @@ export function ProductBrowser({
         </View>
       ) : mode === "cats" ? (
         <FlatList
+          {...listProps}
           key={`cats-${grid.cols}`}
           data={AISLES.filter((a) => (aisleCounts[a] ?? 0) > 0)}
           keyExtractor={(a) => a}
@@ -305,6 +313,7 @@ export function ProductBrowser({
         />
       ) : mode === "subs" ? (
         <FlatList
+          {...listProps}
           key={`subs-${grid.cols}`}
           data={[{ value: "", count: aisleCounts[aisle] ?? 0, image: null }, ...subOptions]}
           keyExtractor={(o) => o.value || "__all"}
@@ -331,6 +340,7 @@ export function ProductBrowser({
         />
       ) : (
         <FlatList
+          {...listProps}
           key="list"
           data={filtered}
           keyboardShouldPersistTaps="handled"

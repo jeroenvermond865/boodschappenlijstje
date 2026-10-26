@@ -1,4 +1,4 @@
-import { ActivityIndicator, Image, Linking, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Image, Linking, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -90,7 +90,10 @@ export default function ProductScreen() {
           <Text style={styles.muted}>Product niet gevonden</Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40, gap: 14 }}>
+        <ScrollView
+          refreshControl={<RefreshControl refreshing={product.isRefetching} onRefresh={() => { product.refetch(); details.refetch(); }} tintColor={colors.brandPrimary} />}
+          contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40, gap: 14 }}
+        >
           <View style={styles.imageBox}>
             {p.image ? (
               <Image source={{ uri: p.image }} style={styles.image} resizeMode="contain" />

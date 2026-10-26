@@ -2400,7 +2400,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
     # Voorraadkast (Premium): wat je al in huis hebt, zetten we erbij. Zonder Premium rekenen we alleen uit wat het had gescheeld
     is_premium = bool(user.get("premium"))
     has_pantry, pantry_value = False, 0.0
-    pantry = await _pantry_index(user["user_id"])
+    pantry = await _pantry_index(user["user_id"], user)
     if pantry:
         for b in by_store + general + [x for d in per_day for x in d["by_store"]]:
             for it in b["flat"]:
@@ -2473,12 +2473,68 @@ def _unit_base(unit: str):
     return _UNIT_BASE.get(u, (u, 1))
 
 
-async def _pantry_index(user_id: str) -> dict:
+PANTRY_WEEKLY_USE = 10  # standaard: elke week gaat er 10% van je voorraad af (olie, kruiden, ook als het niet in je gerechten staat)
+
+
+def _pantry_rate(user: Optional[dict]) -> float:
+    v = (user or {}).get("pantry_weekly_use")
+    return max(0.0, min(100.0, float(PANTRY_WEEKLY_USE if v is None else v))) / 100
+
+
+def _pantry_now(p: dict, rate: float) -> float:
+    # Hoeveel er nu nog is: de opgeslagen hoeveelheid min het wekelijkse verbruik sinds de laatste keer bijwerken
+    qty = float(p.get("qty") or 0)
+    at = p.get("updated_at")
+    if not rate or not isinstance(at, datetime):
+        return qty
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    weeks = max(0.0, (now_utc() - at).total_seconds() / (7 * 86400))
+    return qty * (1 - rate) ** weeks
+
+
+async def _pantry_index(user_id: str, user: Optional[dict] = None) -> dict:
     out: dict = {}
+    if user is None:
+        user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "pantry_weekly_use": 1}) or {}
+    rate = _pantry_rate(user)
     async for p in db.pantry.find({"user_id": user_id}, {"_id": 0}):
         base, f = _unit_base(p.get("unit") or "")
         k = (_norm_text(p.get("name") or ""), base)
-        out[k] = out.get(k, 0) + float(p.get("qty") or 0) * f
+        out[k] = out.get(k, 0) + _pantry_now(p, rate) * f
+    return out
+
+
+async def _pantry_learn(user: dict, names: list) -> None:
+    # Bij het overnemen van een recept niet meegekocht ("al in huis"): dan heb je het dus. Zet het in de voorraadkast als "vol".
+    # Eigen regels met een echte hoeveelheid laten we staan.
+    for name in dict.fromkeys(n.strip()[:80] for n in names if n and n.strip()):
+        name_l = name.lower()
+        same = await db.pantry.find_one({"user_id": user["user_id"], "name_l": name_l})
+        if same and not same.get("learned"):
+            continue
+        if same:
+            await db.pantry.update_one({"item_id": same["item_id"]}, {"$set": {"qty": 100, "unit": "%", "updated_at": now_utc()}})
+        elif await db.pantry.count_documents({"user_id": user["user_id"]}) < 500:
+            await db.pantry.insert_one({"item_id": f"pan_{uuid.uuid4().hex[:12]}", "user_id": user["user_id"], "name": name, "name_l": name_l,
+                                        "qty": 100, "unit": "%", "learned": True, "updated_at": now_utc()})
+
+
+async def _pantry_stock(user: dict, names: list) -> dict:
+    # Per naam: "yes" (nog genoeg in je voorraadkast), "low" (bijna op) of "maybe" (staat er niet (meer) in: misschien nog in huis)
+    if not names:
+        return {}
+    rate = _pantry_rate(user)
+    docs = await db.pantry.find({"user_id": user["user_id"], "name_l": {"$in": [n.lower() for n in names]}}, {"_id": 0}).to_list(500)
+    by = {d["name_l"]: d for d in docs}
+    out = {}
+    for n in names:
+        d = by.get(n.lower())
+        if not d:
+            out[n] = "maybe"
+            continue
+        left, start = _pantry_now(d, rate), float(d.get("qty") or 0)
+        out[n] = "maybe" if left <= 0.0001 else "low" if (d.get("unit") == "%" and left < 20) or (start and left / start < 0.2) else "yes"
     return out
 
 
@@ -2500,15 +2556,34 @@ class PantryInput(BaseModel):
     unit: str = "stuks"
 
 
-def _pantry_public(p: dict) -> dict:
-    return {"id": p["item_id"], "name": p["name"], "qty": p.get("qty", 0), "unit": p.get("unit") or "stuks", "updated_at": p.get("updated_at")}
+def _pantry_public(p: dict, rate: float = 0) -> dict:
+    left = _pantry_now(p, rate)
+    return {"id": p["item_id"], "name": p["name"], "qty": round(left, 0 if p.get("unit") == "%" else 2), "unit": p.get("unit") or "stuks",
+            "learned": bool(p.get("learned")), "updated_at": p.get("updated_at")}
 
 
 @api_router.get("/pantry")
 async def list_pantry(user: dict = Depends(get_current_user)):
     await require_premium(user)
     items = await db.pantry.find({"user_id": user["user_id"]}, {"_id": 0}).sort("name_l", 1).to_list(1000)
-    return {"items": [_pantry_public(p) for p in items]}
+    rate = _pantry_rate(user)
+    return {"items": [_pantry_public(p, rate) for p in items], "weekly_use": round(rate * 100)}
+
+
+class PantrySettings(BaseModel):
+    weekly_use: float = PANTRY_WEEKLY_USE
+
+
+@api_router.put("/pantry/settings")
+async def pantry_settings(data: PantrySettings, user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    v = max(0.0, min(100.0, float(data.weekly_use)))
+    # Eerst de voorraad van nu vastleggen, dan geldt het nieuwe verbruik vanaf vandaag
+    rate = _pantry_rate(user)
+    async for p in db.pantry.find({"user_id": user["user_id"]}, {"_id": 0}):
+        await db.pantry.update_one({"item_id": p["item_id"]}, {"$set": {"qty": round(_pantry_now(p, rate), 2), "updated_at": now_utc()}})
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"pantry_weekly_use": v}})
+    return {"weekly_use": v}
 
 
 def _pantry_clean(data: PantryInput) -> dict:
@@ -6408,7 +6483,13 @@ async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=502, detail="Dit recept is nu niet op te halen, probeer het zo nog eens")
     if not user.get("no_personal"):
         asyncio.create_task(_track_recipe(user["user_id"], rec, 1))
-    return await _recipe_products(rec, user)
+    out = await _recipe_products(rec, user)
+    # Voorraadkast (Premium): staat wat waarschijnlijk al in huis is nog in je voorraad?
+    if user.get("premium"):
+        names = [i["name"] for i in out["ingredients"] if i.get("pantry") and i.get("name")]
+        stock = await _pantry_stock(user, names)
+        out = {**out, "ingredients": [{**i, "stock": stock.get(i.get("name"))} if i.get("pantry") else i for i in out["ingredients"]]}
+    return out
 
 
 async def _import_linked(rec: dict) -> None:
@@ -6558,6 +6639,13 @@ async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = Fal
                                aisle=(prod or {}).get("aisle") or "Overig", price=(prod or {}).get("price") or 0,
                                product_id=(prod or {}).get("id"), store=(prod or {}).get("source") or (STORE_LABELS.get(rec["store"]) if prod else None),
                                recipe_text=i["text"]).model_dump())
+    # Wat je niet meekoopt heb je dus in huis: de voorraadkast leert dat
+    learn = [i["name"] or i["text"] for n, i in enumerate(rec["ingredients"]) if i.get("pantry") and n not in keep and _norm_text(i["name"] or "") not in _ALWAYS_HOME]
+    if learn:
+        try:
+            await _pantry_learn(user, learn)
+        except Exception as e:
+            logger.warning("Voorraadkast leren: %r", e)
     dish_id = f"dish_{uuid.uuid4().hex[:12]}"
     doc = {"dish_id": dish_id, "name": rec["title"][:80], "category": category, "is_standard": False, "owner_id": user["user_id"],
            "ingredients": ings, "pantry": pantry, "source": {"recipe_id": rec["id"], "url": rec.get("url"), "image": rec.get("image"), "store": rec["store"],

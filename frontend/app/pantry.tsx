@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, RefreshControl, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -12,7 +12,9 @@ import { PremiumLock, usePremium } from "@/src/premium";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type PItem = { id: string; name: string; qty: number; unit: string };
+type PItem = { id: string; name: string; qty: number; unit: string; learned?: boolean };
+
+const USE_STEPS = [0, 5, 10, 15, 20, 25, 30, 40, 50];
 
 export default function PantryScreen() {
   const styles = useStyles();
@@ -25,9 +27,9 @@ export default function PantryScreen() {
   const [qty, setQty] = useState("1");
   const [unit, setUnit] = useState("stuks");
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ["pantry"],
-    queryFn: () => api<{ items: PItem[] }>("/pantry"),
+    queryFn: () => api<{ items: PItem[]; weekly_use: number }>("/pantry"),
     enabled: premium,
   });
   const done = () => {
@@ -55,9 +57,14 @@ export default function PantryScreen() {
     onSuccess: done,
     onError: fail,
   });
+  const setUse = useMutation({
+    mutationFn: (v: number) => api("/pantry/settings", { method: "PUT", body: { weekly_use: v } }),
+    onSuccess: done,
+    onError: fail,
+  });
   const step = (i: PItem, dir: 1 | -1) => {
-    const by = i.unit === "gram" || i.unit === "ml" ? 100 : 1;
-    const next = Math.max(0, i.qty + dir * by);
+    const by = i.unit === "%" ? 10 : i.unit === "gram" || i.unit === "ml" ? 100 : 1;
+    const next = Math.min(i.unit === "%" ? 100 : Infinity, Math.max(0, Math.round((i.qty + dir * by) * 100) / 100));
     if (next === 0) remove.mutate(i.id);
     else update.mutate({ ...i, qty: next });
   };
@@ -71,14 +78,15 @@ export default function PantryScreen() {
         <Text style={styles.headerTitle}>Voorraadkast</Text>
         <View style={styles.headerBtn} />
       </View>
-      <KeyboardAwareScrollView bottomOffset={20} contentContainerStyle={{ padding: 16, gap: 16, paddingBottom: insets.bottom + 24 }} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => refetch()} tintColor={colors.brandPrimary} />} bottomOffset={20} contentContainerStyle={{ padding: 16, gap: 16, paddingBottom: insets.bottom + 24 }} keyboardShouldPersistTaps="handled">
         {!premium ? (
           <PremiumLock title="De voorraadkast" text="Houd bij wat je al in huis hebt. Op je boodschappenlijst zie je dan meteen wat je niet hoeft te kopen." />
         ) : (
           <>
             <Text style={styles.intro}>
               Zet hier wat je al in huis hebt. Op je boodschappenlijst zie je dan bij elk product hoeveel je nog hebt, en vink je in één keer af wat je niet
-              hoeft te kopen. Gebruik dezelfde naam als in je gerechten, bijvoorbeeld "Rijst" of "Melk".
+              hoeft te kopen. Gebruik dezelfde naam als in je gerechten, bijvoorbeeld "Rijst" of "Melk". Neem je bij een recept iets niet mee omdat je het al
+              in huis hebt, dan zet de app het hier vanzelf bij.
             </Text>
             <View style={styles.addCard}>
               <Field label="Product" testID="pantry-name" placeholder="Bijv. Rijst" value={name} onChangeText={setName} maxLength={80} />
@@ -91,6 +99,18 @@ export default function PantryScreen() {
               </View>
               <Button label="Toevoegen" onPress={() => add.mutate()} loading={add.isPending} disabled={!name.trim()} testID="pantry-add" />
             </View>
+            <View style={styles.addCard}>
+              <Text style={styles.label}>Verbruik per week</Text>
+              <Text style={styles.rowQty}>
+                Sommige dingen gebruik je ook als ze niet in je gerechten staan, zoals olie of kruiden. Zoveel gaat er elke week van je voorraad af.
+              </Text>
+              <Select
+                testID="pantry-weekly"
+                value={`${data?.weekly_use ?? 10}% per week`}
+                options={USE_STEPS.map((v) => `${v}% per week`)}
+                onChange={(v) => setUse.mutate(parseInt(v, 10) || 0)}
+              />
+            </View>
             {isLoading ? (
               <ActivityIndicator color={colors.brandPrimary} />
             ) : (data?.items ?? []).length === 0 ? (
@@ -102,7 +122,9 @@ export default function PantryScreen() {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.rowName}>{i.name}</Text>
                       <Text style={styles.rowQty}>
-                        {formatQty(i.qty)} {i.unit}
+                        {i.unit === "%"
+                          ? `${i.qty >= 80 ? "Vol" : i.qty >= 20 ? "Nog wat" : "Bijna op"} · ±${Math.round(i.qty)}%${i.learned ? " · geleerd uit je recepten" : ""}`
+                          : `${formatQty(i.qty)} ${i.unit}`}
                       </Text>
                     </View>
                     <Pressable onPress={() => step(i, -1)} hitSlop={6} style={styles.stepBtn} testID={`pantry-minus-${i.id}`}>

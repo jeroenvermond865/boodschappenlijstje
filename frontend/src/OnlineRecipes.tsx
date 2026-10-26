@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Animated, FlatList, Image, NativeScrollEvent, NativeSyntheticEvent, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
+import { useHideOnScroll } from "@/src/hideOnScroll";
 import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -51,7 +52,9 @@ export function OnlineRecipes({
   onPick,
   pickedIds,
   busyId,
+  onScroll,
 }: {
+  onScroll?: (e: NativeSyntheticEvent<NativeScrollEvent>) => void; // bijv. om de bovenbalk van het scherm mee te laten schuiven
   bottomPadding: number;
   initialFilters?: Filters; // bijv. { gang: ["ontbijt"] } als je vanuit het ontbijt van een kamp zoekt
   onPick?: (r: RecipeTile) => void; // kiezen in plaats van openen
@@ -141,9 +144,11 @@ export function OnlineRecipes({
       return out;
     });
 
+  const hide = useHideOnScroll();
+
   return (
     <View style={{ flex: 1 }}>
-      <View style={styles.header}>
+      <Animated.View {...hide.blockProps} style={[styles.header, { backgroundColor: colors.surface }, hide.blockProps.style]}>
         <View style={styles.searchBox}>
           <Icon name="magnify" size={20} color={colors.muted} />
           <TextInput
@@ -195,7 +200,7 @@ export function OnlineRecipes({
             {first.errors?.length ? `  ·  ${first.errors.join(", ")} nu niet bereikbaar` : ""}
           </Text>
         ) : null}
-      </View>
+      </Animated.View>
 
       {query.isLoading ? (
         <View style={styles.center}>
@@ -203,6 +208,12 @@ export function OnlineRecipes({
         </View>
       ) : (
         <FlatList
+          scrollEventThrottle={16}
+          onScroll={(e) => {
+            hide.scrollProps.onScroll(e);
+            onScroll?.(e);
+          }}
+          refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={() => query.refetch()} tintColor={colors.brandPrimary} />}
           data={recipes}
           keyExtractor={(r) => r.id}
           key={`recipes-${grid.cols}`}

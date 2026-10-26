@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Image, Linking, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Image, Linking, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import Modal from "@/src/components/Modal";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -30,7 +30,7 @@ type Recipe = {
   url: string;
   is_favorite?: boolean;
   steps: string[];
-  ingredients: { text: string; name: string; qty: number | null; unit: string; pantry?: boolean; site_packs?: number | null; product: Product | null }[];
+  ingredients: { text: string; name: string; qty: number | null; unit: string; pantry?: boolean; stock?: "yes" | "low" | "maybe" | null; site_packs?: number | null; product: Product | null }[];
   in_stock?: string[];
 };
 
@@ -158,7 +158,7 @@ export default function RecipeScreen() {
         </View>
       ) : (
         <>
-          <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 110 }}>
+          <ScrollView refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={() => q.refetch()} tintColor={colors.brandPrimary} />} contentContainerStyle={{ paddingBottom: insets.bottom + 110 }}>
             {r.image ? <Image source={{ uri: r.image }} style={styles.hero} resizeMode="cover" /> : null}
             <View style={{ padding: 16, gap: 14 }}>
               <Text style={styles.title}>{r.title}</Text>
@@ -478,6 +478,18 @@ function IngRow({
               {i.product.name} · {euro(i.product.promo?.price ?? i.product.price)}
             </Text>
           ) : null}
+          {toggle && i.stock ? (
+            <View style={[styles.stockPill, i.stock === "yes" ? styles.stockYes : i.stock === "low" ? styles.stockLow : styles.stockMaybe]}>
+              <Icon
+                name={i.stock === "yes" ? "fridge-outline" : i.stock === "low" ? "alert-outline" : "help-circle-outline"}
+                size={12}
+                color={i.stock === "yes" ? colors.success : colors.muted}
+              />
+              <Text style={[styles.stockText, i.stock === "yes" && { color: colors.success }]}>
+                {i.stock === "yes" ? "Staat nog in je voorraadkast" : i.stock === "low" ? "Bijna op in je voorraadkast" : "Misschien nog in voorraad"}
+              </Text>
+            </View>
+          ) : null}
           {i.product && plan && (plan.packs > 1 || plan.better) && (!toggle || toggle.on) ? (
             <Text style={styles.ingProd} numberOfLines={1}>
               {packText(plan.packs, plan.pack_unit)} · {euro(plan.cost)}
@@ -568,4 +580,9 @@ const useStyles = makeStyles((colors) => ({
   chipSelOn: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
   chipSelText: { fontSize: 13, fontFamily: fonts.medium, color: colors.onSurfaceTertiary },
   chipSelTextOn: { color: colors.onBrandPrimary, fontFamily: fonts.semibold },
+  stockPill: { flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "flex-start", borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2, marginTop: 3 },
+  stockYes: { backgroundColor: colors.surfaceSecondary },
+  stockLow: { backgroundColor: colors.surfaceTertiary },
+  stockMaybe: { backgroundColor: colors.surfaceTertiary },
+  stockText: { fontSize: 11, fontFamily: fonts.medium, color: colors.muted },
 }));

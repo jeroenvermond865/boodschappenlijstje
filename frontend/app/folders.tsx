@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, Image, Linking, Pressable, ScrollView, SectionList, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Animated, FlatList, Image, Linking, Pressable, ScrollView, SectionList, Text, TextInput, View } from "react-native";
 import Modal from "@/src/components/Modal";
+import { useHideOnScroll } from "@/src/hideOnScroll";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueries, useQuery } from "@tanstack/react-query";
@@ -127,6 +128,8 @@ export default function FoldersScreen() {
     });
   }, [period, cat, cols, searching, dq, allStores, others.map((o) => o.dataUpdatedAt).join(","), periodKey, store]);
 
+  const hide = useHideOnScroll();
+
   const openItem = (it: FolderItem) => {
     if (it.product_ids.length === 1) router.push(`/product/${it.product_ids[0]}`);
     else setOpen(it);
@@ -142,7 +145,7 @@ export default function FoldersScreen() {
         <View style={styles.headerBtn} />
       </View>
 
-      <View style={{ paddingHorizontal: 16, paddingTop: 12, gap: 10 }}>
+      <Animated.View {...hide.blockProps} style={[{ paddingHorizontal: 16, paddingTop: 12, gap: 10, paddingBottom: 2 }, hide.blockProps.style]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
           {[...(data?.stores ?? ["Albert Heijn", "Dirk", "Jumbo"])].sort((a, b) => (a === fav ? -1 : b === fav ? 1 : a.localeCompare(b, "nl"))).map((s) => (
             <Pressable
@@ -212,7 +215,7 @@ export default function FoldersScreen() {
             <Text style={styles.folderLinkText}>Bekijk de echte folder van {store}</Text>
           </Pressable>
         ) : null}
-      </View>
+      </Animated.View>
 
       {isLoading ? (
         <View style={styles.center}>
@@ -230,9 +233,10 @@ export default function FoldersScreen() {
           </Pressable>
         </View>
       ) : period.pages && !searching ? (
-        <FolderPages pages={period.pages} bottom={insets.bottom + 40} />
+        <FolderPages pages={period.pages} bottom={insets.bottom + 40} scrollProps={hide.scrollProps} />
       ) : (
         <SectionList
+          {...hide.scrollProps}
           sections={sections}
           keyExtractor={(row) => row.map((it) => it.id).join("|")}
           stickySectionHeadersEnabled
@@ -281,13 +285,14 @@ export default function FoldersScreen() {
   );
 }
 
-function FolderPages({ pages, bottom }: { pages: string[]; bottom: number }) {
+function FolderPages({ pages, bottom, scrollProps }: { pages: string[]; bottom: number; scrollProps?: object }) {
   // Tientallen grote pagina's: alleen laden wat in beeld komt, in een kleiner formaat
   const styles = useStyles();
   const [w, setW] = useState(0);
   const h = w ? (w - 32) * 1.42 : 480;
   return (
     <FlatList
+      {...scrollProps}
       data={pages}
       keyExtractor={(u) => u}
       onLayout={(e) => setW(e.nativeEvent.layout.width)}
@@ -396,6 +401,8 @@ const useStyles = makeStyles((colors) => ({
   page: { width: "100%", height: 480, borderRadius: 12, backgroundColor: colors.surfaceSecondary },
   root: { flex: 1, backgroundColor: colors.surface },
   header: {
+    zIndex: 2,
+    backgroundColor: colors.surface,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",

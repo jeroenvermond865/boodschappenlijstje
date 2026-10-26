@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Image, Linking, Platform, Pressable, ScrollView, Share, Text, View } from "react-native";
+import { ActivityIndicator, Animated, Image, Linking, Platform, Pressable, RefreshControl, ScrollView, Share, Text, View } from "react-native";
 import Modal from "@/src/components/Modal";
+import { useHideOnScroll } from "@/src/hideOnScroll";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -130,7 +131,7 @@ export default function ShoppingScreen() {
     flush();
   };
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ["shopping", id],
     queryFn: () => cachedApi<ShoppingData>(`/camps/${id}/shopping-list`),
   });
@@ -340,9 +341,11 @@ export default function ShoppingScreen() {
     }
   };
 
+  const hide = useHideOnScroll();
+
   return (
     <View style={styles.root}>
-      <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
+      <View style={[styles.header, { paddingTop: insets.top + 6, zIndex: 2, backgroundColor: colors.surface }]}>
         <Pressable testID="back-button" onPress={() => goBack()} hitSlop={10} style={styles.headerBtn}>
           <Icon name="chevron-left" size={28} color={colors.onSurface} />
         </Pressable>
@@ -367,7 +370,7 @@ export default function ShoppingScreen() {
         </View>
       </View>
 
-      <View style={styles.segmentWrap}>
+      <Animated.View {...hide.blockProps} style={[styles.segmentWrap, hide.blockProps.style]}>
         <View style={styles.segment}>
           <Pressable testID="tab-total" onPress={() => setTab("total")} style={[styles.segBtn, tab === "total" && styles.segBtnActive]}>
             <Text style={[styles.segText, tab === "total" && styles.segTextActive]}>Totaal</Text>
@@ -376,7 +379,7 @@ export default function ShoppingScreen() {
             <Text style={[styles.segText, tab === "perday" && styles.segTextActive]}>Per dag</Text>
           </Pressable>
         </View>
-      </View>
+      </Animated.View>
 
       {isLoading || !loaded ? (
         <View style={styles.center}>
@@ -391,7 +394,11 @@ export default function ShoppingScreen() {
           />
         </View>
       ) : (
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32, gap: 16 }}>
+        <ScrollView
+          {...hide.scrollProps}
+          refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch(); cmp.refetch(); live.refetch(); }} tintColor={colors.brandPrimary} />}
+          contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32, gap: 16 }}
+        >
           {data?.offline_at ? (
             <View style={styles.multiBanner}>
               <Icon name="wifi-off" size={16} color={colors.onBrandTertiary} />

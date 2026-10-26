@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Animated, FlatList, Image, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { EmptyState, Icon } from "@/src/components/ui";
 import type { Package } from "@/app/package/edit";
 import { OnlineRecipes } from "@/src/OnlineRecipes";
+import { useHideOnScroll } from "@/src/hideOnScroll";
 import { api } from "@/src/api";
 import { dietConflicts, useDiet } from "@/src/diet";
 import { useAuth } from "@/src/auth";
@@ -67,7 +68,7 @@ export default function DishesScreen() {
     enabled: tab === "packages",
   });
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ["dishes"],
     queryFn: () => api<{ dishes: Dish[] }>("/dishes"),
   });
@@ -86,9 +87,21 @@ export default function DishesScreen() {
     ...MEAL_CATEGORIES.map((c) => ({ key: c, label: CATEGORY_LABELS[c] })),
   ];
 
+  const hide = useHideOnScroll();
+  const listProps = {
+    ...hide.scrollProps,
+    refreshControl: (
+      <RefreshControl
+        refreshing={isRefetching || packages.isRefetching}
+        onRefresh={() => (tab === "packages" ? packages.refetch() : refetch())}
+        tintColor={colors.brandPrimary}
+      />
+    ),
+  };
+
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
+      <Animated.View {...hide.blockProps} style={[styles.header, { backgroundColor: colors.surface, paddingBottom: 2 }, hide.blockProps.style]}>
         <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
           <View style={{ flex: 1 }}>
             <Text style={styles.title}>{s.tab_dishes}</Text>
@@ -154,12 +167,13 @@ export default function DishesScreen() {
         </ScrollView>
           </>
         ) : null}
-      </View>
+      </Animated.View>
 
       {tab === "online" ? (
-        <OnlineRecipes bottomPadding={bottomChrome + 24} />
+        <OnlineRecipes bottomPadding={bottomChrome + 24} onScroll={hide.scrollProps.onScroll} />
       ) : tab === "packages" ? (
         <FlatList
+          {...listProps}
           data={packages.data?.packages ?? []}
           keyExtractor={(p) => p.id}
           contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomChrome + 96, gap: 10 }}
@@ -202,6 +216,7 @@ export default function DishesScreen() {
         </View>
       ) : (
         <FlatList
+          {...listProps}
           data={filtered}
           keyExtractor={(d) => d.id}
           contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomChrome + 96, gap: 10 }}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import Modal from "@/src/components/Modal";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -90,7 +90,7 @@ export default function CampDetailScreen() {
     enabled: canViewBudget,
   });
 
-  const { data: camp, isLoading } = useQuery({
+  const { data: camp, isLoading, refetch: refetchCamp, isRefetching } = useQuery({
     queryKey: ["camp", id],
     queryFn: () => cachedApi<Camp>(`/camps/${id}`),
   });
@@ -292,7 +292,10 @@ export default function CampDetailScreen() {
         </ScrollView>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32, gap: 14 }}>
+      <ScrollView
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetchCamp(); qc.invalidateQueries({ queryKey: ["dishes"] }); qc.invalidateQueries({ queryKey: ["budget", id] }); }} tintColor={colors.brandPrimary} />}
+        contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32, gap: 14 }}
+      >
         <Pressable testID="auto-menu-button" onPress={() => (premium ? setMenuOpen(true) : router.push("/premium"))} style={styles.autoMenuBtn}>
           <Icon name="calendar-star" size={18} color={GOLD.icon} />
           <Text style={styles.autoMenuText}>Menu automatisch invullen</Text>

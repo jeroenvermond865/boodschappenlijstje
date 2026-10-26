@@ -1,4 +1,4 @@
-import { ActivityIndicator, Image, Pressable, ScrollView, Switch, Text, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, Switch, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -31,7 +31,7 @@ export default function AlertsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const premium = usePremium();
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ["price-alerts"],
     queryFn: () => api<{ alerts: A[]; auto?: A[]; auto_on?: boolean }>("/price-alerts"),
     enabled: premium,
@@ -91,7 +91,10 @@ export default function AlertsScreen() {
         <Text style={styles.headerTitle}>Prijsalarmen</Text>
         <View style={styles.headerBtn} />
       </View>
-      <ScrollView contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: insets.bottom + 24 }}>
+      <ScrollView
+        refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => refetch()} tintColor={colors.brandPrimary} />}
+        contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: insets.bottom + 24 }}
+      >
         {!premium ? (
           <PremiumLock title="Prijsalarm" text="Krijg een mail als een product in de aanbieding is of onder jouw prijs zakt." />
         ) : isLoading ? (
