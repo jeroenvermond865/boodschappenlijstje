@@ -1,5 +1,6 @@
 // Tijdens het winkelen een product wisselen: voorstellen (zoals elders in de app), zelf zoeken, of de barcode scannen.
-// Lukt scannen niet (geen camera, geen toestemming, of de barcode is onbekend), dan typ je de cijfers of zoek je op naam.
+// Lukt scannen niet (geen camera of geen toestemming), dan typ je de cijfers. Is de barcode onbekend, dan zoek je het product
+// zelf in alle winkels; de barcode wordt dan voorgesteld voor dat product (een beheerder keurt het goed).
 import { useState } from "react";
 import { ActivityIndicator, Image, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -34,6 +35,8 @@ export function ShopSwapSheet({
   const [code, setCode] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [unknown, setUnknown] = useState<string | null>(null); // gescande barcode die we nog niet kennen
+  const [here, setHere] = useState(false); // alleen in deze winkel zoeken
   const [perm, requestPerm] = useCameraPermissions();
   const dq = useDebounced(q);
   const open = !!item;
@@ -47,8 +50,8 @@ export function ShopSwapSheet({
     staleTime: 10 * 60 * 1000,
   });
   const search = useQuery({
-    queryKey: ["products", "search", "shopswap", dq.trim(), store],
-    queryFn: () => fetchProducts({ q: dq, source: store, limit: 30 }),
+    queryKey: ["products", "search", "shopswap", dq.trim(), here ? store : ""],
+    queryFn: () => fetchProducts({ q: dq, source: here ? store : undefined, limit: 40 }),
     enabled: open && dq.trim().length > 1,
     placeholderData: (prev) => prev,
   });
@@ -57,12 +60,17 @@ export function ShopSwapSheet({
     setScan(false);
     setCode("");
     setMsg(null);
+    setUnknown(null);
     onClose();
   };
   const pick = async (p: Product) => {
     setBusy(true);
     try {
       await onPick(p);
+      if (unknown) {
+        // Deze barcode hoort bij dit product: voorstellen, een beheerder keurt het goed
+        await api(`/products/${p.id}/barcode`, { method: "POST", body: { barcode: unknown } }).catch(() => null);
+      }
       close();
     } finally {
       setBusy(false);
@@ -89,13 +97,8 @@ export function ShopSwapSheet({
       }
       throw new Error("onbekend");
     } catch {
-      try {
-        const off = await api<{ name: string; brand?: string | null }>(`/off/barcode/${ean}`);
-        setQ([off.brand, off.name].filter(Boolean).join(" "));
-        setMsg(`Deze barcode kennen we nog niet bij ${store}. We zochten op de naam: kies hieronder het product.`);
-      } catch {
-        setMsg("Deze barcode kennen we niet. Zoek het product hieronder op naam.");
-      }
+      setUnknown(ean);
+      setMsg("Deze barcode kennen we nog niet. Zoek het product hieronder in alle winkels; als je het kiest, koppelen we de barcode eraan (na controle door een beheerder).");
     } finally {
       setBusy(false);
     }
@@ -190,12 +193,26 @@ export function ShopSwapSheet({
 
           <View style={styles.search}>
             <Icon name="magnify" size={20} color={colors.muted} />
-            <TextInput placeholder={`Zoek bij ${store}`} placeholderTextColor={colors.muted} value={q} onChangeText={setQ} style={styles.input} />
+            <TextInput placeholder="Zoek in alle producten" placeholderTextColor={colors.muted} value={q} onChangeText={setQ} style={styles.input} />
           </View>
+          {searching ? (
+            <View style={{ flexDirection: "row", gap: 6 }}>
+              {[false, true].map((h) => (
+                <Pressable key={String(h)} onPress={() => setHere(h)} style={[styles.chip, here === h && { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary }]}>
+                  <Text style={[styles.meta, { fontFamily: fonts.semibold, color: here === h ? colors.onBrandPrimary : colors.onSurface }]}>
+                    {h ? `Alleen ${SHORT[store] ?? store}` : "Alle winkels"}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
 
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 4 }}>
             {searching ? (
-              (search.data?.products ?? []).map((p) => <Row key={p.id} p={p as AltProduct} />)
+              // Eerst wat in deze winkel ligt, daarna de andere winkels
+              [...(search.data?.products ?? [])]
+                .sort((a, b) => Number(b.source === store) - Number(a.source === store))
+                .map((p) => <Row key={p.id} p={p as AltProduct} />)
             ) : alts.isLoading ? (
               <Text style={styles.meta}>Voorstellen zoeken…</Text>
             ) : (
@@ -230,6 +247,7 @@ const useStyles = makeStyles((colors) => ({
   camBox: { height: 260, borderRadius: 14, overflow: "hidden", backgroundColor: "#000" },
   camClose: { position: "absolute", bottom: 10, alignSelf: "center", backgroundColor: "rgba(0,0,0,0.6)", borderRadius: 999, paddingHorizontal: 16, paddingVertical: 8 },
   camCloseText: { color: "#fff", fontFamily: fonts.semibold, fontSize: 14 },
+  chip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: colors.border },
   msg: { fontSize: 13, fontFamily: fonts.semibold, color: colors.muted },
   groupHead: { fontSize: 13, fontFamily: fonts.bold, color: colors.muted, marginTop: 4 },
   row: { flexDirection: "row", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, backgroundColor: colors.surfaceSecondary },
@@ -238,3 +256,92 @@ const useStyles = makeStyles((colors) => ({
   meta: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted },
   price: { fontSize: 14, fontFamily: fonts.bold, color: colors.onSurface },
 }));
+
+// Op de productpagina: zelf de barcode koppelen (scannen of typen); een beheerder keurt het goed
+export function BarcodeLink({ productId, current }: { productId: string; current?: string | null }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [open, setOpen] = useState(false);
+  const [scan, setScan] = useState(false);
+  const [code, setCode] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [perm, requestPerm] = useCameraPermissions();
+  const send = async (raw: string) => {
+    const ean = raw.replace(/\D/g, "");
+    setScan(false);
+    if (ean.length < 8) {
+      setMsg("Die barcode is te kort. Typ alle cijfers onder de streepjes.");
+      return;
+    }
+    try {
+      const r = await api<{ status: string }>(`/products/${productId}/barcode`, { method: "POST", body: { barcode: ean } });
+      setMsg(r.status === "known" ? "Deze barcode staat al bij dit product." : "Bedankt! Een beheerder controleert de barcode en koppelt hem dan.");
+      setCode("");
+    } catch (e: any) {
+      setMsg(e?.message ?? "Dat lukte niet");
+    }
+  };
+  const startScan = async () => {
+    setMsg(null);
+    try {
+      const p = perm?.granted ? perm : await requestPerm();
+      if (!p?.granted) {
+        setMsg("Geen toegang tot de camera. Typ de cijfers van de barcode.");
+        return;
+      }
+      setScan(true);
+    } catch {
+      setMsg("Scannen lukt niet op dit apparaat. Typ de cijfers van de barcode.");
+    }
+  };
+  return (
+    <>
+      <Pressable onPress={() => setOpen(true)} style={{ flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start" }} testID="barcode-link">
+        <Icon name="barcode" size={18} color={colors.brandPrimary} />
+        <Text style={[styles.meta, { color: colors.brandPrimary, fontFamily: fonts.semibold }]}>
+          {current ? `Barcode ${current} · klopt niet?` : "Barcode koppelen"}
+        </Text>
+      </Pressable>
+      <Modal visible={open} animationType="slide" transparent onRequestClose={() => setOpen(false)}>
+        <View style={styles.backdrop}>
+          <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
+            <View style={styles.head}>
+              <Text style={styles.title}>Barcode koppelen</Text>
+              <Pressable onPress={() => { setOpen(false); setScan(false); setMsg(null); }} hitSlop={8}>
+                <Icon name="close" size={22} color={colors.onSurface} />
+              </Pressable>
+            </View>
+            <Text style={styles.meta}>Scan de barcode op de verpakking. Een beheerder controleert hem voordat hij gekoppeld wordt.</Text>
+            {scan ? (
+              <View style={styles.camBox}>
+                <CameraView style={{ flex: 1 }} facing="back" barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e"] }}
+                  onBarcodeScanned={({ data }) => send(data)} />
+                <Pressable onPress={() => setScan(false)} style={styles.camClose}>
+                  <Text style={styles.camCloseText}>Stoppen</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <Pressable onPress={startScan} style={styles.scanBtn}>
+                  <Icon name="barcode-scan" size={20} color={colors.onBrandPrimary} />
+                  <Text style={styles.scanText}>Scan barcode</Text>
+                </Pressable>
+                <View style={[styles.search, { flex: 1 }]}>
+                  <TextInput placeholder="Cijfers barcode" placeholderTextColor={colors.muted} value={code} onChangeText={setCode}
+                    keyboardType="number-pad" onSubmitEditing={() => send(code)} style={styles.input} />
+                  {code.length >= 8 ? (
+                    <Pressable onPress={() => send(code)} hitSlop={8}>
+                      <Icon name="arrow-right-circle" size={22} color={colors.brandPrimary} />
+                    </Pressable>
+                  ) : null}
+                </View>
+              </View>
+            )}
+            {msg ? <Text style={styles.msg}>{msg}</Text> : null}
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}

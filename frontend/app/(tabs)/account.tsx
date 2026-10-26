@@ -43,6 +43,14 @@ export default function AccountScreen() {
   });
   const pendingStores = scounts?.count ?? 0;
 
+  const { data: bcounts } = useQuery({
+    queryKey: ["barcode-suggestions-count"],
+    queryFn: () => api<{ count: number }>("/admin/barcode-suggestions/count"),
+    enabled: canProducts,
+    refetchInterval: 30000,
+  });
+  const pendingBarcodes = bcounts?.count ?? 0;
+
   const { data: preqs } = useQuery({
     queryKey: ["premium-requests"],
     queryFn: () => api<{ requests: unknown[] }>("/admin/premium-requests"),
@@ -233,6 +241,15 @@ export default function AccountScreen() {
                 icon="cog-outline"
                 label="App aanpassen"
                 onPress={() => router.push("/admin/settings")}
+              />
+            ) : null}
+            {canProducts ? (
+              <AdminRow
+                testID="admin-barcodes-link"
+                icon="barcode"
+                label="Barcode-voorstellen"
+                badge={pendingBarcodes}
+                onPress={() => router.push("/admin/barcodes")}
               />
             ) : null}
             {canSettings ? (

@@ -66,6 +66,7 @@ function Gate() {
       <Stack.Screen name="dish/shared/[token]" />
       <Stack.Screen name="admin/submissions" />
       <Stack.Screen name="admin/store-requests" />
+      <Stack.Screen name="admin/barcodes" />
       <Stack.Screen name="admin/premium-requests" />
       <Stack.Screen name="premium" />
       <Stack.Screen name="pantry" />

@@ -7920,6 +7920,29 @@ async def _set_barcode_status(**fields) -> None:
     await db.settings.update_one({"key": "barcode_import"}, {"$set": fields}, upsert=True)
 
 
+OFF_STORE_TAGS = ("albert-heijn", "jumbo", "dirk", "dirk-van-den-broek")
+
+
+async def _off_store_eans(max_pages: int = 40) -> set:
+    # Alle barcodes die in Open Food Facts bij deze winkels in Nederland staan (rustig aan: OFF wil max ~10 zoekopdrachten per minuut)
+    out: set = set()
+    async with httpx.AsyncClient(timeout=60, headers=OFF_HEADERS) as c:
+        for tag in OFF_STORE_TAGS:
+            for page in range(1, max_pages + 1):
+                try:
+                    r = await c.get("https://world.openfoodfacts.org/api/v2/search", params={
+                        "countries_tags_en": "netherlands", "stores_tags": tag, "fields": "code", "page_size": 1000, "page": page})
+                    prods = (r.json() if r.status_code == 200 else {}).get("products") or []
+                except Exception as e:
+                    logger.info("Open Food Facts %s pagina %d: %r", tag, page, e)
+                    prods = []
+                out |= {re.sub(r"\D", "", str(p.get("code") or "")) for p in prods} - {""}
+                await asyncio.sleep(7)
+                if len(prods) < 1000:
+                    break
+    return {e for e in out if 8 <= len(e) <= 14}
+
+
 async def _import_barcodes(which: str = "all") -> None:
     global _barcode_running
     _barcode_running = True
@@ -7934,7 +7957,17 @@ async def _import_barcodes(which: str = "all") -> None:
             _invalidate_products()
             return
         # 2. Dirk/AH: met de Jumbo-barcodes hetzelfde product opzoeken
-        eans = sorted({p["barcode"] async for p in db.products.find({"jumbo_id": {"$exists": True}, "barcode": {"$nin": [None, ""]}, "deleted_at": None}, {"_id": 0, "barcode": 1})})
+        eans = {p["barcode"] async for p in db.products.find({"jumbo_id": {"$exists": True}, "barcode": {"$nin": [None, ""]}, "deleted_at": None}, {"_id": 0, "barcode": 1})}
+        # Plus barcodes die mensen in Open Food Facts (open database) bij AH, Jumbo en Dirk hebben verzameld
+        try:
+            await _set_barcode_status(status="Barcodes uit Open Food Facts ophalen")
+            known = {p["barcode"] async for p in db.products.find({"barcode": {"$nin": [None, ""]}, "deleted_at": None}, {"_id": 0, "barcode": 1})}
+            off = await _off_store_eans()
+            eans |= set(sorted(off - known)[:6000])  # per week een flinke portie, niet alles tegelijk
+            logger.info("Open Food Facts: %d barcodes, %d nieuw om te proberen", len(off), len(off - known))
+        except Exception as e:
+            logger.warning("Open Food Facts barcodes: %r", e)
+        eans = sorted(eans)
         dirk_ids = {str(p["dirk_id"]) for p in await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "barcode": {"$in": [None, ""]}}, {"_id": 0, "dirk_id": 1}).to_list(50000)}
         ah_ids = {str(p["ah_id"]) for p in await db.products.find({"ah_id": {"$exists": True}, "deleted_at": None, "barcode": {"$in": [None, ""]}}, {"_id": 0, "ah_id": 1}).to_list(50000)}
         await _set_barcode_status(status="Dirk en AH koppelen", total=len(eans))
@@ -8004,6 +8037,75 @@ async def barcode_csv(user: dict = Depends(get_current_user)):
         rows.append(";".join(str(c).replace(";", ",").replace("\n", " ") for c in cells))
     return Response("\n".join(rows), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="barcodes.csv"'})
+
+
+class BarcodeSuggest(BaseModel):
+    barcode: str
+
+
+@api_router.post("/products/{product_id}/barcode")
+async def suggest_barcode(product_id: str, data: BarcodeSuggest, user: dict = Depends(get_current_user)):
+    # In de winkel een barcode aan een product koppelen; een beheerder keurt het eerst goed
+    ean = re.sub(r"\D", "", data.barcode)
+    if not 8 <= len(ean) <= 14:
+        raise HTTPException(status_code=400, detail="Ongeldige barcode")
+    p = await db.products.find_one({"product_id": product_id, "deleted_at": None}, {"_id": 0, "name": 1, "barcode": 1})
+    if not p:
+        raise HTTPException(status_code=404, detail="Product niet gevonden")
+    if p.get("barcode") == ean:
+        return {"ok": True, "status": "known"}
+    await db.barcode_suggestions.update_one(
+        {"product_id": product_id, "barcode": ean, "status": "pending"},
+        {"$setOnInsert": {"sug_id": f"bsug_{uuid.uuid4().hex[:12]}", "product_id": product_id, "barcode": ean, "status": "pending",
+                          "user_id": user["user_id"], "user_name": user.get("name"), "created_at": now_utc()}},
+        upsert=True)
+    return {"ok": True, "status": "pending"}
+
+
+@api_router.get("/admin/barcode-suggestions")
+async def list_barcode_suggestions(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_products")
+    sugs = await db.barcode_suggestions.find({"status": "pending"}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    prods = {p["product_id"]: p for p in await db.products.find({"product_id": {"$in": [x["product_id"] for x in sugs]}}, {"_id": 0}).to_list(500)}
+    others = {}
+    async for o in db.products.find({"barcode": {"$in": [x["barcode"] for x in sugs]}, "deleted_at": None}, {"_id": 0, "barcode": 1, "name": 1}):
+        others.setdefault(o["barcode"], []).append(o["name"])
+    out = []
+    for x in sugs:
+        p = prods.get(x["product_id"])
+        if not p:
+            continue
+        out.append({"id": x["sug_id"], "barcode": x["barcode"], "user_name": x.get("user_name"),
+                    "product": {"id": p["product_id"], "name": p["name"], "image": p.get("image"), "unit": p.get("unit"),
+                                "store": product_source(p), "barcode": p.get("barcode")},
+                    "also_on": others.get(x["barcode"], [])})
+    return {"suggestions": out}
+
+
+@api_router.get("/admin/barcode-suggestions/count")
+async def barcode_suggestions_count(user: dict = Depends(get_current_user)):
+    if "manage_products" not in await user_permissions(user):
+        return {"count": 0}
+    return {"count": await db.barcode_suggestions.count_documents({"status": "pending"})}
+
+
+@api_router.post("/admin/barcode-suggestions/{sug_id}/{action}")
+async def review_barcode_suggestion(sug_id: str, action: str, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_products")
+    x = await db.barcode_suggestions.find_one({"sug_id": sug_id, "status": "pending"}, {"_id": 0})
+    if not x or action not in ("approve", "reject"):
+        raise HTTPException(status_code=404, detail="Niet gevonden")
+    if action == "approve":
+        await db.products.update_one({"product_id": x["product_id"]}, {"$set": {"barcode": x["barcode"], "barcode_from": "gebruiker"}})
+        c = (_product_cache.get("by_pid") or {}).get(x["product_id"])
+        if c is not None:
+            c["barcode"] = x["barcode"]
+        # Andere voorstellen voor hetzelfde product zijn dan niet meer nodig
+        await db.barcode_suggestions.update_many({"product_id": x["product_id"], "status": "pending", "sug_id": {"$ne": sug_id}},
+                                                 {"$set": {"status": "resolved"}})
+    await db.barcode_suggestions.update_one({"sug_id": sug_id}, {"$set": {"status": "approved" if action == "approve" else "rejected",
+                                                                         "reviewed_at": now_utc()}})
+    return {"ok": True}
 
 
 @api_router.get("/products/by-barcode/{ean}")
@@ -9647,6 +9749,15 @@ async def _daily_refresh_loop():
                 await _snapshot_prices()
         except Exception as e:
             logger.warning("Prijsgeschiedenis begin: %r", e)
+        try:
+            # Elke week barcodes aanvullen (Jumbo, Open Food Facts, dan bij Dirk en AH opzoeken)
+            doc = await db.meta.find_one({"key": "barcode_weekly"}) or {}
+            if not _barcode_running and (not doc.get("at") or ensure_aware(doc["at"]) < now_utc() - timedelta(days=7)):
+                await db.meta.update_one({"key": "barcode_weekly"}, {"$set": {"at": now_utc()}}, upsert=True)
+                async with _heavy_lock:
+                    await _import_barcodes("all")
+        except Exception as e:
+            logger.warning("Wekelijkse barcodes: %r", e)
         try:
             doc = await db.meta.find_one({"key": "inactive_check"}) or {}
             if not doc.get("at") or ensure_aware(doc["at"]) < now_utc() - timedelta(hours=22):

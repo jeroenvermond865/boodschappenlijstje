@@ -12,6 +12,7 @@ import { euro } from "@/src/search";
 import { PriceAlertCard, PriceHistory } from "@/src/PriceTools";
 import { PremiumLock, usePremium } from "@/src/premium";
 import { AddProductButtons } from "@/src/AddProductSheet";
+import { BarcodeLink } from "@/src/ShopSwap";
 import type { Product, Promo } from "@/app/(tabs)/products";
 
 type Details = {
@@ -125,6 +126,7 @@ export default function ProductScreen() {
           {p.promo ? <PromoCard promo={p.promo} now /> : null}
           {p.promo_next ? <PromoCard promo={p.promo_next} now={false} /> : null}
           <AddProductButtons productId={p.id} productName={p.name} />
+          <BarcodeLink productId={p.id} current={p.barcode} />
 
           {p.is_global ? <OtherStores productId={p.id} /> : null}
 
