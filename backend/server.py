@@ -1864,6 +1864,49 @@ def _add_item(store_map: dict, store: str, name: str, unit: str, aisle: str, qty
         smap[key]["product_id"] = product_id
 
 
+def _item_grams(qty: float, unit: str, p: dict) -> Optional[float]:
+    # Hoeveelheid in gram of ml, zodat 0,38 kg en 1 stuk aardappel samen op één regel kunnen
+    u = (unit or "").lower().strip()
+    if u in _MEASURE:
+        return qty * _MEASURE[u]
+    if u in ("", "stuks", "stuk", "st") and not _pack_count(p.get("unit") or "") and not p.get("pack_count"):
+        piece = _piece_grams(p.get("name") or "")
+        return qty * piece if piece else None
+    return None
+
+
+def _merge_same_product(block: dict, prods: dict) -> dict:
+    # Hetzelfde product op meerdere regels (gram en eetlepel, stuks en takje): één regel, en één keer de verpakkingen tellen
+    first: dict = {}
+    for it in block["flat"]:
+        if it.get("product_id") in prods:
+            first.setdefault(it["product_id"], []).append(it)
+    need, gone = {}, set()
+    for pid, its in first.items():
+        if len(its) < 2:
+            continue
+        p = prods[pid]
+        keep = its[0]
+        grams = [_item_grams(i["qty"], i["unit"], p) for i in its]
+        if all(g is not None for g in grams):
+            keep["qty"], keep["unit"] = round_qty(sum(grams)), "gram"
+        else:
+            need[id(keep)] = sum(i["qty"] * _pack_share(i["unit"], p.get("unit") or "", p.get("name") or "", p.get("pack_count")) for i in its)
+            keep["unit"] = " + ".join([keep["unit"]] + [f"{_fmt_qty(i['qty'])} {i['unit']}" for i in its[1:]])
+        keep["also"] = [i["name"] for i in its[1:] if i["name"].lower() != keep["name"].lower()]
+        gone.update(id(i) for i in its[1:])
+    if gone:
+        block["flat"] = [i for i in block["flat"] if id(i) not in gone]
+        for g in block.get("grouped") or []:
+            g["items"] = [i for i in g["items"] if id(i) not in gone]
+        block["grouped"] = [g for g in block.get("grouped") or [] if g["items"]]
+    return need
+
+
+def _fmt_qty(v: float) -> str:
+    return f"{round_qty(v):g}".replace(".", ",")
+
+
 def _diet_counts(day: dict, camp: dict) -> dict:
     adults = day.get("adults", 0)
     children = day.get("children", 0)
@@ -2039,11 +2082,12 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
         for b in blocks:
             total = 0.0
             saving = 0.0
+            need = _merge_same_product(b, prods)
             for it in b["flat"]:
                 p = prods.get(it.get("product_id") or "")
                 price = resolve_price(p.get("prices", {}), b["store"], p.get("unavailable", [])) if p else 0
                 if price > 0:
-                    plan = _pack_plan(p, it["qty"], it["unit"], b["store"]) or {}
+                    plan = _pack_plan(p, it["qty"], it["unit"], b["store"], need.get(id(it))) or {}
                     packs = plan.get("packs") or 1
                     it.update({"packs": packs, "pack_unit": p.get("unit") or "", "price": round(packs * price, 2), "pack_price": price,
                                "product": p.get("name"), "better": plan.get("better")})
@@ -3555,7 +3599,17 @@ def _pack_plan(p: dict, qty: float, unit: str, store: Optional[str] = None, site
 # Gewicht van één stuk, voor producten die per gewicht verkocht worden: 6 blaadjes gelatine passen in één pakje van 23 gram
 _PIECE_GRAMS = [("gelatine", 1.65), ("knoflook", 50), ("sjalot", 30), ("ui", 100), ("uien", 100), ("aardappel", 150), ("wortel", 80),
                 ("paprika", 150), ("tomaat", 100), ("tomaten", 100), ("appel", 150), ("peer", 150), ("citroen", 100), ("limoen", 70),
-                ("banaan", 120), ("bananen", 120), ("sinaasappel", 200), ("mandarijn", 80), ("champignon", 20), ("ei", 60), ("eieren", 60)]
+                ("banaan", 120), ("bananen", 120), ("sinaasappel", 200), ("mandarijn", 80), ("champignon", 20), ("ei", 60), ("eieren", 60),
+                # Kleine stukjes: bessen, blaadjes van verse kruiden, vellen deeg
+                ("blaadje", 1), ("blaadjes", 1), ("laurierblaadjes", 0.2), ("salie", 1), ("munt", 1), ("basilicum", 1), ("peterselie", 1),
+                ("koriander", 1), ("dragon", 1), ("tijm", 1), ("rozemarijn", 1), ("laurier", 0.2), ("bieslook", 1), ("dille", 1),
+                ("bramen", 5), ("braam", 5), ("frambozen", 4), ("framboos", 4), ("aardbeien", 15), ("aardbei", 15), ("bosbessen", 1),
+                ("bessen", 1), ("kersen", 8), ("druiven", 5), ("cherrytomaatjes", 15), ("cherrytomaten", 15), ("olijven", 4),
+                ("radijs", 10), ("radijsjes", 10), ("bladerdeeg", 45), ("filodeeg", 25), ("courgette", 300), ("komkommer", 350),
+                ("aubergine", 300), ("prei", 200), ("avocado", 150), ("mango", 300), ("kiwi", 80), ("kipfilet", 150), ("kipdijfilet", 100),
+                ("aardappelen", 150), ("aardappels", 150), ("krieltjes", 30), ("wortels", 80), ("wortelen", 80), ("appels", 150),
+                ("peren", 150), ("citroenen", 100), ("limoenen", 70), ("sinaasappels", 200), ("mandarijnen", 80), ("champignons", 20),
+                ("sjalotten", 30), ("courgettes", 300), ("komkommers", 350), ("aubergines", 300)]
 
 
 def _piece_grams(name: str) -> Optional[float]:
@@ -3588,6 +3642,13 @@ def _pack_share(item_unit: str, pack: str, name: str = "", count: Optional[int] 
             grams = amount * {"kg": 1000, "kilo": 1000, "kilogram": 1000}.get(m.group(3), 1)
             if grams > piece:
                 return piece / grams
+        if piece and piece <= 1 and not m:
+            return _PART_OF_PACK["takje"]  # een blaadje uit een bosje verse kruiden
+        if m and m.group(3) not in ("ml", "cl", "l", "liter", "ltr"):
+            # Klein potje of zakje (verse kruiden, specerijen): een "stuk" is dan een blaadje of snufje, geen heel potje
+            grams = float(m.group(2).replace(",", ".")) * int(m.group(1) or 1) * {"kg": 1000, "kilo": 1000, "kilogram": 1000}.get(m.group(3), 1)
+            if 0 < grams <= 50:
+                return min(1.0, 1 / grams)
         return 1.0
     if u in _PART_OF_PACK:
         if u == "plak":
@@ -6332,11 +6393,12 @@ async def _camp_compare_items(camp: dict, user: dict) -> list:
     merged: dict = {}
     for b in sl["by_store"]:
         for it in b["flat"]:
-            k = (_norm_text(it["name"]), it.get("unit") or "stuks")
+            unit = (it.get("unit") or "stuks").split(" + ")[0]  # samengevoegde regel: "3 stuks + 2 takje"
+            k = (_norm_text(it["name"]), unit)
             if k in merged:
                 merged[k][2] += it.get("qty") or 0
             else:
-                merged[k] = [it["name"], it.get("orig_product_id") or it.get("product_id"), it.get("qty") or 0, it.get("unit") or "stuks"]
+                merged[k] = [it["name"], it.get("orig_product_id") or it.get("product_id"), it.get("qty") or 0, unit]
     return [tuple(v) for _, v in sorted(merged.items())][:60]
 
 
