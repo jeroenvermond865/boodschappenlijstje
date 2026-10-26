@@ -1490,13 +1490,20 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     # Te weinig eigen gerechten voor de lege plekken (bijv. een nieuw account)? Vul aan met recepten van AH, Jumbo en Dirk
     days_all = camp.get("days", [])
     only_days = set(data.days) if data.days else None
+
+    def replaced(idx, day, cat):
+        # Wordt deze maaltijd nu (opnieuw) ingevuld?
+        return cat in cats and (only_days is None or day.get("index", idx) in only_days) and (data.overwrite or not (day.get("meals") or {}).get(cat))
+    # Wat blijft staan in dit lijstje: dat liever niet nog eens kiezen (wat we nu vervangen telt niet mee)
+    keep = {did for idx, day in enumerate(days_all) for cat, ids in (day.get("meals") or {}).items()
+            if not replaced(idx, day, cat) for did in ids}
     added_online = 0
     t_start = time.time()
     for cat in cats:
-        slots = sum(1 for idx, day in enumerate(days_all)
-                    if (only_days is None or day.get("index", idx) in only_days) and (data.overwrite or not (day.get("meals") or {}).get(cat)))
-        have = sum(1 for d in dishes if d["category"] == cat)
-        need = min(slots, 10) - have if data.style != "nieuw" else min(slots, 10) - min(have, slots // 2)
+        slots = sum(1 for idx, day in enumerate(days_all) if replaced(idx, day, cat))
+        # Elke dag iets anders: zoveel verschillende gerechten heb je nodig (bij "Iets nieuws" de helft nieuw)
+        have = sum(1 for d in dishes if d["category"] == cat and d["dish_id"] not in keep)
+        need = min(slots, 7) - have if data.style != "nieuw" else min(slots, 7) - min(have, slots // 2)
         if need <= 0:
             continue
         if added_online >= MENU_ONLINE_MAX or time.time() - t_start > MENU_ONLINE_SECONDS:
@@ -1582,7 +1589,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
             s += 2.5 * (1 - (costs[did] - lo) / ((hi - lo) or 1))
         return s + random.random() * 0.9  # bij gelijke stand wat afwisseling
 
-    used = {did for day in camp.get("days", []) for ids in (day.get("meals") or {}).values() for did in ids}
+    used = set(keep)
     filled, promo_dishes = 0, set()
     days = camp.get("days", [])
     only = set(data.days) if data.days else None
@@ -1590,7 +1597,8 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         pool = sorted((d for d in dishes if d["category"] == cat), key=score, reverse=True)
         if not pool:
             continue
-        fresh = [d for d in pool if d["dish_id"] not in used] or pool
+        # Eerst wat nog niet in het lijstje staat, daarna pas herhalen (nooit één gerecht voor alle dagen als er meer zijn)
+        fresh = [d for d in pool if d["dish_id"] not in used] + [d for d in pool if d["dish_id"] in used]
         k = 0
         for idx, day in enumerate(days):
             if only is not None and day.get("index", idx) not in only:
@@ -1611,8 +1619,8 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes), "pool": len(dishes), "added_online": added_online}
 
 
-MENU_ONLINE_MAX = 8  # zoveel nieuwe recepten per keer invullen; de rest vult de app met wat er al is (herhalen)
-MENU_ONLINE_SECONDS = 25
+MENU_ONLINE_MAX = 10  # zoveel nieuwe recepten per keer invullen; de rest vult de app met wat er al is (herhalen)
+MENU_ONLINE_SECONDS = 30
 
 _MENU_COURSE = {"ontbijt": "ontbijt", "lunch": "lunch", "avondeten": "hoofdgerecht", "snacks": "borrel"}
 
@@ -1622,9 +1630,10 @@ async def _menu_recipes(cat: str, prefer: list, avoid: list, n: int) -> list:
     import json as _json
     flt = {"gang": [_MENU_COURSE.get(cat, "hoofdgerecht")]}  # vega/vegan controleren we na het overnemen (ingrediënten)
     out: list = []
-    for q in (prefer[:3] or [""]):
+    start = random.randint(0, 3)
+    for q, page in ([(q, 0) for q in prefer[:3]] or [("", start), ("", start + 1)]):
         try:
-            res = await _search_recipes(q, "all", random.randint(0, 2) if not q else 0, _json.dumps(flt))
+            res = await _search_recipes(q, "all", page, _json.dumps(flt))
         except HTTPException:
             continue
         out += res.get("recipes") or []
