@@ -10,6 +10,7 @@ import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
 import { euro } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
+import { useGrid } from "@/src/layout";
 import type { Product } from "@/app/(tabs)/products";
 
 type FolderItem = {
@@ -79,7 +80,8 @@ export default function FoldersScreen() {
     }
   }, [params.promo, params.store, data]);
   const period = periods.find((p) => p.key === periodKey) ?? periods[0];
-  // Per categorie, twee kaarten naast elkaar
+  // Per categorie, kaarten naast elkaar (op een breed scherm meer per rij)
+  const { cols } = useGrid(160);
   const sections = useMemo(() => {
     const groups: { title: string; items: FolderItem[] }[] = [];
     for (const it of period?.items ?? []) {
@@ -90,10 +92,10 @@ export default function FoldersScreen() {
     }
     return groups.map((g) => {
       const rows: FolderItem[][] = [];
-      for (let i = 0; i < g.items.length; i += 2) rows.push(g.items.slice(i, i + 2));
+      for (let i = 0; i < g.items.length; i += cols) rows.push(g.items.slice(i, i + cols));
       return { title: `${g.title} (${g.items.length})`, data: rows };
     });
-  }, [period, cat]);
+  }, [period, cat, cols]);
 
   const openItem = (it: FolderItem) => {
     if (it.product_ids.length === 1) router.push(`/product/${it.product_ids[0]}`);
@@ -200,7 +202,9 @@ export default function FoldersScreen() {
               {row.map((item) => (
                 <ItemCard key={item.id} item={item} onPress={() => openItem(item)} />
               ))}
-              {row.length === 1 ? <View style={{ flex: 1 }} /> : null}
+              {Array.from({ length: cols - row.length }, (_, k) => (
+                <View key={k} style={{ flex: 1 }} />
+              ))}
             </View>
           )}
         />

@@ -7,6 +7,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { euro } from "@/src/search";
+import { useGrid } from "@/src/layout";
 import { useAuth } from "@/src/auth";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -57,6 +58,7 @@ export function OnlineRecipes({
   busyId?: string | null;
 }) {
   const styles = useStyles();
+  const grid = useGrid(170);
   const { colors } = useTheme();
   const router = useRouter();
 
@@ -202,7 +204,8 @@ export function OnlineRecipes({
         <FlatList
           data={recipes}
           keyExtractor={(r) => r.id}
-          numColumns={2}
+          key={`recipes-${grid.cols}`}
+          numColumns={grid.cols}
           columnWrapperStyle={{ gap: 10 }}
           contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomPadding, gap: 10 }}
           onEndReachedThreshold={0.6}
@@ -211,7 +214,7 @@ export function OnlineRecipes({
             <Pressable
               testID={`recipe-${item.id}`}
               onPress={() => (onPick ? onPick(item) : router.push({ pathname: "/recipe/[id]", params: { id: item.id } }))}
-              style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }, pickedIds?.includes(item.id) && styles.cardPicked]}
+              style={({ pressed }) => [styles.card, { maxWidth: grid.tile }, pressed && { opacity: 0.9 }, pickedIds?.includes(item.id) && styles.cardPicked]}
             >
               {onPick ? (
                 <View style={styles.pickBadge}>
@@ -398,7 +401,7 @@ const useStyles = makeStyles((colors) => ({
   smallChipText: { fontSize: 12, fontFamily: fonts.medium, color: colors.onSurface },
   count: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  card: { flex: 1, maxWidth: "50%", backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
+  card: { flex: 1, backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
   cardImage: { width: "100%", aspectRatio: 4 / 3, backgroundColor: colors.surfaceTertiary },
   noImage: { alignItems: "center", justifyContent: "center" },
   storeBadge: { position: "absolute", top: 8, left: 8, backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },

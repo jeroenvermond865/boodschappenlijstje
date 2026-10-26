@@ -524,7 +524,7 @@ const useStyles = makeStyles((colors) => ({
   costMain: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },
   costSub: { fontSize: 14, fontFamily: fonts.medium, color: colors.brandPrimary },
   link: { fontSize: 15, fontFamily: fonts.semibold, color: colors.brandPrimary },
-  hero: { width: "100%", aspectRatio: 16 / 10, backgroundColor: colors.surfaceTertiary },
+  hero: { width: "100%", aspectRatio: 16 / 10, maxHeight: 360, backgroundColor: colors.surfaceTertiary },
   title: { fontSize: 24, fontFamily: fonts.bold, color: colors.onSurface },
   metaRow: { flexDirection: "row", flexWrap: "wrap", gap: 14 },
   meta: { flexDirection: "row", alignItems: "center", gap: 4 },

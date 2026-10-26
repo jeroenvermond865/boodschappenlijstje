@@ -7,6 +7,7 @@ import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-q
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useGrid } from "@/src/layout";
 import { countFilters, euro, fetchProducts, NO_FILTERS, useDebounced } from "@/src/search";
 import type { Facet, ProductFilters } from "@/src/search";
 import { AISLES, AISLE_ICONS } from "@/src/constants";
@@ -78,6 +79,7 @@ export function ProductBrowser({
   pickedIds?: string[];
 }) {
   const styles = useStyles();
+  const grid = useGrid(150);
   const { colors } = useTheme();
 
   const [search, setSearch] = useState("");
@@ -280,14 +282,14 @@ export function ProductBrowser({
         </View>
       ) : mode === "cats" ? (
         <FlatList
-          key="cats"
+          key={`cats-${grid.cols}`}
           data={AISLES.filter((a) => (aisleCounts[a] ?? 0) > 0)}
           keyExtractor={(a) => a}
-          numColumns={2}
+          numColumns={grid.cols}
           columnWrapperStyle={{ gap: 10 }}
           contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomPadding, gap: 10 }}
           renderItem={({ item: a }) => (
-            <Pressable testID={`cat-${a}`} onPress={() => goAisle(a)} style={({ pressed }) => [styles.tile, pressed && { opacity: 0.85 }]}>
+            <Pressable testID={`cat-${a}`} onPress={() => goAisle(a)} style={({ pressed }) => [styles.tile, { maxWidth: grid.tile }, pressed && { opacity: 0.85 }]}>
               {aisleImages[a] ? (
                 <Image source={{ uri: aisleImages[a] }} style={styles.tileImage} resizeMode="contain" />
               ) : (
@@ -302,17 +304,17 @@ export function ProductBrowser({
         />
       ) : mode === "subs" ? (
         <FlatList
-          key="subs"
+          key={`subs-${grid.cols}`}
           data={[{ value: "", count: aisleCounts[aisle] ?? 0, image: null }, ...subOptions]}
           keyExtractor={(o) => o.value || "__all"}
-          numColumns={2}
+          numColumns={grid.cols}
           columnWrapperStyle={{ gap: 10 }}
           contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomPadding, gap: 10 }}
           renderItem={({ item: o }) => (
             <Pressable
               testID={`sub-${o.value || "all"}`}
               onPress={() => (o.value ? setFilters((x) => ({ ...x, sub: [o.value] })) : setAllInAisle(true))}
-              style={({ pressed }) => [styles.tile, pressed && { opacity: 0.85 }]}
+              style={({ pressed }) => [styles.tile, { maxWidth: grid.tile }, pressed && { opacity: 0.85 }]}
             >
               {o.image ? (
                 <Image source={{ uri: o.image }} style={styles.tileImage} resizeMode="contain" />
@@ -551,7 +553,7 @@ const useStyles = makeStyles((colors) => ({
   crumbs: { flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap", minHeight: 34 },
   crumb: { fontSize: 14, fontFamily: fonts.medium, color: colors.brandPrimary },
   crumbActive: { color: colors.onSurface, fontFamily: fonts.bold },
-  tile: { flex: 1, maxWidth: "48.5%", borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 12, gap: 6, backgroundColor: colors.surface },
+  tile: { flex: 1, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 12, gap: 6, backgroundColor: colors.surface },
   tileIcon: { width: 52, height: 52, borderRadius: 14, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
   tileImage: { width: 52, height: 52, borderRadius: 10, backgroundColor: "#fff" },
   tileTitle: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },

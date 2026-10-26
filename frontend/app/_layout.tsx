@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { ActivityIndicator, LogBox, View } from "react-native";
+import { ActivityIndicator, LogBox, Platform, View } from "react-native";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { useFonts } from "expo-font";
@@ -14,6 +14,7 @@ import { AuthProvider, useAuth } from "@/src/auth";
 import { ToastProvider } from "@/src/toast";
 import { PremiumWelcome } from "@/src/PremiumWelcome";
 import { useTheme } from "@/src/theme";
+import { APP_MAX_WIDTH } from "@/src/layout";
 
 LogBox.ignoreAllLogs(true);
 
@@ -47,7 +48,8 @@ function Gate() {
   }
 
   return (
-    <>
+    <View style={Platform.OS === "web" ? { flex: 1, backgroundColor: colors.surfaceSecondary } : { flex: 1 }}>
+    <View style={Platform.OS === "web" ? { flex: 1, width: "100%", maxWidth: APP_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.surface } : { flex: 1 }}>
     <PremiumWelcome />
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
       <Stack.Screen name="login" />
@@ -79,7 +81,8 @@ function Gate() {
       <Stack.Screen name="budget/[id]" />
       <Stack.Screen name="admin/settings" />
     </Stack>
-    </>
+    </View>
+    </View>
   );
 }
 
