@@ -1779,7 +1779,7 @@ async def set_checked(camp_id: str, data: CheckedInput, user: dict = Depends(get
 
 
 @api_router.get("/camps/{camp_id}/shopping-list")
-async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
+async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _for_compare: bool = False):
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not camp:
         raise HTTPException(status_code=404, detail="Kamp niet gevonden")
@@ -1789,7 +1789,14 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
     if primary_store not in active:
         primary_store = active[0]
 
+    # Gekozen bij "Waar is je lijst het goedkoopst?": alles bij één winkel (niet voor de vergelijking zelf)
+    shop_store = None if _for_compare else camp.get("shop_store")
+    if shop_store and shop_store not in active:
+        shop_store = None
+
     def store_of(item: dict) -> str:
+        if shop_store:
+            return shop_store
         st = item.get("store")
         return st if st in active else primary_store
 
@@ -1856,8 +1863,12 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
     # Prijzen: hoeveel verpakkingen je nodig hebt en wat dat kost (150 gram uit een pak van 500 gram = 1 pak)
     # Zelf gewisseld naar een ander product (bijv. een voordeligere verpakking): alleen voor dit kamp
     swaps = camp.get("product_swaps") or {}
+    store_products = (camp.get("store_products") or {}) if shop_store else {}
     for b in by_store + general + [x for d in per_day for x in d["by_store"]]:
         for it in b["flat"]:
+            it["orig_product_id"] = it.get("product_id")
+            if store_products.get(_ikey(_norm_text(it["name"]))):
+                it["product_id"] = store_products[_ikey(_norm_text(it["name"]))]
             if it.get("product_id") in swaps:
                 it["product_id"] = swaps[it["product_id"]]
     pids = {it.get("product_id") for b in by_store + general + [x for d in per_day for x in d["by_store"]] for it in b["flat"] if it.get("product_id")}
@@ -1929,6 +1940,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
         "has_pantry": has_pantry,
         "shop_day": shop_day,
         "promo_then": promo_then,
+        "shop_store": shop_store,
     }
 
 
@@ -5811,7 +5823,24 @@ def _compare_hit(st: str, cands: list, by_ean: dict, name: str, base: Optional[d
         hits = [d for d in _best_matches(pool, w, 3) if not base or _same_kind(base, d, strict=False)]
         if hits:
             return hits[0], True
+    # 3. Op de naam van het ingrediënt zelf (niet het product), in de hele winkel: "melk" vindt altijd wel melk
+    if base and _norm_text(name) != _norm_text(terms):
+        hits = [d for d in _best_matches(cands, name, 3) if _same_kind(base, d, strict=False) or d.get("aisle") == base.get("aisle")]
+        if hits:
+            return hits[0], True
     return None, False
+
+
+def _line_cost(d: dict, st: str, qty: Optional[float], unit: Optional[str]) -> tuple:
+    # (kosten, aantal verpakkingen) voor de hoeveelheid op je lijst; zonder hoeveelheid één verpakking
+    price = resolve_price(d.get("prices") or {}, st, d.get("unavailable") or [])
+    if not price:
+        return 0.0, 0
+    if qty:
+        plan = _pack_plan(d, qty, unit or "stuks", st)
+        if plan:
+            return plan["cost"], plan["packs"]
+    return price, 1
 
 
 def _compare_stores(items: list, docs: list) -> list:
@@ -5830,15 +5859,18 @@ def _compare_stores(items: list, docs: list) -> list:
     out = []
     for st, cands in by_store.items():
         total, found, lines = 0.0, 0, []
-        for name, pid in items:
+        for it in items:
+            name, pid = it[0], it[1]
+            qty, unit = (it[2], it[3]) if len(it) > 3 else (None, None)
             base = by_pid.get(pid) if pid else None
             hit, alt = _compare_hit(st, cands, by_ean, name, base)
-            price = resolve_price(hit.get("prices") or {}, st, hit.get("unavailable") or []) if hit else 0
+            price, packs = _line_cost(hit, st, qty, unit) if hit else (0.0, 0)
             if hit and price:
                 total += price
                 found += 1
             lines.append({"name": name, "product": hit["name"] if hit and price else None, "product_id": hit["product_id"] if hit and price else None,
                           "image": hit.get("image") if hit and price else None, "price": round(price, 2) if hit and price else None,
+                          "packs": packs or None, "qty": qty, "unit": unit,
                           "alternative": bool(hit and price and alt and not (base and _norm_text(base["name"]) == hit["_norm"]))})
         out.append({"store": st, "total": round(total, 2), "found": found, "count": len(items), "items": lines})
     return _finish_compare(out)
@@ -5876,10 +5908,10 @@ def _apply_compare_swaps(compare: list, swaps: dict, by_pid: dict) -> list:
         for i in o["items"]:
             pid = mine.get(_ikey(_norm_text(i["name"])))
             d = by_pid.get(pid) if pid else None
-            price = resolve_price(d.get("prices") or {}, o["store"], d.get("unavailable") or []) if d else 0
+            price, packs = _line_cost(d, o["store"], i.get("qty"), i.get("unit")) if d else (0.0, 0)
             if d and price:
                 i.update({"product": d["name"], "product_id": pid, "image": d.get("image"), "price": round(price, 2),
-                          "alternative": True, "chosen": True})
+                          "packs": packs, "alternative": True, "chosen": True})
     return _finish_compare(out)
 
 
@@ -6027,6 +6059,79 @@ async def _home_inspiration() -> tuple:
     return promos, recipes
 
 
+async def _camp_compare_items(camp: dict, user: dict) -> list:
+    # Wat er echt op de boodschappenlijst staat, met hoeveelheden: zo klopt de vergelijking met je lijst
+    sl = await shopping_list(camp["camp_id"], user, _for_compare=True)
+    merged: dict = {}
+    for b in sl["by_store"]:
+        for it in b["flat"]:
+            k = (_norm_text(it["name"]), it.get("unit") or "stuks")
+            if k in merged:
+                merged[k][2] += it.get("qty") or 0
+            else:
+                merged[k] = [it["name"], it.get("orig_product_id") or it.get("product_id"), it.get("qty") or 0, it.get("unit") or "stuks"]
+    return [tuple(v) for _, v in sorted(merged.items())][:60]
+
+
+async def _camp_compare(c: dict, user: dict) -> tuple:
+    # (vergelijking, nog bezig?) voor één lijstje; uitrekenen gebeurt op de achtergrond
+    items = await _camp_compare_items(c, user)
+    if not items:
+        return None, False
+    key = ("compare3", c["camp_id"], tuple(items))
+    hit = _home_cache.get(key)
+    compare = _apply_compare_swaps(hit[1], c.get("compare_swaps") or {}, _product_cache.get("by_pid") or {}) if hit else None
+    if not hit or time.time() - hit[0] > 1800:
+        if key not in _compare_running:
+            _compare_running.add(key)
+
+            async def run(key=key, items=items):
+                try:
+                    docs = await _global_products()
+                    _home_cache[key] = (time.time(), await asyncio.to_thread(_compare_stores, items, docs))
+                    for k in [k for k in _home_cache if isinstance(k, tuple) and k[:2] == ("compare3", c["camp_id"]) and k != key]:
+                        _home_cache.pop(k, None)
+                except Exception as e:
+                    logger.warning("Vergelijken: %r", e)
+                finally:
+                    _compare_running.discard(key)
+            asyncio.create_task(run())
+    return compare, not hit
+
+
+@api_router.get("/camps/{camp_id}/compare")
+async def camp_compare(camp_id: str, user: dict = Depends(get_current_user)):
+    c = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+    compare, pending = await _camp_compare(c, user)
+    return {"compare": compare, "compare_pending": pending, "shop_store": c.get("shop_store")}
+
+
+class ShopStoreInput(BaseModel):
+    store: Optional[str] = None  # leeg = terug naar je eigen winkels per product
+
+
+@api_router.post("/camps/{camp_id}/shop-store")
+async def camp_shop_store(camp_id: str, data: ShopStoreInput, user: dict = Depends(get_current_user)):
+    # "Alles bij deze winkel": de boodschappenlijst zet alles op die winkel, met de producten uit de vergelijking
+    c = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+    if not data.store:
+        await db.camps.update_one({"camp_id": camp_id}, {"$unset": {"shop_store": "", "store_products": ""}})
+        return {"shop_store": None}
+    if data.store not in COMPARE_STORES:
+        raise HTTPException(status_code=400, detail="Onbekende winkel")
+    compare, pending = await _camp_compare(c, user)
+    if not compare:
+        raise HTTPException(status_code=409, detail="De vergelijking wordt nog uitgerekend, probeer het zo nog eens")
+    o = next((x for x in compare if x["store"] == data.store), None)
+    prods = {_ikey(_norm_text(i["name"])): i["product_id"] for i in (o or {}).get("items") or [] if i.get("product_id")}
+    await db.camps.update_one({"camp_id": camp_id}, {"$set": {"shop_store": data.store, "store_products": prods}})
+    return {"shop_store": data.store}
+
+
 @api_router.get("/home")
 async def home(user: dict = Depends(get_current_user)):
     perms = await user_permissions(user)
@@ -6063,26 +6168,8 @@ async def home(user: dict = Depends(get_current_user)):
                 "meals_planned": sum(len((d.get("meals") or {}).get(cat, [])) for d in days for cat in MEAL_CATEGORIES),
                 "products": len(names), "other_camps": len(camps) - 1}
         if names:
-            key = ("compare2", tuple(sorted(names))[:40])
-            hit = _home_cache.get(key)
-            if hit:
-                compare = _apply_compare_swaps(hit[1], c.get("compare_swaps") or {}, _product_cache.get("by_pid") or {})
-            if not hit or time.time() - hit[0] > 1800:
-                # Alternatieven zoeken in elke winkel duurt even: op de achtergrond, de app vraagt het zo opnieuw
-                if key not in _compare_running:
-                    _compare_running.add(key)
-                    items = [names[k] for k in sorted(names)][:40]
-
-                    async def run(key=key, items=items):
-                        try:
-                            docs = await _global_products()
-                            _home_cache[key] = (time.time(), await asyncio.to_thread(_compare_stores, items, docs))
-                        except Exception as e:
-                            logger.warning("Vergelijken: %r", e)
-                        finally:
-                            _compare_running.discard(key)
-                    asyncio.create_task(run())
-                compare_pending = not hit
+            compare, pending = await _camp_compare(c, user)
+            compare_pending = pending
     hit = _home_cache.get("inspiration")
     promos, recipes = hit[1] if hit else ([], [])
     if not hit or time.time() - hit[0] > 600:
