@@ -959,7 +959,7 @@ def dish_public(doc: dict) -> dict:
         "pantry": doc.get("pantry") or [],
         "needs_vega": bool(_needs_vega(doc)),
         "online": bool(doc.get("online")),
-        "image": doc.get("image") or (doc.get("source") or {}).get("image"),
+        "image": doc.get("photo") or (doc.get("source") or {}).get("image") or doc.get("image"),
         "price_pp": doc.get("price_pp"),  # app-gerechten: ongeveer per volwassene per winkel (deel van de verpakking)
         "camp_id": doc.get("camp_id"),  # aangepast voor één activiteit
         "owner_id": doc.get("owner_id"),
@@ -1140,6 +1140,7 @@ async def create_dish(data: DishInput, user: dict = Depends(get_current_user)):
         "created_at": now_utc(),
     }
     await db.dishes.insert_one(doc)
+    _photo_later(doc)
     return dish_public(doc)
 
 
@@ -1165,6 +1166,7 @@ async def update_dish(dish_id: str, data: DishInput, user: dict = Depends(get_cu
         }},
     )
     updated = await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0})
+    _photo_later(updated)
     return dish_public(updated)
 
 
@@ -1468,7 +1470,7 @@ def _dish_cost(d: dict, by_pid: dict) -> Optional[float]:
             continue
         price = resolve_price(p.get("prices") or {}, p.get("_src") or product_source(p) or DEFAULT_STORE, p.get("unavailable") or [])
         if price:
-            total += price * _pack_share(i.get("unit") or "stuks", p.get("unit") or "", p.get("name") or "", p.get("pack_count")) * (i.get("qty_adult") or 1)
+            total += price * _pack_share(i.get("unit") or "stuks", p.get("unit") or "", p.get("name") or "", _count_of(p)) * (i.get("qty_adult") or 1)
             found += 1
     return total if found else None
 
@@ -1999,7 +2001,13 @@ async def _basic_dish_info_loop() -> None:
             async for dish in db.dishes.find({"basic": True, "deleted_at": None}, {"_id": 0}):
                 info = await asyncio.to_thread(_basic_dish_info, dish, pools, found)
                 await db.dishes.update_one({"dish_id": dish["dish_id"]}, {"$set": info})
+                await _set_dish_photo(dish)
             logger.info("App-gerechten: foto's en prijzen bijgewerkt")
+            # Eigen gerechten van vóór de foto's: elke dag een stukje
+            own = await db.dishes.find({"basic": {"$ne": True}, "deleted_at": None, "photo_for": None, "source.image": None},
+                                       {"_id": 0, "dish_id": 1, "name": 1, "source": 1}).limit(40).to_list(None)
+            for dish in own:
+                await _set_dish_photo(dish)
         except Exception as e:
             logger.warning("App-gerechten bijwerken: %r", e)
         await asyncio.sleep(24 * 3600)
@@ -2020,7 +2028,7 @@ def _basic_dish_info(dish: dict, pools: dict, found: dict) -> dict:
             p = found[k]
             price = resolve_price(p.get("prices") or {}, st, p.get("unavailable") or []) if p else 0
             if price:
-                total += price * _pack_share(i.get("unit") or "stuks", p.get("unit") or "", p.get("name") or "", p.get("pack_count")) * (i.get("qty_adult") or 1)
+                total += price * _pack_share(i.get("unit") or "stuks", p.get("unit") or "", p.get("name") or "", _count_of(p)) * (i.get("qty_adult") or 1)
                 ok += 1
             if i is hero and p and p.get("image") and not out.get("image") and st == "Albert Heijn":
                 out["image"] = p["image"]
@@ -2033,6 +2041,99 @@ def _basic_dish_info(dish: dict, pools: dict, found: dict) -> dict:
                 out["image"] = p["image"]
                 break
     return out
+
+
+# --- Foto bij een gerecht: een echte foto van dat gerecht, geen foto van een pak brood ---
+# We zoeken bij de recepten van AH, Jumbo en Dirk (en op Wikimedia Commons) en laten de AI kiezen welke foto echt bij de naam past.
+_photo_tasks: set = set()
+
+
+async def _photo_candidates(name: str) -> list:
+    words = [w for w in re.findall(r"[a-z]{3,}", _norm_text(name)) if w not in _RECIPE_STOP]
+    queries = [name] + ([" ".join(words[:2])] if len(words) > 2 else [])
+    cands, seen = [], set()
+
+    async def one(store, q):
+        try:
+            return (await asyncio.wait_for(_store_recipes(store, q, {}, 0, 8), 20)).get("recipes") or []
+        except Exception as e:
+            logger.info("Foto %s: recepten %s %r", name, store, e)
+            return []
+    for q in queries:
+        res = await asyncio.gather(*(one(st, q) for st in ("ah", "jumbo", "dirk")))
+        for r in (x for lst in res for x in lst):
+            if r.get("image") and r["image"] not in seen:
+                tw = set(_recipe_words(r))
+                hit = sum(1 for w in words if any(t.startswith(w[:5]) or w.startswith(t[:5]) for t in tw))
+                if hit:
+                    seen.add(r["image"])
+                    cands.append((hit / max(1, len(words)) - len(tw) * 0.02, r["title"], r["image"]))
+        if len(cands) >= 4:
+            break
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get("https://commons.wikimedia.org/w/api.php", headers={"User-Agent": "SlimBoodschappenlijstje/1.0"}, params={
+                "action": "query", "format": "json", "generator": "search", "gsrnamespace": 6, "gsrlimit": 6,
+                "gsrsearch": name + " filetype:bitmap", "prop": "imageinfo", "iiprop": "url", "iiurlwidth": 600})
+        for pg in ((r.json().get("query") or {}).get("pages") or {}).values():
+            info = (pg.get("imageinfo") or [{}])[0]
+            url = info.get("thumburl") or info.get("url")
+            if url and url not in seen:
+                seen.add(url)
+                cands.append((0.0, (pg.get("title") or "").replace("File:", ""), url))
+    except Exception as e:
+        logger.info("Foto %s: Wikimedia %r", name, e)
+    cands.sort(key=lambda x: -x[0])
+    return cands[:8]
+
+
+async def _dish_photo(name: str) -> Optional[str]:
+    cands = await _photo_candidates(name)
+    if not cands:
+        return None
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return cands[0][2] if cands[0][0] >= 0.5 else None
+    from anthropic import AsyncAnthropic
+    content: list = []
+    for k, (_, title, url) in enumerate(cands):
+        content += [{"type": "text", "text": f"Foto {k + 1} ({title}):"}, {"type": "image", "source": {"type": "url", "url": url}}]
+    content.append({"type": "text", "text": (f"Gerecht in een boodschappen-app: \"{name}\". Welke foto laat het beste precies dit gerecht zien, "
+                                             "zoals je het op je bord of tafel hebt? Geen verpakking, geen ander gerecht. "
+                                             "Geef het nummer van de foto, of null als geen enkele foto goed past.")})
+    try:
+        msg = await AsyncAnthropic().beta.messages.create(
+            model=DIRK_AI_MODEL, max_tokens=300, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
+                "type": "object", "additionalProperties": False, "required": ["photo"],
+                "properties": {"photo": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}},
+            messages=[{"role": "user", "content": content}])
+    except Exception as e:
+        logger.warning("Foto %s kiezen: %r", name, e)
+        return cands[0][2] if cands[0][0] >= 0.5 else None
+    text = next((b.text for b in msg.content if b.type == "text"), "")
+    n = (json.loads(text) if text and msg.stop_reason not in ("refusal", "max_tokens") else {}).get("photo")
+    return cands[n - 1][2] if isinstance(n, int) and 1 <= n <= len(cands) else None
+
+
+async def _set_dish_photo(dish: dict) -> None:
+    # Eén keer per naam zoeken; bij een nieuwe naam opnieuw
+    name = (dish.get("name") or "").strip()
+    if not name or dish.get("photo_for") == name or (dish.get("source") or {}).get("image"):
+        return
+    try:
+        url = await _dish_photo(name)
+    except Exception as e:
+        logger.warning("Foto %s: %r", name, e)
+        return
+    await db.dishes.update_one({"dish_id": dish["dish_id"]}, {"$set": {"photo": url, "photo_for": name}})
+    if url:
+        logger.info("Foto bij gerecht %s gevonden", name)
+
+
+def _photo_later(dish: dict) -> None:
+    t = asyncio.create_task(_set_dish_photo(dish))
+    _photo_tasks.add(t)
+    t.add_done_callback(_photo_tasks.discard)
 
 
 def _item_grams(qty: float, unit: str, p: dict) -> Optional[float]:
@@ -2062,7 +2163,7 @@ def _merge_same_product(block: dict, prods: dict) -> dict:
         if all(g is not None for g in grams):
             keep["qty"], keep["unit"] = round_qty(sum(grams)), "gram"
         else:
-            need[id(keep)] = sum(i["qty"] * _pack_share(i["unit"], p.get("unit") or "", p.get("name") or "", p.get("pack_count")) for i in its)
+            need[id(keep)] = sum(i["qty"] * _pack_share(i["unit"], p.get("unit") or "", p.get("name") or "", _count_of(p)) for i in its)
             keep["unit"] = " + ".join([keep["unit"]] + [f"{_fmt_qty(i['qty'])} {i['unit']}" for i in its[1:]])
         keep["also"] = [i["name"] for i in its[1:] if i["name"].lower() != keep["name"].lower()]
         gone.update(id(i) for i in its[1:])
@@ -2518,7 +2619,7 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
         pid = swaps.get(pid, pid)
         p = products_by_id.get(pid) if pid else None
         price = resolve_price(p.get("prices", {}), store, p.get("unavailable", [])) if p else (item.get("price", 0) or 0)
-        return price * _pack_share(item.get("unit") or "stuks", (p or {}).get("unit") or "", (p or {}).get("name") or item.get("name") or "", (p or {}).get("pack_count"))
+        return price * _pack_share(item.get("unit") or "stuks", (p or {}).get("unit") or "", (p or {}).get("name") or item.get("name") or "", _count_of(p))
 
     total_cost = 0.0
     total_person_days = 0
@@ -3231,6 +3332,16 @@ async def _load_products() -> None:
         _product_cache["by_pid"] = {d["product_id"]: d for d in docs}
         _product_cache["by_sid"] = {(d["_src"], str(d.get("dirk_id") or d.get("ah_id") or d.get("jumbo_id"))): d
                                     for d in docs if d.get("_src")}
+        # Aantal stuks per pak per barcode: hetzelfde product bij een andere winkel noemt het aantal vaak wel
+        ean_n: Dict[str, int] = {}
+        for i, d in enumerate(docs):
+            if d.get("barcode"):
+                n = d.get("pack_count") or _pack_count(d.get("unit") or "") or _count_in_text(d.get("unit") or "") or _count_in_text(d.get("name") or "")
+                if n:
+                    ean_n.setdefault(d["barcode"], n)
+            if i % 5000 == 0:
+                await asyncio.sleep(0)
+        _product_cache["by_ean"] = ean_n
         _product_cache["at"] = datetime.now(timezone.utc)
         _search_cache.clear()
         import gc
@@ -3766,7 +3877,7 @@ def _pack_plan(p: dict, qty: float, unit: str, store: Optional[str] = None, site
     price = resolve_price(p.get("prices") or {}, store, p.get("unavailable") or [])
     if not price or not qty:
         return None
-    share = _pack_share(unit, p.get("unit") or "", p.get("name") or "", p.get("pack_count"))
+    share = _pack_share(unit, p.get("unit") or "", p.get("name") or "", _count_of(p))
     packs = max(1, math.ceil(round(site_packs if site_packs else qty * share, 3)))
     cost = packs * price
     u = (unit or "").lower().strip()
@@ -3803,6 +3914,13 @@ def _piece_grams(name: str) -> Optional[float]:
     return None
 
 
+def _count_of(p: Optional[dict]) -> Optional[int]:
+    # Aantal stuks in het pak: van het product zelf, anders van hetzelfde product (barcode) bij een andere winkel
+    if not p:
+        return None
+    return p.get("pack_count") or ((_product_cache.get("by_ean") or {}).get(p.get("barcode")) if p.get("barcode") else None)
+
+
 def _pack_share(item_unit: str, pack: str, name: str = "", count: Optional[int] = None) -> float:
     # Welk deel van één verpakking is één eenheid van het ingrediënt?
     u = (item_unit or "").lower().strip()
@@ -3835,9 +3953,20 @@ def _pack_share(item_unit: str, pack: str, name: str = "", count: Optional[int] 
         return 1.0
     if u in _PART_OF_PACK:
         if u == "plak":
-            m = re.search(r"(\d+)\s*(plakken|plakjes|st)", (pack or "").lower())
-            if m and int(m.group(1)) > 0:
+            m = re.search(r"(\d+)\s*(plakken|plakjes|st)\b", (pack or "").lower()) or re.search(r"(\d+)\s*(plakken|plakjes)\b", (name or "").lower())
+            if m and 1 < int(m.group(1)) <= 100:
                 return 1 / int(m.group(1))
+            if count:
+                return 1 / count
+            # Pak per gewicht: een plak kaas weegt zo'n 20 gram, een plak vleeswaren 15 gram (48+ is vet, geen aantal)
+            w = _UNIT_RE.search((pack or "").lower())
+            if w and w.group(3) not in ("ml", "cl", "l", "liter", "ltr"):
+                grams = float(w.group(2).replace(",", ".")) * int(w.group(1) or 1) * {"kg": 1000, "kilo": 1000, "kilogram": 1000}.get(w.group(3), 1)
+                n = _norm_text(name)
+                slice_g = 20 if re.search(r"kaas|gouda|zaanlander|leerdammer|beemster|maasdammer|old amsterdam|edammer", n) else (
+                    25 if re.search(r"ontbijtkoek|brood|koek", n) else 15)
+                if grams > slice_g:
+                    return slice_g / grams
         return _PART_OF_PACK[u]
     return 1.0
 
@@ -6048,6 +6177,9 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     # "verse peterselie" is geen potje gedroogde kruiden
     if any(q in ("vers", "verse") for q in words) and (re.search(r"gedroogd|gemalen|strooibus", full) or brand_of(d) in _DRIED_BRANDS):
         pen += 4
+    # "pizza" is een gewone pizza, geen mini pizza's
+    if re.search(r"\bmini", d["_norm"]) and not any(q.startswith("mini") for q in words):
+        pen += 3
     # Snoep met de naam van iets anders: Red Band "zoete paddenstoelen" zijn geen paddenstoelen
     if brand_of(d) in _CANDY_BRANDS and not any(_CANDY_RE.search(q) for q in words):
         pen += 8
