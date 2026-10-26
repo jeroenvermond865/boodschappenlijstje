@@ -218,6 +218,7 @@ def public_user(doc: dict) -> dict:
         "has_password": bool(doc.get("password_hash")),
         "no_personal": doc.get("no_personal", False),
         "premium": bool(doc.get("premium")),
+        "premium_welcome": bool(doc.get("premium") and doc.get("premium_welcome")),
     }
 
 
@@ -1941,9 +1942,32 @@ async def admin_set_premium(target_id: str, data: PremiumInput, user: dict = Dep
     target = await db.users.find_one({"user_id": target_id, "deleted_at": None})
     if not target:
         raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
-    update = {"$set": {"premium": data.premium, "premium_by": user["user_id"], "premium_at": now_utc()}}
-    await db.users.update_one({"user_id": target_id}, update)
+    newly = data.premium and not target.get("premium")
+    # Net premium geworden: bij de volgende keer openen een felicitatie in de app, en een mail
+    await db.users.update_one({"user_id": target_id}, {"$set": {
+        "premium": data.premium, "premium_by": user["user_id"], "premium_at": now_utc(),
+        "premium_welcome": bool(newly) or (target.get("premium_welcome", False) and data.premium),
+    }})
+    if newly and target.get("email"):
+        base = (FRONTEND_URL or "").rstrip("/")
+        html = (
+            '<table role="presentation" width="100%"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#1C1B1A">'
+            f'<h2 style="color:#B07A1E;margin:0 0 12px">&#11088; Je bent nu Premium!</h2>'
+            f'<p>Hoi {escape(target.get("name") or "")},</p>'
+            f'<p>Je account bij Slim Boodschappenlijstje is omgezet naar <b>Premium</b>. Bedankt voor je steun!</p>'
+            + (f'<p><a href="{escape(base)}" style="display:inline-block;background:#2E5E38;color:#fff;padding:12px 20px;'
+               f'border-radius:10px;text-decoration:none;font-weight:bold">Open de app</a></p>' if base else "")
+            + '<p style="font-size:12px;color:#888">Verstuurd door Slim Boodschappenlijstje.</p>'
+            '</td></tr></table>'
+        )
+        asyncio.create_task(send_email(target["email"], "Je bent nu Premium bij Slim Boodschappenlijstje", html, allow_unsubscribe=False))
     return {"ok": True, "premium": data.premium}
+
+
+@api_router.post("/auth/premium-seen")
+async def premium_seen(user: dict = Depends(get_current_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"premium_welcome": False}})
+    return {"ok": True}
 
 
 @api_router.get("/admin/users")

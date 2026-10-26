@@ -67,12 +67,19 @@ export default function AccountScreen() {
       </View>
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: bottomChrome + 24, gap: 16 }}>
         <Card style={styles.profile}>
+          <View>
           <View style={styles.avatar}>
             {user?.picture ? (
               <Image source={{ uri: mediaUrl(user.picture) }} style={styles.avatarImg} contentFit="cover" />
             ) : (
               <Text style={styles.avatarText}>{initial}</Text>
             )}
+          </View>
+            {user?.premium ? (
+              <View style={styles.avatarStar}>
+                <Icon name="star" size={13} color={colors.onBrandSecondary} />
+              </View>
+            ) : null}
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.name} numberOfLines={1}>
@@ -88,6 +95,18 @@ export default function AccountScreen() {
             </View>
           </View>
         </Card>
+
+        {user?.premium ? (
+          <View style={styles.premiumCard} testID="premium-card">
+            <View style={styles.premiumIcon}>
+              <Icon name="star" size={26} color={colors.onBrandSecondary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.premiumTitle}>Premium</Text>
+              <Text style={styles.premiumText}>Bedankt voor je steun! Je account is Premium.</Text>
+            </View>
+          </View>
+        ) : null}
 
         <AdminRow
           testID="profile-link"
@@ -247,6 +266,40 @@ const useStyles = makeStyles((colors) => ({
     justifyContent: "center",
   },
   avatarImg: { width: "100%", height: "100%" },
+  avatarStar: {
+    position: "absolute",
+    right: -2,
+    bottom: -2,
+    zIndex: 1,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: colors.brandSecondary,
+    borderWidth: 2,
+    borderColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  premiumCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: "#FBEFD6",
+    borderWidth: 1,
+    borderColor: colors.brandSecondary,
+  },
+  premiumIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: colors.brandSecondary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  premiumTitle: { fontSize: 17, fontFamily: fonts.bold, color: "#7A5212" },
+  premiumText: { fontSize: 13, fontFamily: fonts.regular, color: "#7A5212", marginTop: 2 },
   avatarText: { fontSize: 24, fontFamily: fonts.bold, color: colors.onBrandPrimary },
   name: { fontSize: 18, fontFamily: fonts.semibold, color: colors.onSurface },
   email: { fontSize: 14, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },

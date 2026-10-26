@@ -12,6 +12,7 @@ import { ErrorBoundary } from "@/src/components/error-boundary";
 import { queryClient } from "@/src/query-client";
 import { AuthProvider, useAuth } from "@/src/auth";
 import { ToastProvider } from "@/src/toast";
+import { PremiumWelcome } from "@/src/PremiumWelcome";
 import { useTheme } from "@/src/theme";
 
 LogBox.ignoreAllLogs(true);
@@ -46,6 +47,8 @@ function Gate() {
   }
 
   return (
+    <>
+    <PremiumWelcome />
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
       <Stack.Screen name="login" />
       <Stack.Screen name="welcome" />
@@ -70,6 +73,7 @@ function Gate() {
       <Stack.Screen name="budget/[id]" />
       <Stack.Screen name="admin/settings" />
     </Stack>
+    </>
   );
 }
 
