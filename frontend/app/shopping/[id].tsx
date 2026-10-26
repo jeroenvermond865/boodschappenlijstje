@@ -11,10 +11,11 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 
 import { EmptyState, Icon } from "@/src/components/ui";
-import { api } from "@/src/api";
+import { api, apiBlob } from "@/src/api";
 import { cachedApi, offlineText } from "@/src/offline";
 import { BetterPack, PackBetter, packText } from "@/src/packs";
 import { PriceCompareSheet } from "@/src/PriceCompareSheet";
+import { ProductPopup } from "@/src/ProductPopup";
 import { ShopSwapSheet } from "@/src/ShopSwap";
 import { sliceInfo } from "@/src/slices";
 import { AISLE_ICONS, formatQty } from "@/src/constants";
@@ -306,97 +307,82 @@ export default function ShoppingScreen() {
   const canCopy = Platform.OS === "web" && !!(globalThis as any).navigator?.clipboard;
   const canNativeShare = Platform.OS !== "web" || !!(globalThis as any).navigator?.share;
 
-  // Printen of PDF: een nette lijst in de stijl van de app (groene kop, per winkel en afdeling, vakjes om af te vinken)
+  // PDF: de server maakt een nette PDF van de lijst zoals je hem ziet (volgorde, afgevinkt). We halen hem alvast op
+  // als je "Delen" opent, zodat delen of bewaren op de telefoon meteen werkt.
+  const pdfPayload = () => ({
+    title: "Boodschappenlijst",
+    subtitle: camp?.name ?? "",
+    count: totalCount,
+    done: doneCount,
+    grand: grandTotal || null,
+    grand_label: multi ? "Totaal alle winkels" : "Geschat totaal",
+    blocks: totalBlocks.map((b) => ({
+      label: multi || b.label === "Algemeen" || b.store.startsWith("alg:") ? b.label : "",
+      total: b.total ?? null,
+      groups: b.grouped
+        .map((g) => ({
+          aisle: g.aisle,
+          items: g.items
+            .filter((i) => !(onlyOpen && isDone(b.store, i)))
+            .map((i) => ({
+              name: i.name,
+              sub: [i.packs ? packText(i.packs, i.pack_unit) : "", i.product ?? ""].filter(Boolean).join(" · "),
+              qty: `${formatQty(i.qty)} ${i.unit}`,
+              price: i.price ?? null,
+              done: isDone(b.store, i),
+            })),
+        }))
+        .filter((g) => g.items.length),
+    })),
+  });
+  const pdfRef = useRef<{ sig: string; file: Promise<Blob> } | null>(null);
+  const pdfFile = () => {
+    const body = pdfPayload();
+    const sig = JSON.stringify(body);
+    if (!pdfRef.current || pdfRef.current.sig !== sig) pdfRef.current = { sig, file: apiBlob("/pdf/shopping", body) };
+    return pdfRef.current.file;
+  };
+  useEffect(() => {
+    if (shareOpen && totalCount > 0 && Platform.OS === "web") pdfFile().catch(() => (pdfRef.current = null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shareOpen, onlyOpen]);
+
   const onExportPdf = async () => {
     if (totalCount === 0) return;
-    const G = "#2E5E38", AMBER = "#D99C3B", SOFT = "#E6F0E8";
-    const blocks = totalBlocks
-      .map((b) => {
-        const head =
-          multi || b.label === "Algemeen"
-            ? `<div class="store"><span class="badge">${esc(b.label)}</span>${b.total ? `<span class="storeTotal">${euro(b.total)}</span>` : ""}</div>`
-            : "";
-        const groups = b.grouped
-          .map((g) => {
-            const items = g.items
-              .map((i) => {
-                const done = isDone(b.store, i);
-                const sub = [i.packs ? packText(i.packs, i.pack_unit) : "", i.product ?? ""].filter(Boolean).join(" · ");
-                return (
-                  `<tr class="${done ? "done" : ""}"><td class="box"><span>${done ? "&#10003;" : ""}</span></td>` +
-                  `<td><div class="name">${esc(i.name)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</td>` +
-                  `<td class="qty">${formatQty(i.qty)} ${esc(i.unit)}</td>` +
-                  `<td class="price">${i.price ? euro(i.price) : ""}</td></tr>`
-                );
-              })
-              .join("");
-            return `<div class="aisle">${esc(g.aisle)}</div><table>${items}</table>`;
-          })
-          .join("");
-        const total = b.total && !(multi || b.label === "Algemeen") ? `<div class="total">Geschat totaal <b>${euro(b.total)}</b></div>` : "";
-        return `<section>${head}${groups}${total}</section>`;
-      })
-      .join("");
-    const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-    const title = `Boodschappenlijst${camp?.name ? ` - ${camp.name}` : ""}`;
-    const html = `<!doctype html><html><head><meta charset="utf-8"/><title>${esc(title)}</title><style>
-      @page { margin: 14mm; }
-      * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #1C1B1A; margin: 0; font-size: 13px; }
-      .top { background: ${G}; color: #fff; border-radius: 14px; padding: 16px 18px; display: flex; align-items: center; gap: 14px; }
-      .logo { width: 42px; height: 42px; border-radius: 12px; background: #fff; color: ${G}; font-size: 24px; display: flex; align-items: center; justify-content: center; }
-      .top h1 { margin: 0; font-size: 20px; } .top p { margin: 2px 0 0; opacity: .85; font-size: 12px; }
-      .meta { display: flex; gap: 8px; margin: 12px 0 4px; flex-wrap: wrap; }
-      .chip { background: ${SOFT}; color: ${G}; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 600; }
-      section { margin-top: 14px; }
-      .store { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${G}; padding-bottom: 4px; margin-top: 8px; }
-      .badge { background: ${G}; color: #fff; border-radius: 8px; padding: 3px 10px; font-weight: 700; font-size: 14px; }
-      .storeTotal { font-weight: 700; color: ${G}; font-size: 14px; }
-      .aisle { margin: 12px 0 2px; padding-left: 8px; border-left: 4px solid ${AMBER}; font-weight: 700; color: ${G}; font-size: 13px; break-after: avoid; }
-      table { width: 100%; border-collapse: collapse; }
-      tr { break-inside: avoid; } td { padding: 6px 4px; border-bottom: 1px solid #ECEAE6; vertical-align: top; }
-      td.box { width: 26px; }
-      td.box span { display: inline-block; width: 16px; height: 16px; border: 1.5px solid ${G}; border-radius: 4px; color: ${G}; font-weight: 700; font-size: 12px; line-height: 14px; text-align: center; }
-      .name { font-weight: 600; } .sub { color: #8A8780; font-size: 11px; margin-top: 1px; }
-      .qty { text-align: right; font-weight: 600; white-space: nowrap; } .price { text-align: right; color: #55524C; white-space: nowrap; width: 64px; }
-      tr.done .name, tr.done .qty { color: #A8A59F; text-decoration: line-through; }
-      .total { text-align: right; margin-top: 8px; color: #55524C; } .total b { color: ${G}; font-size: 15px; }
-      .grand { margin-top: 16px; background: ${SOFT}; border-radius: 12px; padding: 12px 16px; display: flex; justify-content: space-between; font-weight: 700; color: ${G}; font-size: 15px; }
-      .foot { margin-top: 22px; padding-top: 8px; border-top: 1px solid #ECEAE6; color: #A8A59F; font-size: 10px; display: flex; justify-content: space-between; }
-    </style></head><body>
-      <div class="top"><div class="logo">&#128722;</div><div><h1>Boodschappenlijst</h1><p>${esc(camp?.name ?? "")}</p></div></div>
-      <div class="meta"><span class="chip">${esc(today)}</span><span class="chip">${totalCount} producten</span>${doneCount ? `<span class="chip">${doneCount} al afgevinkt</span>` : ""}</div>
-      ${blocks}
-      ${grandTotal ? `<div class="grand"><span>${multi ? "Totaal alle winkels" : "Geschat totaal"}</span><span>${euro(grandTotal)}</span></div>` : ""}
-      <div class="foot"><span>Slim Boodschappenlijstje · slimboodschappenlijstje.nl</span><span>Prijzen zijn een schatting; de prijs in de winkel is leidend.</span></div>
-    </body></html>`;
+    const fname = `Boodschappenlijst${camp?.name ? `-${camp.name.replace(/[^\w -]/g, "").replace(/ +/g, "-")}` : ""}.pdf`;
     try {
       if (Platform.OS === "web") {
-        // In de browser: de lijst in een onzichtbaar venstertje zetten en dat printen (daar kies je ook "Opslaan als PDF")
-        const doc = (globalThis as any).document;
-        const f = doc.createElement("iframe");
-        Object.assign(f.style, { position: "fixed", right: "0", bottom: "0", width: "0", height: "0", border: "0" });
-        f.onload = () => {
+        const blob = await pdfFile();
+        const file = new File([blob], fname, { type: "application/pdf" });
+        const nav = (globalThis as any).navigator;
+        // Telefoon: deelmenu (opslaan in Bestanden, printen, WhatsApp, mail). Computer: downloaden.
+        if (nav?.canShare?.({ files: [file] })) {
           try {
-            f.contentWindow.focus();
-            f.contentWindow.print();
-          } catch {
-            toast.show("Printen lukt niet in deze browser", "error");
+            await nav.share({ files: [file], title: fname });
+            return;
+          } catch (e: any) {
+            if (e?.name === "AbortError") return;
           }
-          setTimeout(() => f.remove(), 60000);
-        };
-        f.srcdoc = html;
-        doc.body.appendChild(f);
+        }
+        const url = URL.createObjectURL(blob);
+        const a = (globalThis as any).document.createElement("a");
+        a.href = url;
+        a.download = fname;
+        a.target = "_blank";
+        (globalThis as any).document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        toast.show("PDF gemaakt", "success");
         return;
       }
-      const { uri } = await Print.printToFileAsync({ html });
+      const { uri } = await Print.printToFileAsync({ html: `<html><body><h1>Boodschappenlijst</h1></body></html>` });
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, { mimeType: "application/pdf", dialogTitle: "Boodschappenlijst (PDF)" });
-      } else {
-        toast.show("Delen is niet beschikbaar op dit toestel", "error");
       }
     } catch {
-      toast.show("Exporteren mislukt", "error");
+      pdfRef.current = null;
+      toast.show("PDF maken lukte niet, probeer het nog eens", "error");
     }
   };
 
@@ -700,7 +686,7 @@ export default function ShoppingScreen() {
             <ShareOption testID="share-mail" icon="email-outline" label="E-mail" onPress={() => shareVia("mail")} />
             {canCopy ? <ShareOption testID="share-copy" icon="content-copy" label="Tekst kopiëren" onPress={() => shareVia("copy")} /> : null}
             {canNativeShare ? <ShareOption testID="share-other" icon="share-variant" label="Andere app" onPress={() => shareVia("other")} /> : null}
-            <ShareOption testID="share-print" icon="printer-outline" label="Printen of PDF" onPress={() => { setShareOpen(false); onExportPdf(); }} />
+            <ShareOption testID="share-print" icon="file-pdf-box" label="PDF (bewaren, printen of delen)" onPress={() => { setShareOpen(false); onExportPdf(); }} />
           </Pressable>
         </Pressable>
       </Modal>
@@ -770,7 +756,8 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
   const toast = useToast();
   const router = useRouter();
   // Product openen: foto, prijs bij andere winkels en waar het ligt
-  const open = item.product_id ? () => router.push({ pathname: "/product/[id]", params: { id: item.product_id! } }) : undefined;
+  const [infoOpen, setInfoOpen] = useState(false);
+  const open = item.product_id ? () => setInfoOpen(true) : undefined;
   // Wisselen naar het voordeligere product: alleen voor deze lijst
   const swap = async (b: PackBetter) => {
     try {
@@ -857,6 +844,18 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
         </Pressable>
       ) : null}
     </Pressable>
+      <ProductPopup
+        productId={infoOpen ? item.product_id ?? null : null}
+        onClose={() => setInfoOpen(false)}
+        onSwap={
+          checked
+            ? undefined
+            : () => {
+                setInfoOpen(false);
+                setSwapOpen(true);
+              }
+        }
+      />
       <PriceCompareSheet
         item={compareOpen ? item : null}
         store={store ?? ""}

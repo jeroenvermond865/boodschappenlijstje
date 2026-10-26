@@ -7907,6 +7907,208 @@ async def camp_shop_store(camp_id: str, data: ShopStoreInput, user: dict = Depen
     return {"shop_store": data.store}
 
 
+# --- PDF van de boodschappenlijst: de app stuurt de lijst zoals je hem ziet (volgorde, afgevinkt), wij maken er een nette PDF van ---
+class PdfItem(BaseModel):
+    name: str
+    sub: str = ""
+    qty: str = ""
+    price: Optional[float] = None
+    done: bool = False
+
+
+class PdfGroup(BaseModel):
+    aisle: str
+    items: List[PdfItem] = []
+
+
+class PdfBlock(BaseModel):
+    label: str = ""
+    total: Optional[float] = None
+    groups: List[PdfGroup] = []
+
+
+class ShoppingPdf(BaseModel):
+    title: str = "Boodschappenlijst"
+    subtitle: str = ""
+    blocks: List[PdfBlock] = []
+    grand: Optional[float] = None
+    grand_label: str = "Geschat totaal"
+    count: int = 0
+    done: int = 0
+
+
+def _shopping_pdf(data: ShoppingPdf) -> bytes:
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.colors import HexColor, white
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    G, AMBER, SOFT, INK, MUTED, LINE = (HexColor("#2E5E38"), HexColor("#D99C3B"), HexColor("#E6F0E8"), HexColor("#1C1B1A"),
+                                        HexColor("#8A8780"), HexColor("#ECEAE6"))
+    W, H = A4
+    M = 40
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=A4)
+    c.setTitle(data.title + (f" - {data.subtitle}" if data.subtitle else ""))
+    c.setAuthor("Slim Boodschappenlijstje")
+
+    def eur(v):
+        return "€ " + f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def fit(text, font, size, width):
+        if stringWidth(text, font, size) <= width:
+            return text
+        while text and stringWidth(text + "…", font, size) > width:
+            text = text[:-1]
+        return text + "…"
+
+    page = [1]
+
+    def footer():
+        c.setFont("Helvetica", 8)
+        c.setFillColor(MUTED)
+        c.drawString(M, 24, "Slim Boodschappenlijstje · slimboodschappenlijstje.nl · prijzen zijn een schatting")
+        c.drawRightString(W - M, 24, f"Pagina {page[0]}")
+
+    def new_page():
+        footer()
+        c.showPage()
+        page[0] += 1
+        return H - M
+
+    # Kop: groene balk met winkelwagentje
+    c.setFillColor(G)
+    c.roundRect(M, H - M - 64, W - 2 * M, 64, 12, stroke=0, fill=1)
+    c.setFillColor(white)
+    c.roundRect(M + 14, H - M - 52, 40, 40, 10, stroke=0, fill=1)
+    c.setStrokeColor(G)
+    c.setLineWidth(2)
+    # eenvoudig wagentje
+    x0, y0 = M + 22, H - M - 26
+    c.line(x0, y0 + 8, x0 + 5, y0 + 8)
+    c.line(x0 + 5, y0 + 8, x0 + 9, y0 - 4)
+    c.line(x0 + 9, y0 - 4, x0 + 22, y0 - 4)
+    c.line(x0 + 22, y0 - 4, x0 + 25, y0 + 5)
+    c.line(x0 + 25, y0 + 5, x0 + 7, y0 + 5)
+    c.setFillColor(G)
+    c.circle(x0 + 11, y0 - 9, 2, stroke=0, fill=1)
+    c.circle(x0 + 20, y0 - 9, 2, stroke=0, fill=1)
+    c.setFillColor(white)
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(M + 66, H - M - 30, fit(data.title, "Helvetica-Bold", 20, W - 2 * M - 80))
+    c.setFont("Helvetica", 11)
+    c.drawString(M + 66, H - M - 48, fit(data.subtitle, "Helvetica", 11, W - 2 * M - 80))
+    y = H - M - 86
+    # Chips: datum en aantallen
+    chips = [datetime.now(timezone.utc).astimezone().strftime("%d-%m-%Y"), f"{data.count} producten"]
+    if data.done:
+        chips.append(f"{data.done} al afgevinkt")
+    cx = M
+    c.setFont("Helvetica-Bold", 9)
+    for t in chips:
+        w = stringWidth(t, "Helvetica-Bold", 9) + 16
+        c.setFillColor(SOFT)
+        c.roundRect(cx, y - 4, w, 16, 8, stroke=0, fill=1)
+        c.setFillColor(G)
+        c.drawString(cx + 8, y + 1, t)
+        cx += w + 6
+    y -= 22
+
+    for b in data.blocks:
+        if y < 120:
+            y = new_page()
+        if b.label:
+            y -= 8
+            c.setFillColor(G)
+            w = stringWidth(b.label, "Helvetica-Bold", 12) + 18
+            c.roundRect(M, y - 5, w, 20, 6, stroke=0, fill=1)
+            c.setFillColor(white)
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(M + 9, y + 1, b.label)
+            if b.total:
+                c.setFillColor(G)
+                c.drawRightString(W - M, y + 1, eur(b.total))
+            c.setStrokeColor(G)
+            c.setLineWidth(1.5)
+            c.line(M, y - 8, W - M, y - 8)
+            y -= 26
+        for g in b.groups:
+            if y < 90:
+                y = new_page()
+            c.setFillColor(AMBER)
+            c.rect(M, y - 3, 3, 14, stroke=0, fill=1)
+            c.setFillColor(G)
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(M + 9, y, g.aisle)
+            y -= 18
+            for it in g.items:
+                rh = 26 if it.sub else 18
+                if y - rh < 50:
+                    y = new_page()
+                # vakje
+                c.setStrokeColor(G)
+                c.setLineWidth(1.2)
+                c.roundRect(M + 2, y - 3, 11, 11, 2, stroke=1, fill=0)
+                if it.done:
+                    c.setLineWidth(1.6)
+                    c.line(M + 4, y + 2, M + 7, y - 1)
+                    c.line(M + 7, y - 1, M + 12, y + 6)
+                name_w = W - 2 * M - 170
+                c.setFillColor(MUTED if it.done else INK)
+                c.setFont("Helvetica-Bold", 10.5)
+                c.drawString(M + 22, y, fit(it.name, "Helvetica-Bold", 10.5, name_w))
+                if it.done:
+                    tw = min(stringWidth(it.name, "Helvetica-Bold", 10.5), name_w)
+                    c.setStrokeColor(MUTED)
+                    c.setLineWidth(0.8)
+                    c.line(M + 22, y + 3.5, M + 22 + tw, y + 3.5)
+                c.setFont("Helvetica-Bold", 10)
+                c.drawRightString(W - M - 70, y, it.qty)
+                if it.price:
+                    c.setFont("Helvetica", 10)
+                    c.setFillColor(HexColor("#55524C"))
+                    c.drawRightString(W - M, y, eur(it.price))
+                if it.sub:
+                    c.setFont("Helvetica", 8.5)
+                    c.setFillColor(MUTED)
+                    c.drawString(M + 22, y - 11, fit(it.sub, "Helvetica", 8.5, name_w + 60))
+                c.setStrokeColor(LINE)
+                c.setLineWidth(0.6)
+                c.line(M + 22, y - rh + 10, W - M, y - rh + 10)
+                y -= rh
+            y -= 6
+        if b.total and not b.label:
+            c.setFont("Helvetica", 10)
+            c.setFillColor(MUTED)
+            c.drawRightString(W - M - 70, y, "Geschat totaal")
+            c.setFont("Helvetica-Bold", 12)
+            c.setFillColor(G)
+            c.drawRightString(W - M, y, eur(b.total))
+            y -= 18
+    if data.grand:
+        if y < 80:
+            y = new_page()
+        y -= 6
+        c.setFillColor(SOFT)
+        c.roundRect(M, y - 12, W - 2 * M, 30, 10, stroke=0, fill=1)
+        c.setFillColor(G)
+        c.setFont("Helvetica-Bold", 13)
+        c.drawString(M + 14, y - 1, data.grand_label)
+        c.drawRightString(W - M - 14, y - 1, eur(data.grand))
+    footer()
+    c.save()
+    return buf.getvalue()
+
+
+@api_router.post("/pdf/shopping")
+async def shopping_pdf(data: ShoppingPdf, user: dict = Depends(get_current_user)):
+    pdf = await asyncio.to_thread(_shopping_pdf, data)
+    name = re.sub(r"[^A-Za-z0-9 _-]", "", data.subtitle or "lijst").strip().replace(" ", "-")[:40] or "lijst"
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="Boodschappenlijst-{name}.pdf"', "Cache-Control": "no-store"})
+
+
 @api_router.get("/home")
 async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
     # shuffle: verversen (omlaag trekken) geeft andere recepten en acties die bij je passen; anders blijft het een uur hetzelfde

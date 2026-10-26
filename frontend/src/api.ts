@@ -49,6 +49,15 @@ export async function api<T = any>(
   return data as T;
 }
 
+// Een bestand (bijv. een PDF) van de server ophalen
+export async function apiBlob(path: string, body?: any): Promise<Blob> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+  const res = await fetch(`${BASE}/api${path}`, { method: body != null ? "POST" : "GET", headers, body: body != null ? JSON.stringify(body) : undefined });
+  if (!res.ok) throw new Error("Er ging iets mis");
+  return res.blob();
+}
+
 export function mediaUrl(url?: string | null): string | undefined {
   if (!url) return undefined;
   if (url.startsWith("http")) return url;

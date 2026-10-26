@@ -5,6 +5,15 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-26-r",
+    date: "26 oktober 2026",
+    title: "Echte PDF en product als venster",
+    changes: [
+      { kind: "opgelost", text: "Delen > PDF maakt nu een echte PDF in de stijl van de app. Op je telefoon kun je hem bewaren, printen of delen." },
+      { kind: "beter", text: "Tik je op een product in je boodschappenlijst, dan opent een venster met prijs, andere winkels en een knop Wisselen." },
+    ],
+  },
+  {
     id: "2026-10-26-q",
     date: "26 oktober 2026",
     title: "Nette PDF van je boodschappenlijst",
