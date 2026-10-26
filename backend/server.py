@@ -3955,13 +3955,14 @@ async def _compare_audit(docs: list) -> None:
                 if st == base.get("_src"):
                     continue
                 hit, alt = _compare_hit(st, pool, by_ean, base["name"], base)
-                if hit and alt and _variant_miss(_variants(base["name"]), hit):
-                    bad.append((base["name"], st, hit["name"]))
+                if hit and alt:
+                    bad.append((base["name"], st[:2], hit["name"]))
         return len(pids), bad
     n, bad = await asyncio.to_thread(work)
-    logger.info("AUDIT vergelijken: %d producten, %d met andere variant", n, len(bad))
-    for k in range(0, len(bad), 25):
-        logger.info("AUDIT variant: %s", bad[k:k + 25])
+    logger.info("AUDIT vergelijken: %d producten, %d vervangen door iets vergelijkbaars", n, len(bad))
+    bad.sort()
+    for k in range(0, len(bad), 30):
+        logger.info("AUDIT paren: %s", bad[k:k + 30])
 
 
 async def _global_products() -> list:
@@ -7533,11 +7534,12 @@ def _compare_hit_raw(st: str, cands: list, by_ean: dict, name: str, base: Option
         if d:
             return d, False
     terms = _alt_terms(name, base) or name
-    hits = _best_matches(cands, terms, 3)
+    hits = _best_matches(cands, terms, 8)
     other_aisle = []
     if base:
-        # liever iets van dezelfde soort, en geen ander soort product (chocolademelk voor melk)
-        good = [d for d in hits if _same_kind(base, d, strict=False)]
+        # liever iets van dezelfde soort, en geen ander soort product (chocolademelk voor melk, tomatensoep voor kikkererwten);
+        # eerst streng (niets anders erbij), anders ruimer
+        good = [d for d in hits if _same_kind(base, d)] or [d for d in hits[:3] if _same_kind(base, d, strict=False)]
         same_aisle = [d for d in good if d.get("aisle") == base.get("aisle")]
         if not same_aisle and base.get("aisle"):
             other_aisle, good = good, []  # uit een andere afdeling: pas als laatste (sinaasappels zijn geen pepermunt)
@@ -8096,6 +8098,11 @@ async def product_alternatives(name: str = "", product_id: str = "", user: dict 
             "base": product_public(_clean(base), base["_src"], user["user_id"], favs) if base else None}
 
 
+_SOFT_WORDS = {"fijn", "grof", "ongebrand", "gebrand", "geroosterd", "plantaardig", "plantaardige", "kids", "ongezoet", "gezoet", "minis",
+               "mini", "naturel", "original", "origineel", "classic", "klassiek", "bolletjes", "stand", "gekookt", "verpakt", "los", "heel",
+               "stuks", "stuk", "zout", "azijn", "tomatensaus", "saus", "biologisch", "biologische", "ongezouten", "gezouten", "met"}
+
+
 def _same_kind(base: dict, cand: dict, strict: bool = True) -> bool:
     # Is het andere product echt hetzelfde soort? "Jumbo Kaneel Gemalen" wel voor kaneelpoeder, "Appelmoes Kaneel" niet
     def stem(w):
@@ -8113,7 +8120,10 @@ def _same_kind(base: dict, cand: dict, strict: bool = True) -> bool:
     cw = re.findall(r"[a-z]{3,}", _alt_terms(cand["name"], cand))
     if not bw or not cw:
         return False
-    if not any(same(c, bw[-1]) for c in cw):
+    # Het hoofdwoord is het laatste échte woord: bij "havermout fijn" is dat havermout, niet "fijn"
+    # (anders is "zeezout fijn" ineens hetzelfde als havermout)
+    head = next((w for w in reversed(bw) if w not in _DESCRIPTORS and w not in _FILLER and w not in _SOFT_WORDS), bw[-1])
+    if not any(same(c, head) for c in cw):
         return False
     if not strict:
         return True  # vergelijken per winkel: "pasta gnocchi" mag voor gnocchi
