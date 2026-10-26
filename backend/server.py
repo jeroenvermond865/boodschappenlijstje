@@ -485,6 +485,7 @@ class DayInput(BaseModel):
     is_shopping_day: bool = True
     meals: Dict[str, List[str]] = Field(default_factory=dict)
     extras: List[ExtraItem] = Field(default_factory=list)
+    leftovers: Dict[str, int] = Field(default_factory=dict)  # maaltijd -> dag waarop je dit al kookte (restje)
 
 
 class CampCreate(BaseModel):
@@ -1330,8 +1331,20 @@ def _build_days(day_inputs) -> list:
             "is_shopping_day": d.is_shopping_day,
             "meals": meals,
             "extras": [e.model_dump() for e in d.extras],
+            "leftovers": {c: v for c, v in (d.leftovers or {}).items() if c in MEAL_CATEGORIES and 0 <= v < idx},
         })
     return days
+
+
+def _leftover_from(day: dict, cat: str, dish_id: str, days_by_index: dict) -> Optional[int]:
+    # Is deze maaltijd een restje van een eerdere dag (zelfde gerecht, één keer gekookt)? Dan de index van die dag
+    src = (day.get("leftovers") or {}).get(cat)
+    if src is None or src == day.get("index"):
+        return None
+    prev = days_by_index.get(src)
+    if not prev or dish_id not in ((prev.get("meals") or {}).get(cat) or []):
+        return None
+    return src
 
 
 def camp_access_filter(user_id: str) -> dict:
@@ -1417,6 +1430,7 @@ class AutoMenuInput(BaseModel):
     style: str = "mix"  # vertrouwd (wat je vaker eet), mix, nieuw (iets nieuws proberen)
     diet: str = ""  # "", vega, vegan
     store: str = ""  # recepten van deze winkel (ah, jumbo, dirk); leeg = alle winkels
+    cook_twice: bool = True  # kleine groep: één keer koken voor twee dagen (lunch en avondeten), dan blijft er minder over
     cheap: bool = False  # goedkope gerechten eerst
     promos: bool = True  # gerechten met aanbiedingen eerst
     prefer: List[str] = []  # hier hebben we zin in (woorden in gerecht of ingrediënten)
@@ -1424,7 +1438,7 @@ class AutoMenuInput(BaseModel):
     remember: bool = True
 
 
-_MENU_PREF_KEYS = ("categories", "style", "diet", "store", "cheap", "promos", "prefer", "avoid")
+_MENU_PREF_KEYS = ("categories", "style", "diet", "store", "cook_twice", "cheap", "promos", "prefer", "avoid")
 
 
 @api_router.get("/menu-prefs")
@@ -1598,33 +1612,59 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         return s + random.random() * 0.9  # bij gelijke stand wat afwisseling
 
     used = set(keep)
-    filled, promo_dishes = 0, set()
+    filled, promo_dishes, twice = 0, set(), 0
     days = camp.get("days", [])
     only = set(data.days) if data.days else None
+    # Kleine groep (bijv. 1 of 2 personen): hele verpakkingen voor één portie geven veel over.
+    # Dan liever gerechten met dezelfde producten, en lunch/avondeten één keer koken voor twee dagen.
+    small = max((d.get("adults", 0) + d.get("children", 0) for d in days), default=0) <= 4
+    chosen_pids = {i.get("product_id") for did in keep for d in dishes if d["dish_id"] == did for i in d["ingredients"] if i.get("product_id")}
+
+    def overlap(d):
+        return sum(1 for i in d["ingredients"] if i.get("product_id") in chosen_pids)
     for cat in cats:
         pool = sorted((d for d in dishes if d["category"] == cat), key=score, reverse=True)
         if not pool:
             continue
-        # Eerst wat nog niet in het lijstje staat, daarna pas herhalen (nooit één gerecht voor alle dagen als er meer zijn)
-        fresh = [d for d in pool if d["dish_id"] not in used] + [d for d in pool if d["dish_id"] in used]
         k = 0
+        prev = None  # (dag-index, gerecht) dat vandaag ook voor morgen gekookt kan worden
         for idx, day in enumerate(days):
             if only is not None and day.get("index", idx) not in only:
                 continue
             meals = day.setdefault("meals", {})
             if meals.get(cat) and not data.overwrite:
+                prev = None
                 continue
-            pick = fresh[k % len(fresh)]
-            k += 1
+            di = day.get("index", idx)
+            left = day.setdefault("leftovers", {})
+            left.pop(cat, None)
+            if data.cook_twice and small and cat in ("lunch", "avondeten") and prev and prev[0] == di - 1:
+                # Restje van gisteren: zelfde gerecht, niets extra kopen
+                meals[cat] = [prev[1]["dish_id"]]
+                left[cat] = prev[0]
+                prev = None
+                filled += 1
+                twice += 1
+                continue
+            # Eerst wat nog niet in het lijstje staat, daarna pas herhalen (nooit één gerecht voor alle dagen als er meer zijn)
+            unused = [d for d in pool if d["dish_id"] not in used]
+            if unused:
+                cand = unused[:6]
+                pick = max(cand, key=lambda d: overlap(d) * 0.8 - cand.index(d) * 0.3) if small else cand[0]
+            else:
+                pick = pool[k % len(pool)]
+                k += 1
             meals[cat] = [pick["dish_id"]]
             used.add(pick["dish_id"])
+            chosen_pids.update(i.get("product_id") for i in pick["ingredients"] if i.get("product_id"))
+            prev = (di, pick)
             filled += 1
             if any(i.get("product_id") in on_promo for i in pick["ingredients"]):
                 promo_dishes.add(pick["name"])
     if filled:
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {"days": days}})
     updated = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0})
-    return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes), "pool": len(dishes), "added_online": added_online}
+    return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes), "pool": len(dishes), "added_online": added_online, "twice": twice}
 
 
 MENU_MAX_DIFFERENT = 14  # zoveel verschillende gerechten per maaltijd; bij langere activiteiten komen ze na twee weken terug
@@ -1920,27 +1960,36 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
 
     total_store_map: Dict[str, dict] = {}
     per_day = []
+    day_maps: Dict[int, dict] = {}
+    days_by_index = {d.get("index"): d for d in camp.get("days", [])}
 
     for day in camp.get("days", []):
         if not day.get("is_shopping_day"):
             continue
         counts = _diet_counts(day, camp)
-        day_store_map: Dict[str, dict] = {}
+        day_store_map = day_maps.setdefault(day["index"], {})
         for cat in MEAL_CATEGORIES:
             for did in day.get("meals", {}).get(cat, []):
                 dish = dishes_by_id.get(did)
                 if not dish:
                     continue
+                # Restje van een eerdere dag (één keer koken voor twee dagen): inkopen op die eerdere dag
+                tgt_day = _leftover_from(day, cat, did, days_by_index)
+                tgt_map = day_maps.get(tgt_day, day_store_map) if tgt_day is not None else day_store_map
                 for ing in dish.get("ingredients", []):
                     a, c = counts.get(_ing_diet(ing), counts["all"])
                     qty = ing.get("qty_adult", 0) * a + ing.get("qty_child", 0) * c
                     store = store_of(ing)
-                    for tgt in (total_store_map, day_store_map):
+                    for tgt in (total_store_map, tgt_map):
                         _add_item(tgt, store, ing["name"], ing.get("unit", "stuks"), ing.get("aisle", "Overig"), qty, ing.get("product_id"))
         for ex in day.get("extras", []):
             store = store_of(ex)
             for tgt in (total_store_map, day_store_map):
                 _add_item(tgt, store, ex["name"], ex.get("unit", "stuks"), ex.get("aisle", "Overig"), ex.get("qty", 0), ex.get("product_id"))
+    for day in camp.get("days", []):
+        if day.get("index") not in day_maps:
+            continue
+        day_store_map = day_maps[day["index"]]
         day_by_store = []
         for store in sorted(day_store_map.keys()):
             flat, grouped = _group_items(day_store_map[store])

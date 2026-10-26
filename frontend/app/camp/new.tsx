@@ -26,8 +26,8 @@ export default function NewCampScreen() {
   const [startDate, setStartDate] = useState("");
   const [name, setName] = useState("");
   const [days, setDays] = useState(3);
-  const [adults, setAdults] = useState(4);
-  const [children, setChildren] = useState(12);
+  const [adults, setAdults] = useState(2);
+  const [children, setChildren] = useState(0);
   const [vegaA, setVegaA] = useState(0);
   const [vegaC, setVegaC] = useState(0);
   const [hasVega, setHasVega] = useState(false);

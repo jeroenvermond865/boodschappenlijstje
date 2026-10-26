@@ -33,6 +33,7 @@ type Day = {
   is_shopping_day: boolean;
   meals: Record<MealCategory, string[]>;
   extras?: Extra[];
+  leftovers?: Partial<Record<MealCategory, number>>; // restje van deze dag (één keer koken voor twee dagen)
 };
 type Camp = {
   id: string;
@@ -127,7 +128,9 @@ export default function CampDetailScreen() {
       if (d.index !== selected) return d;
       const current = d.meals[category] ?? [];
       const next = current.includes(dishId) ? current.filter((x) => x !== dishId) : [...current, dishId];
-      return { ...d, meals: { ...d.meals, [category]: next } };
+      // Zelf aangepast: dan is het geen restje meer
+      const { [category]: _drop, ...leftovers } = d.leftovers ?? {};
+      return { ...d, meals: { ...d.meals, [category]: next }, leftovers };
     });
     applyDays(days);
   };
@@ -446,8 +449,13 @@ export default function CampDetailScreen() {
                 <View style={{ gap: 8, marginTop: 10 }}>
                   {ids.map((dishId) => {
                     const dish = dishesById[dishId];
+                    // Restje: zelfde gerecht als een eerdere dag. Of: wordt morgen als restje gegeten
+                    const from = day.leftovers?.[cat];
+                    const isLeft = from != null && (camp.days.find((x) => x.index === from)?.meals[cat] ?? []).includes(dishId);
+                    const next = camp.days.find((x) => x.leftovers?.[cat] === day.index && (x.meals[cat] ?? []).includes(dishId));
                     return (
-                      <View key={dishId} style={styles.dishRow}>
+                      <View key={dishId} style={{ gap: 4 }}>
+                      <View style={styles.dishRow}>
                         <Pressable
                           disabled={!dish}
                           onPress={() => router.push({ pathname: "/dish/edit", params: { id: dishId, campId: camp.id } })}
@@ -471,6 +479,18 @@ export default function CampDetailScreen() {
                         >
                           <Icon name="close-circle" size={20} color={colors.muted} />
                         </Pressable>
+                      </View>
+                      {isLeft ? (
+                        <View style={styles.leftBadge}>
+                          <Icon name="recycle" size={14} color={colors.onBrandTertiary} />
+                          <Text style={styles.leftText}>Restje van dag {from! + 1}: al gekookt, niets extra kopen</Text>
+                        </View>
+                      ) : next ? (
+                        <View style={styles.leftBadge}>
+                          <Icon name="pot-steam-outline" size={14} color={colors.onBrandTertiary} />
+                          <Text style={styles.leftText}>Kook dubbel: dag {next.index + 1} eet je de rest. Je koopt het één keer in.</Text>
+                        </View>
+                      ) : null}
                       </View>
                     );
                   })}
@@ -1127,6 +1147,8 @@ function DishPickerModal({
 }
 
 const useStyles = makeStyles((colors) => ({
+  leftBadge: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", backgroundColor: colors.brandTertiary, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  leftText: { fontSize: 12, fontFamily: fonts.medium, color: colors.onBrandTertiary },
   vegaBanner: { borderRadius: 16, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.surface, padding: 14, gap: 8 },
   vegaTitle: { fontSize: 15, fontFamily: fonts.bold, color: colors.warning, flexShrink: 1 },
   vegaSub: { fontSize: 13, fontFamily: fonts.regular, color: colors.onSurfaceSecondary },
