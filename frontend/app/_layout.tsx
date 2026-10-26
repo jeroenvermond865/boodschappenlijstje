@@ -13,6 +13,7 @@ import { queryClient } from "@/src/query-client";
 import { AuthProvider, useAuth } from "@/src/auth";
 import { ToastProvider } from "@/src/toast";
 import { PremiumWelcome } from "@/src/PremiumWelcome";
+import { UpdateNotices } from "@/src/updates";
 import { useTheme } from "@/src/theme";
 import { APP_MAX_WIDTH } from "@/src/layout";
 
@@ -81,6 +82,7 @@ function Gate() {
       <Stack.Screen name="budget/[id]" />
       <Stack.Screen name="admin/settings" />
     </Stack>
+    <UpdateNotices />
     </View>
     </View>
   );

@@ -8534,6 +8534,16 @@ from fastapi.responses import FileResponse
 WEB_DIR = Path(os.environ.get("WEB_DIR", ROOT_DIR / "web")).resolve()
 
 
+@app.get("/api/version", include_in_schema=False)
+async def web_version():
+    # Welke versie van de website er nu staat: verandert bij elke update (de app ziet dan "nieuwe versie")
+    try:
+        import hashlib
+        return {"version": hashlib.sha1((WEB_DIR / "index.html").read_bytes()).hexdigest()[:12]}
+    except OSError:
+        return {"version": None}
+
+
 @app.get("/healthz", include_in_schema=False)
 async def healthz():
     return {"ok": True}

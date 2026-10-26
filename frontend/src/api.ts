@@ -2,6 +2,8 @@ const BASE = process.env.EXPO_PUBLIC_BACKEND_URL ?? "";
 
 import { Platform } from "react-native";
 
+import { setServerDown } from "@/src/updates";
+
 let authToken: string | null = null;
 
 export function setAuthToken(token: string | null) {
@@ -19,7 +21,13 @@ export async function api<T = any>(
     method: options.method ?? "GET",
     headers,
     body: options.body != null ? JSON.stringify(options.body) : undefined,
+  }).catch((e) => {
+    // Wel internet, maar de server antwoordt niet: waarschijnlijk een update
+    if (typeof navigator !== "undefined" && navigator.onLine !== false && Platform.OS === "web") setServerDown(true);
+    throw e;
   });
+  // Render geeft 502/503 terwijl de server opnieuw opstart
+  if (res.status === 502 || res.status === 503) setServerDown(true);
 
   let data: any = null;
   const text = await res.text();
