@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Animated, FlatList, Image, Linking, Pressable, ScrollView, SectionList, Text, TextInput, View } from "react-native";
 import Modal from "@/src/components/Modal";
 import { useHideOnScroll } from "@/src/hideOnScroll";
 import { matchScore } from "@/src/smartSearch";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQueries, useQuery } from "@tanstack/react-query";
 
@@ -15,6 +15,7 @@ import { euro, useDebounced } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { useGrid } from "@/src/layout";
 import type { Product } from "@/app/(tabs)/products";
+import { useSwipePages } from "@/src/useSwipePages";
 
 type FolderItem = {
   id: string;
@@ -56,6 +57,16 @@ export default function FoldersScreen() {
   const [store, setStore] = useState(params.store || fav || "Albert Heijn");
   const [periodKey, setPeriodKey] = useState<string>("current");
   const [open, setOpen] = useState<FolderItem | null>(null);
+  // Na een product bekijken en teruggaan staat de keuze van die aanbieding er weer
+  const reopen = useRef<FolderItem | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      if (reopen.current) {
+        setOpen(reopen.current);
+        reopen.current = null;
+      }
+    }, []),
+  );
   const [cat, setCat] = useState<string | null>(null);
   // Zoeken in de aanbiedingen: in deze winkel of in alle winkels tegelijk
   const [q, setQ] = useState("");
@@ -127,6 +138,8 @@ export default function FoldersScreen() {
   }, [period, cat, cols, searching, dq, allStores, others.map((o) => o.dataUpdatedAt).join(","), periodKey, store]);
 
   const hide = useHideOnScroll();
+  // Alle aanbiedingen die nu in beeld zijn, op volgorde: daarmee blader je in de pop-up naar de vorige of volgende
+  const flatItems = useMemo(() => sections.flatMap((sec) => sec.data.flat()), [sections]);
 
   const openItem = (it: FolderItem) => {
     if (it.product_ids.length === 1) router.push(`/product/${it.product_ids[0]}`);
@@ -143,7 +156,8 @@ export default function FoldersScreen() {
         <View style={styles.headerBtn} />
       </View>
 
-      <Animated.View {...hide.blockProps} style={[{ paddingHorizontal: 16, paddingTop: 12, gap: 10, paddingBottom: 2 }, hide.blockProps.style]}>
+      <View style={{ flex: 1 }}>
+      <Animated.View {...hide.blockProps} style={[{ paddingHorizontal: 16, paddingTop: 12, gap: 10, paddingBottom: 8, backgroundColor: colors.surface }, hide.blockProps.style]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
           {[...(data?.stores ?? ["Albert Heijn", "Dirk", "Jumbo"])].sort((a, b) => (a === fav ? -1 : b === fav ? 1 : a.localeCompare(b, "nl"))).map((s) => (
             <Pressable
@@ -216,11 +230,11 @@ export default function FoldersScreen() {
       </Animated.View>
 
       {isLoading ? (
-        <View style={styles.center}>
+        <View style={[styles.center, { paddingTop: hide.padTop }]}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
       ) : !period ? (
-        <View style={{ flex: 1 }}>
+        <View style={{ flex: 1, paddingTop: hide.padTop }}>
           <EmptyState
             icon="newspaper-variant-outline"
             title={data?.loading ? "Folders worden opgehaald" : "Geen aanbiedingen gevonden"}
@@ -231,14 +245,14 @@ export default function FoldersScreen() {
           </Pressable>
         </View>
       ) : period.pages && !searching ? (
-        <FolderPages pages={period.pages} bottom={insets.bottom + 40} scrollProps={hide.scrollProps} />
+        <FolderPages pages={period.pages} top={hide.padTop} bottom={insets.bottom + 40} scrollProps={hide.scrollProps} />
       ) : (
         <SectionList
           {...hide.scrollProps}
           sections={sections}
           keyExtractor={(row) => row.map((it) => it.id).join("|")}
-          stickySectionHeadersEnabled
-          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: insets.bottom + 40 }}
+          stickySectionHeadersEnabled={false}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingTop: hide.padTop, paddingBottom: insets.bottom + 40 }}
           ListEmptyComponent={searching ? <Text style={[styles.muted, { paddingTop: 16 }]}>Geen aanbiedingen gevonden voor "{q.trim()}".</Text> : null}
           ListHeaderComponent={searching ? null : (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 10 }}>
@@ -271,11 +285,24 @@ export default function FoldersScreen() {
           )}
         />
       )}
+      </View>
 
       <Modal visible={!!open} transparent animationType="fade" onRequestClose={() => setOpen(null)}>
         <Pressable style={styles.backdrop} onPress={() => setOpen(null)}>
           <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
-            {open ? <ItemSheet item={open} onClose={() => setOpen(null)} onOpenProduct={(id) => { setOpen(null); router.push(`/product/${id}`); }} /> : null}
+            {open ? (
+              <ItemSheet
+                item={open}
+                list={flatItems}
+                onMove={setOpen}
+                onClose={() => setOpen(null)}
+                onOpenProduct={(id) => {
+                  reopen.current = open;
+                  setOpen(null);
+                  router.push(`/product/${id}`);
+                }}
+              />
+            ) : null}
           </Pressable>
         </Pressable>
       </Modal>
@@ -283,7 +310,7 @@ export default function FoldersScreen() {
   );
 }
 
-function FolderPages({ pages, bottom, scrollProps }: { pages: string[]; bottom: number; scrollProps?: object }) {
+function FolderPages({ pages, top = 0, bottom, scrollProps }: { pages: string[]; top?: number; bottom: number; scrollProps?: object }) {
   // Tientallen grote pagina's: alleen laden wat in beeld komt, in een kleiner formaat
   const styles = useStyles();
   const [w, setW] = useState(0);
@@ -297,8 +324,8 @@ function FolderPages({ pages, bottom, scrollProps }: { pages: string[]; bottom: 
       initialNumToRender={2}
       maxToRenderPerBatch={2}
       windowSize={3}
-      contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10, paddingBottom: bottom, gap: 12 }}
-      getItemLayout={(_, i) => ({ length: h + 12, offset: 10 + (h + 12) * i, index: i })}
+      contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 10 + top, paddingBottom: bottom, gap: 12 }}
+      getItemLayout={(_, i) => ({ length: h + 12, offset: 10 + top + (h + 12) * i, index: i })}
       renderItem={({ item: u, index }) => (
         <Pressable onPress={() => Linking.openURL(u.replace(/\?width=\d+/, "?width=1600"))}>
           <Image source={{ uri: u.replace(/\?width=\d+/, "?width=800") }} style={[styles.page, { height: h }]} resizeMode="contain" accessibilityLabel={`Folderpagina ${index + 1}`} />
@@ -343,16 +370,32 @@ function ItemCard({ item, onPress }: { item: FolderItem; onPress: () => void }) 
   );
 }
 
-function ItemSheet({ item, onClose, onOpenProduct }: { item: FolderItem; onClose: () => void; onOpenProduct: (id: string) => void }) {
+function ItemSheet({ item, list, onMove, onClose, onOpenProduct }: {
+  item: FolderItem;
+  list: FolderItem[];
+  onMove: (it: FolderItem) => void;
+  onClose: () => void;
+  onOpenProduct: (id: string) => void;
+}) {
   const styles = useStyles();
   const { colors } = useTheme();
+  const at = list.findIndex((x) => x.id === item.id);
+  const prev = at > 0 ? list[at - 1] : null;
+  const next = at >= 0 && at < list.length - 1 ? list[at + 1] : null;
+  const swipe = useSwipePages((dir) => !!(dir === 1 ? next : prev), (dir) => onMove((dir === 1 ? next : prev)!));
+  const move = (dir: 1 | -1) => {
+    const to = dir === 1 ? next : prev;
+    if (!to) return;
+    onMove(to);
+    swipe.slideIn(dir);
+  };
   const { data, isLoading } = useQuery({
     queryKey: ["products-by-ids", item.product_ids.join(",")],
     queryFn: () => api<{ products: Product[] }>(`/products/by-ids?ids=${item.product_ids.join(",")}`),
     enabled: item.product_ids.length > 0,
   });
   return (
-    <View style={{ gap: 10, maxHeight: 560 }}>
+    <Animated.View style={[{ gap: 10, maxHeight: 560 }, swipe.style]} {...swipe.panHandlers}>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
         <View style={{ flex: 1, gap: 4 }}>
           <View style={[styles.badge, { position: "relative", alignSelf: "flex-start" }]}>
@@ -389,7 +432,22 @@ function ItemSheet({ item, onClose, onOpenProduct }: { item: FolderItem; onClose
           ))}
         </ScrollView>
       )}
-    </View>
+      {list.length > 1 && at >= 0 ? (
+        <View style={styles.sheetNav}>
+          <Pressable onPress={() => move(-1)} disabled={!prev} hitSlop={8} style={[styles.sheetNavBtn, !prev && { opacity: 0.35 }]} testID="folder-prev">
+            <Icon name="chevron-left" size={22} color={colors.brandPrimary} />
+            <Text style={styles.sheetNavText}>Vorige</Text>
+          </Pressable>
+          <Text style={styles.muted}>
+            {at + 1} van {list.length}
+          </Text>
+          <Pressable onPress={() => move(1)} disabled={!next} hitSlop={8} style={[styles.sheetNavBtn, !next && { opacity: 0.35 }]} testID="folder-next">
+            <Text style={styles.sheetNavText}>Volgende</Text>
+            <Icon name="chevron-right" size={22} color={colors.brandPrimary} />
+          </Pressable>
+        </View>
+      ) : null}
+    </Animated.View>
   );
 }
 
@@ -424,6 +482,9 @@ const useStyles = makeStyles((colors) => ({
   segTextActive: { color: colors.onSurface },
   segSub: { fontSize: 11, fontFamily: fonts.regular, color: colors.muted },
   folderLink: { flexDirection: "row", alignItems: "center", gap: 6 },
+  sheetNav: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.divider },
+  sheetNavBtn: { flexDirection: "row", alignItems: "center", gap: 2, paddingVertical: 6 },
+  sheetNavText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.brandPrimary },
   folderLinkText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.brandPrimary },
   catChip: { height: 32, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceTertiary, justifyContent: "center" },
   sectionHead: { backgroundColor: colors.surface, paddingVertical: 8 },

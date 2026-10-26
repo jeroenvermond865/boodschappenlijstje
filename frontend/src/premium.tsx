@@ -11,7 +11,8 @@ export const GOLD = { bg: "#FBF1DC", border: "#E8C77A", text: "#7A5212", icon: "
 export const PREMIUM_FEATURES: { icon: string; title: string; text: string; to?: string; where?: string }[] = [
   { icon: "bell-ring-outline", title: "Prijsalarm", text: "Een seintje als een favoriet product in de aanbieding is of onder jouw prijs zakt.", to: "/alerts", where: "Bij Producten en bij elk product" },
   { icon: "chart-line", title: "Prijsgeschiedenis", text: "Zie hoe de prijs van een product zich ontwikkelt, zodat je weet of een aanbieding echt goed is.", to: "/products", where: "Open een product bij Producten" },
-  { icon: "piggy-bank-outline", title: "Extra besparen", text: "In je bespaaroverzicht tellen ook je voorraadkast en de acties op je boodschappendag mee.", to: "/savings", where: "Op Home: Bespaaroverzicht" },
+  { icon: "piggy-bank-outline", title: "Extra besparen", text: "In je bespaaroverzicht tellen ook je voorraadkast, slim splitsen en de acties op je boodschappendag mee.", to: "/savings", where: "Op Home: Bespaaroverzicht" },
+  { icon: "call-split", title: "Slim splitsen", text: "Haal elk product bij de winkel waar het het goedkoopst is. Wat je daarmee bespaart, telt mee in je bespaaroverzicht.", to: "/", where: "Op Home bij de prijsvergelijking" },
   { icon: "calendar-star", title: "Automatisch weekmenu", text: "Een weekmenu met gerechten waarvan de ingrediënten nu in de aanbieding zijn.", to: "/camps", where: "Bovenaan in je planning" },
   { icon: "fridge-outline", title: "Voorraadkast", text: "Houd bij wat je al in huis hebt, dan gaat dat van je boodschappenlijst af.", to: "/pantry", where: "Op Home en bij je boodschappenlijst" },
   { icon: "cancel", title: "Geen advertenties", text: "Als er later advertenties komen, zie jij ze niet." },

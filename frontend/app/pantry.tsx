@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ActivityIndicator, Pressable, RefreshControl, Text, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, RefreshControl, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -9,10 +9,11 @@ import { api } from "@/src/api";
 import { formatQty, UNITS } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { PremiumLock, usePremium } from "@/src/premium";
+import { PantrySuggestions } from "@/src/PantrySuggestions";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type PItem = { id: string; name: string; qty: number; unit: string; learned?: boolean };
+type PItem = { id: string; name: string; qty: number; unit: string; learned?: boolean; product_name?: string | null; image?: string | null };
 
 const USE_STEPS = [0, 5, 10, 15, 20, 25, 30, 40, 50];
 
@@ -26,6 +27,7 @@ export default function PantryScreen() {
   const [name, setName] = useState("");
   const [qty, setQty] = useState("1");
   const [unit, setUnit] = useState("stuks");
+  const [sugOpen, setSugOpen] = useState(false);
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ["pantry"],
@@ -88,6 +90,24 @@ export default function PantryScreen() {
               hoeft te kopen. Gebruik dezelfde naam als in je gerechten, bijvoorbeeld "Rijst" of "Melk". Neem je bij een recept iets niet mee omdat je het al
               in huis hebt, dan zet de app het hier vanzelf bij.
             </Text>
+            {(() => {
+              // Lege voorraadkast: de voorstellen staan meteen open, zo is hij in één keer grotendeels gevuld
+              const empty = !isLoading && (data?.items ?? []).length === 0;
+              const show = sugOpen || empty;
+              return (
+                <View style={styles.addCard}>
+                  <Pressable onPress={() => setSugOpen((v) => !v)} disabled={empty} style={{ flexDirection: "row", alignItems: "center", gap: 8 }} testID="pantry-sug-toggle">
+                    <Icon name="lightbulb-on-outline" size={20} color={colors.brandPrimary} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.rowName}>Wat veel mensen al in huis hebben</Text>
+                      <Text style={styles.rowQty}>Vink aan wat jij hebt en zet het in één keer in je voorraadkast.</Text>
+                    </View>
+                    {empty ? null : <Icon name={show ? "chevron-up" : "chevron-down"} size={20} color={colors.muted} />}
+                  </Pressable>
+                  {show ? <PantrySuggestions onDone={() => setSugOpen(false)} /> : null}
+                </View>
+              );
+            })()}
             <View style={styles.addCard}>
               <Field label="Product" testID="pantry-name" placeholder="Bijv. Rijst" value={name} onChangeText={setName} maxLength={80} />
               <View style={{ flexDirection: "row", gap: 10 }}>
@@ -114,13 +134,15 @@ export default function PantryScreen() {
             {isLoading ? (
               <ActivityIndicator color={colors.brandPrimary} />
             ) : (data?.items ?? []).length === 0 ? (
-              <EmptyState icon="fridge-outline" title="Je voorraadkast is leeg" subtitle="Voeg hierboven toe wat je al in huis hebt." />
+              <EmptyState icon="fridge-outline" title="Je voorraadkast is leeg" subtitle="Vink hierboven aan wat je al in huis hebt, of voeg zelf iets toe." />
             ) : (
               <View style={styles.list}>
                 {(data?.items ?? []).map((i, n, arr) => (
                   <View key={i.id} style={[styles.row, n < arr.length - 1 && styles.rowBorder]} testID={`pantry-row-${i.id}`}>
+                    {i.image ? <Image source={{ uri: i.image }} style={{ width: 36, height: 36, borderRadius: 8, backgroundColor: "#fff" }} resizeMode="contain" /> : null}
                     <View style={{ flex: 1 }}>
                       <Text style={styles.rowName}>{i.name}</Text>
+                      {i.product_name ? <Text style={styles.rowQty} numberOfLines={1}>{i.product_name}</Text> : null}
                       <Text style={styles.rowQty}>
                         {i.unit === "%"
                           ? `${i.qty >= 80 ? "Vol" : i.qty >= 20 ? "Nog wat" : "Bijna op"} · ±${Math.round(i.qty)}%${i.learned ? " · geleerd uit je recepten" : ""}`

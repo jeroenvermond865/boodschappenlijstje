@@ -165,9 +165,9 @@ export default function HomeScreen() {
 
       {/* Besparing (voor iedereen), voorraad en prijsalarm (Premium) */}
       <View style={[styles.pad, styles.actions]}>
-        <Pressable testID="home-savings" onPress={() => router.push("/savings")} style={[styles.premTile, styles.stdTile]}>
-          <Icon name="piggy-bank-outline" size={22} color={colors.brandPrimary} />
-          <Text style={[styles.premTileText, { color: colors.onSurface }]}>Bespaaroverzicht</Text>
+        <Pressable testID="home-savings" onPress={() => router.push("/savings")} style={premium ? styles.premTile : [styles.premTile, styles.stdTile]}>
+          <Icon name="piggy-bank-outline" size={22} color={premium ? GOLD.icon : colors.brandPrimary} />
+          <Text style={premium ? styles.premTileText : [styles.premTileText, { color: colors.onSurface }]}>Bespaaroverzicht</Text>
         </Pressable>
         {premium ? (
           <>

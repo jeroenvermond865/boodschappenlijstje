@@ -281,7 +281,7 @@ export function ProductBrowser({
 
       {/* Bij een andere afdeling nooit de soorten van de vorige laten staan: eerst laden, of zeggen dat het mislukte */}
       {isLoading || (isPlaceholderData && mode === "subs") ? (
-        <View style={styles.center}>
+        <View style={[styles.center, { paddingTop: hide.padTop }]}>
           {isError ? (
             <Text style={{ color: colors.muted }}>Deze afdeling laadt nu niet. Probeer het zo nog eens.</Text>
           ) : (
@@ -296,7 +296,7 @@ export function ProductBrowser({
           keyExtractor={(a) => a}
           numColumns={grid.cols}
           columnWrapperStyle={{ gap: 10 }}
-          contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomPadding, gap: 10 }}
+          contentContainerStyle={{ padding: 16, paddingTop: 8 + hide.padTop, paddingBottom: bottomPadding, gap: 10 }}
           renderItem={({ item: a }) => (
             <Pressable testID={`cat-${a}`} onPress={() => goAisle(a)} style={({ pressed }) => [styles.tile, { maxWidth: grid.tile }, pressed && { opacity: 0.85 }]}>
               {aisleImages[a] ? (
@@ -319,7 +319,7 @@ export function ProductBrowser({
           keyExtractor={(o) => o.value || "__all"}
           numColumns={grid.cols}
           columnWrapperStyle={{ gap: 10 }}
-          contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomPadding, gap: 10 }}
+          contentContainerStyle={{ padding: 16, paddingTop: 8 + hide.padTop, paddingBottom: bottomPadding, gap: 10 }}
           renderItem={({ item: o }) => (
             <Pressable
               testID={`sub-${o.value || "all"}`}
@@ -352,7 +352,7 @@ export function ProductBrowser({
           initialNumToRender={15}
           windowSize={7}
           ListFooterComponent={isFetchingNextPage ? <ActivityIndicator color={colors.brandPrimary} style={{ marginTop: 8 }} /> : null}
-          contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomPadding, gap: 10 }}
+          contentContainerStyle={{ padding: 16, paddingTop: 8 + hide.padTop, paddingBottom: bottomPadding, gap: 10 }}
           renderItem={({ item }) => (
             <Pressable
               testID={`product-row-${item.id}`}

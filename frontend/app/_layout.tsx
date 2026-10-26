@@ -14,6 +14,7 @@ import { AuthProvider, useAuth } from "@/src/auth";
 import { ToastProvider } from "@/src/toast";
 import { PremiumWelcome } from "@/src/PremiumWelcome";
 import { UpdateNotices } from "@/src/updates";
+import { PullToRefresh } from "@/src/PullToRefresh";
 import { WhatsNew } from "@/src/WhatsNew";
 import { useTheme } from "@/src/theme";
 import { APP_MAX_WIDTH } from "@/src/layout";
@@ -87,6 +88,7 @@ function Gate() {
     </Stack>
     <UpdateNotices />
     <WhatsNew />
+    <PullToRefresh />
     </View>
     </View>
   );

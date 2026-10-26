@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Animated, FlatList, Pressable, RefreshControl, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import Modal from "@/src/components/Modal";
 import { smartFilter } from "@/src/smartSearch";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -20,6 +20,7 @@ import type { Product } from "@/app/(tabs)/products";
 import { useAuth } from "@/src/auth";
 import { dietConflicts, useDiet } from "@/src/diet";
 import { GOLD, usePremium } from "@/src/premium";
+import { useSwipePages } from "@/src/useSwipePages";
 import { goBack } from "@/src/nav";
 import { VegaPicker } from "@/src/VegaPicker";
 import { MenuWizard } from "@/src/MenuWizard";
@@ -63,6 +64,21 @@ export default function CampDetailScreen() {
   const { user, has } = useAuth();
 
   const [selected, setSelected] = useState(0);
+  // Vegen naar de vorige of volgende dag ("Algemeen" staat vooraan)
+  const order = useRef<number[]>([-1, 0]);
+  const pillX = useRef<Record<number, number>>({});
+  const pillScroll = useRef<ScrollView>(null);
+  const step = (dir: 1 | -1) => order.current[order.current.indexOf(selected) + dir];
+  const swipe = useSwipePages((dir) => step(dir) !== undefined, (dir) => setSelected(step(dir)!));
+  const pick = (i: number) => {
+    if (i === selected) return;
+    setSelected(i);
+    swipe.slideIn(order.current.indexOf(i) > order.current.indexOf(selected) ? 1 : -1);
+  };
+  useEffect(() => {
+    const x = pillX.current[selected];
+    if (x !== undefined) pillScroll.current?.scrollTo({ x: Math.max(0, x - 60), animated: true });
+  }, [selected]);
   const [pickerCat, setPickerCat] = useState<MealCategory | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -211,6 +227,7 @@ export default function CampDetailScreen() {
   }
 
   const day = camp.days.find((d) => d.index === selected) ?? camp.days[0];
+  order.current = [-1, ...camp.days.map((d) => d.index)];
   const maxPerDay = Math.max(0, ...camp.days.map((d) => (d.adults || 0) + (d.children || 0)));
   const vegaA = camp.vega_adults ?? 0;
   const vegaC = camp.vega_children ?? 0;
@@ -264,10 +281,11 @@ export default function CampDetailScreen() {
 
       {/* Day pills */}
       <View style={styles.pillsWrap}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillRow}>
+        <ScrollView ref={pillScroll} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillRow}>
           <Pressable
             testID="day-pill-general"
-            onPress={() => setSelected(-1)}
+            onLayout={(e) => (pillX.current[-1] = e.nativeEvent.layout.x)}
+            onPress={() => pick(-1)}
             style={[styles.pill, selected === -1 && styles.pillActive]}
           >
             <Icon name="clipboard-list-outline" size={14} color={selected === -1 ? colors.onBrandPrimary : colors.brandSecondary} />
@@ -279,7 +297,8 @@ export default function CampDetailScreen() {
               <Pressable
                 key={d.index}
                 testID={`day-pill-${d.index}`}
-                onPress={() => setSelected(d.index)}
+                onLayout={(e) => (pillX.current[d.index] = e.nativeEvent.layout.x)}
+                onPress={() => pick(d.index)}
                 style={[styles.pill, active && styles.pillActive]}
               >
                 <Text style={[styles.pillText, active && styles.pillTextActive]}>Dag {d.index + 1}</Text>
@@ -293,6 +312,7 @@ export default function CampDetailScreen() {
         </ScrollView>
       </View>
 
+      <Animated.View style={[{ flex: 1 }, swipe.style]} {...swipe.panHandlers}>
       <ScrollView
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetchCamp(); qc.invalidateQueries({ queryKey: ["dishes"] }); qc.invalidateQueries({ queryKey: ["budget", id] }); }} tintColor={colors.brandPrimary} />}
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32, gap: 14 }}
@@ -581,6 +601,7 @@ export default function CampDetailScreen() {
         </>
         )}
       </ScrollView>
+      </Animated.View>
 
       <VegaPicker dish={vegaDish} onClose={() => setVegaDish(null)} />
       <PackagePickerModal visible={packOpen} onClose={() => setPackOpen(false)} onPick={addPackage} />

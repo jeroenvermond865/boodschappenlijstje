@@ -89,6 +89,8 @@ export default function DishesScreen() {
   ];
 
   const hide = useHideOnScroll();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => hide.reset(), [tab]);
   const listProps = {
     ...hide.scrollProps,
     refreshControl: (
@@ -102,6 +104,7 @@ export default function DishesScreen() {
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
+      <View style={{ flex: 1 }}>
       <Animated.View {...hide.blockProps} style={[styles.header, { backgroundColor: colors.surface, paddingBottom: 2 }, hide.blockProps.style]}>
         <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
           <View style={{ flex: 1 }}>
@@ -171,13 +174,13 @@ export default function DishesScreen() {
       </Animated.View>
 
       {tab === "online" ? (
-        <OnlineRecipes bottomPadding={bottomChrome + 24} onScroll={hide.scrollProps.onScroll} />
+        <OnlineRecipes bottomPadding={bottomChrome + 24} outer={hide} />
       ) : tab === "packages" ? (
         <FlatList
           {...listProps}
           data={packages.data?.packages ?? []}
           keyExtractor={(p) => p.id}
-          contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomChrome + 96, gap: 10 }}
+          contentContainerStyle={{ padding: 16, paddingTop: 8 + hide.padTop, paddingBottom: bottomChrome + 96, gap: 10 }}
           ListHeaderComponent={
             <Text style={[styles.rowSub, { marginBottom: 4 }]}>
               Vaste spullen die je elke keer nodig hebt, zoals een afwasborstel of vuilniszakken. Zet een pakket in één keer bij de algemene
@@ -212,7 +215,7 @@ export default function DishesScreen() {
           }
         />
       ) : isLoading ? (
-        <View style={styles.center}>
+        <View style={[styles.center, { paddingTop: hide.padTop }]}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
       ) : (
@@ -220,7 +223,7 @@ export default function DishesScreen() {
           {...listProps}
           data={filtered}
           keyExtractor={(d) => d.id}
-          contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomChrome + 96, gap: 10 }}
+          contentContainerStyle={{ padding: 16, paddingTop: 8 + hide.padTop, paddingBottom: bottomChrome + 96, gap: 10 }}
           renderItem={({ item }) => {
             const warn = dietConflicts(item.ingredients, diet);
             return (
@@ -270,6 +273,7 @@ export default function DishesScreen() {
           }
         />
       )}
+      </View>
 
       {tab === "packages" ? (
         <Pressable

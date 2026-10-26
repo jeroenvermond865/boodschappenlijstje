@@ -371,7 +371,8 @@ export default function ShoppingScreen() {
         </View>
       </View>
 
-      <Animated.View {...hide.blockProps} style={[styles.segmentWrap, hide.blockProps.style]}>
+      <View style={{ flex: 1 }}>
+      <Animated.View {...hide.blockProps} style={[styles.segmentWrap, { backgroundColor: colors.surface }, hide.blockProps.style]}>
         <View style={styles.segment}>
           <Pressable testID="tab-total" onPress={() => setTab("total")} style={[styles.segBtn, tab === "total" && styles.segBtnActive]}>
             <Text style={[styles.segText, tab === "total" && styles.segTextActive]}>Totaal</Text>
@@ -383,11 +384,11 @@ export default function ShoppingScreen() {
       </Animated.View>
 
       {isLoading || !loaded ? (
-        <View style={styles.center}>
+        <View style={[styles.center, { paddingTop: hide.padTop }]}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
       ) : totalCount === 0 ? (
-        <View style={styles.center}>
+        <View style={[styles.center, { paddingTop: hide.padTop }]}>
           <EmptyState
             icon="cart-outline"
             title="Nog geen boodschappen"
@@ -398,7 +399,7 @@ export default function ShoppingScreen() {
         <ScrollView
           {...hide.scrollProps}
           refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch(); cmp.refetch(); live.refetch(); }} tintColor={colors.brandPrimary} />}
-          contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32, gap: 16 }}
+          contentContainerStyle={{ padding: 16, paddingTop: 16 + hide.padTop, paddingBottom: insets.bottom + 32, gap: 16 }}
         >
           {data?.offline_at ? (
             <View style={styles.multiBanner}>
@@ -557,6 +558,7 @@ export default function ShoppingScreen() {
               ))}
         </ScrollView>
       )}
+      </View>
       {routeEdit ? (
         <RouteSheet store={routeEdit} order={route.order(routeEdit)} onChange={(o) => route.setOrder(routeEdit, o)} onClose={() => setRouteEdit(null)} />
       ) : null}

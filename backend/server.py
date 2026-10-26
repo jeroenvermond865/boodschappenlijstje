@@ -2472,13 +2472,13 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
                         it["promo_then"] = then
                         promo_then += 1
     # Voor het bespaaroverzicht: per lijst onthouden wat de app scheelt
-    # Standaard: aanbiedingen en slim kiezen waar je wat haalt. Premium: voorraadkast en acties op je boodschappendag.
-    smart = 0.0
+    # Standaard: aanbiedingen en slim kiezen waar je wat haalt. Premium: voorraadkast, acties op je boodschappendag en slim splitsen.
+    smart, split_value = 0.0, 0.0
     for b in by_store:
         for it in b["flat"]:
             w = it.get("was")
             if w and (w.get("price") or 0) > (it.get("price") or 0):
-                smart += float(w["price"]) - float(it["price"])
+                split_value += float(w["price"]) - float(it["price"])
     if shop_store and shop_store != "split" and not _for_compare:
         hit = next((v for k, v in _home_cache.items() if isinstance(k, tuple) and k[:2] == ("compare3", camp_id)), None)
         rows = {r.get("store"): r for r in (hit[1] if hit else []) or []}
@@ -2486,7 +2486,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
         if own and chosen and shop_store != primary_store:
             smart += max(0.0, float(own.get("total_fair") or own.get("total") or 0) - float(chosen.get("total_fair") or chosen.get("total") or 0))
     sv = {"promo": round(sum(b.get("saving") or 0 for b in by_store), 2), "smart": round(smart, 2),
-          "pantry": round(pantry_value, 2), "promo_day": round(then_value, 2),
+          "pantry": round(pantry_value, 2), "promo_day": round(then_value, 2), "split": round(split_value, 2),
           "total": round(sum(b.get("total") or 0 for b in by_store), 2), "premium": is_premium}
     old = camp.get("savings") or {}
     if not _for_compare and any(old.get(k) != v for k, v in sv.items()):
@@ -2599,12 +2599,83 @@ class PantryInput(BaseModel):
     name: str
     qty: float = 1
     unit: str = "stuks"
+    product_id: Optional[str] = None
+
+
+# Wat de meeste mensen al in huis hebben: om een lege voorraadkast in één keer te vullen.
+# (naam zoals in gerechten, groep, standaard aangevinkt)
+PANTRY_STAPLES = [
+    ("Zout", "Kruiden en smaakmakers", True), ("Peper", "Kruiden en smaakmakers", True), ("Paprikapoeder", "Kruiden en smaakmakers", True),
+    ("Kerrie", "Kruiden en smaakmakers", False), ("Italiaanse kruiden", "Kruiden en smaakmakers", True), ("Oregano", "Kruiden en smaakmakers", False),
+    ("Kaneel", "Kruiden en smaakmakers", False), ("Nootmuskaat", "Kruiden en smaakmakers", False), ("Bouillonblokjes", "Kruiden en smaakmakers", True),
+    ("Knoflook", "Kruiden en smaakmakers", False),
+    ("Olijfolie", "Olie, azijn en sauzen", True), ("Zonnebloemolie", "Olie, azijn en sauzen", True), ("Azijn", "Olie, azijn en sauzen", False),
+    ("Ketjap", "Olie, azijn en sauzen", True), ("Sojasaus", "Olie, azijn en sauzen", False), ("Mosterd", "Olie, azijn en sauzen", True),
+    ("Mayonaise", "Olie, azijn en sauzen", True), ("Ketchup", "Olie, azijn en sauzen", True), ("Tomatenpuree", "Olie, azijn en sauzen", False),
+    ("Suiker", "Bakken", True), ("Bloem", "Bakken", True), ("Bakpoeder", "Bakken", False), ("Maizena", "Bakken", False), ("Vanillesuiker", "Bakken", False),
+    ("Rijst", "Voorraad", True), ("Spaghetti", "Voorraad", True), ("Macaroni", "Voorraad", False), ("Havermout", "Voorraad", False),
+    ("Honing", "Voorraad", False), ("Pindakaas", "Voorraad", True), ("Hagelslag", "Voorraad", True), ("Jam", "Voorraad", False),
+    ("Koffie", "Drinken", True), ("Thee", "Drinken", True),
+    ("Roomboter", "Koelkast", True), ("Melk", "Koelkast", False), ("Eieren", "Koelkast", False),
+    ("Aluminiumfolie", "Huishouden", False), ("Bakpapier", "Huishouden", False), ("Afwasmiddel", "Huishouden", True),
+]
+
+
+@api_router.get("/pantry/suggestions")
+async def pantry_suggestions(user: dict = Depends(get_current_user)):
+    # Voorstellen voor je voorraadkast: wat de meeste mensen al in huis hebben (vaste lijst + wat andere gebruikers vaak invullen),
+    # met per stuk het product dat de app erbij kiest in jouw winkel. Wat je al hebt laten we weg.
+    await require_premium(user)
+    have = {p["name_l"] async for p in db.pantry.find({"user_id": user["user_id"]}, {"_id": 0, "name_l": 1})}
+    popular: Dict[str, int] = {}
+    async for row in db.pantry.aggregate([{"$group": {"_id": "$name_l", "n": {"$addToSet": "$user_id"}}},
+                                          {"$project": {"n": {"$size": "$n"}}}, {"$match": {"n": {"$gte": 3}}},
+                                          {"$sort": {"n": -1}}, {"$limit": 30}]):
+        popular[row["_id"]] = row["n"]
+    items = [{"name": n, "group": g, "default": d, "users": popular.get(n.lower(), 0)} for n, g, d in PANTRY_STAPLES]
+    known = {n.lower() for n, _, _ in PANTRY_STAPLES}
+    for name_l, n in popular.items():
+        if name_l not in known and _is_pantry(name_l):
+            items.append({"name": name_l[:1].upper() + name_l[1:], "group": "Vaak ingevuld door anderen", "default": False, "users": n})
+    items = [i for i in items if i["name"].lower() not in have]
+    store = user.get("store") or DEFAULT_STORE
+    docs = await _global_products()
+    pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
+    favs = set(user.get("favorite_products") or [])
+    hits = await asyncio.to_thread(lambda: [_cheapest_good(pool, i["name"], store) for i in items])
+    for i, d in zip(items, hits):
+        i["product"] = product_public(_clean(d), store, user["user_id"], favs) if d else None
+    return {"store": store, "items": items}
+
+
+class PantryBulk(BaseModel):
+    items: List[PantryInput]
+
+
+@api_router.post("/pantry/bulk")
+async def add_pantry_bulk(data: PantryBulk, user: dict = Depends(get_current_user)):
+    # Meerdere producten tegelijk (uit de voorstellen): als "vol" erbij, bestaande regels blijven staan
+    await require_premium(user)
+    have = {p["name_l"] async for p in db.pantry.find({"user_id": user["user_id"]}, {"_id": 0, "name_l": 1})}
+    room = 500 - len(have)
+    docs = []
+    for it in data.items[:100]:
+        clean = _pantry_clean(it)
+        if clean["name_l"] in have or len(docs) >= room:
+            continue
+        have.add(clean["name_l"])
+        docs.append({"item_id": f"pan_{uuid.uuid4().hex[:12]}", "user_id": user["user_id"], **clean})
+    if docs:
+        await db.pantry.insert_many(docs)
+    return {"added": len(docs)}
 
 
 def _pantry_public(p: dict, rate: float = 0) -> dict:
     left = _pantry_now(p, rate)
+    prod = (_product_cache.get("by_pid") or {}).get(p.get("product_id") or "")
     return {"id": p["item_id"], "name": p["name"], "qty": round(left, 0 if p.get("unit") == "%" else 2), "unit": p.get("unit") or "stuks",
-            "learned": bool(p.get("learned")), "updated_at": p.get("updated_at")}
+            "learned": bool(p.get("learned")), "updated_at": p.get("updated_at"),
+            "product_id": p.get("product_id"), "product_name": prod["name"] if prod else None, "image": prod.get("image") if prod else None}
 
 
 @api_router.get("/pantry")
@@ -2636,7 +2707,10 @@ def _pantry_clean(data: PantryInput) -> dict:
     if not name:
         raise HTTPException(status_code=400, detail="Vul een productnaam in")
     qty = max(0.0, min(float(data.qty or 0), 100000))
-    return {"name": name, "name_l": name.lower(), "qty": round(qty, 2), "unit": (data.unit or "stuks").strip()[:20], "updated_at": now_utc()}
+    out = {"name": name, "name_l": name.lower(), "qty": round(qty, 2), "unit": (data.unit or "stuks").strip()[:20], "updated_at": now_utc()}
+    if data.product_id:
+        out["product_id"] = data.product_id[:60]
+    return out
 
 
 @api_router.post("/pantry")
@@ -2702,7 +2776,7 @@ async def savings_overview(user: dict = Depends(get_current_user)):
     # zonder Premium laten we zien wat je er extra mee had kunnen besparen.
     is_premium = bool(user.get("premium"))
     camps = await db.camps.find(camp_access_filter(user["user_id"]), {"_id": 0, "camp_id": 1, "name": 1, "start_date": 1, "created_at": 1, "savings": 1}).to_list(500)
-    keys = ("promo", "smart", "pantry", "promo_day", "total")
+    keys = ("promo", "smart", "pantry", "promo_day", "split", "total")
     months: Dict[str, dict] = {}
     for c in camps:
         sv = c.get("savings") or {}
@@ -2716,7 +2790,7 @@ async def savings_overview(user: dict = Depends(get_current_user)):
         for k in keys:
             row[k] += float(sv.get(k) or 0)
         std = float(sv.get("promo") or 0) + float(sv.get("smart") or 0)
-        prem = float(sv.get("pantry") or 0) + float(sv.get("promo_day") or 0)
+        prem = float(sv.get("pantry") or 0) + float(sv.get("promo_day") or 0) + float(sv.get("split") or 0)
         row["lists"].append({"id": c["camp_id"], "name": c.get("name"), "standard": round(std, 2), "premium": round(prem, 2),
                              "saving": round(std + (prem if is_premium else 0), 2), "total": float(sv.get("total") or 0)})
     out = sorted(months.values(), key=lambda r: r["month"], reverse=True)[:12]
@@ -2724,7 +2798,7 @@ async def savings_overview(user: dict = Depends(get_current_user)):
         for k in keys:
             r[k] = round(r[k], 2)
         r["standard"] = round(r["promo"] + r["smart"], 2)
-        r["premium"] = round(r["pantry"] + r["promo_day"], 2)
+        r["premium"] = round(r["pantry"] + r["promo_day"] + r["split"], 2)
         r["saving"] = round(r["standard"] + (r["premium"] if is_premium else 0), 2)
     tot = {k: round(sum(r[k] for r in out), 2) for k in keys + ("standard", "premium", "saving")}
     return {"months": out, "is_premium": is_premium, **tot}
@@ -6438,7 +6512,8 @@ _PROCESSED = ("koek", "cracker", "tapenade", "azijn", "saus", "chips", "spread",
 _DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", "plakjes", "blokjes", "reepjes", "schijfjes", "zwart", "wit",
                 "rood", "groen", "geel", "bio", "biologisch", "biologische", "naturel", "kruimig", "vastkokend", "s", "m", "l", "xl", "kanjers",
                 "vrije", "uitloop", "scharrel", "per", "kilo", "stuk", "zak", "bak", "pot", "blik", "fles", "flessen", "pak", "pack", "voordeel",
-                "voordeelverpakking", "mini", "groot", "klein", "heel", "halve", "stukjes", "diepvries", "vers", "extra", "fijn", "grof"}
+                "voordeelverpakking", "mini", "groot", "klein", "heel", "halve", "stukjes", "diepvries", "vers", "extra", "fijn", "grof",
+                "volkoren", "meergranen", "half", "bruin", "tarwe", "gesneden"}
 _STORE_WORDS = {"ah", "jumbo", "dirk", "1 de beste", "excellent", "biologisch"}
 
 
@@ -6467,6 +6542,11 @@ def _penalty_ctx(words: tuple) -> dict:
         return v
     ends = tuple(e for x in procs if len(x) > 3 for e in (x, x + "s", x + "en", x + "jes"))
     return {"related": related, "processed": processed, "sub_ends": ends}
+
+
+_ODD_BREAD = (r"pita|naan|wrap|tortilla|stokbrood|ciabatta|bolletjes|afbak|toast|libanees|turks|pinsa|focaccia|"
+              r"(krenten|rozijnen|suiker|kokos|dadel|vijgen|kletzen|ontbijt|mais|bananen|abrikozen|noten)\s?brood")
+_ODD_BREAD_Q = r"pita|naan|wrap|tortilla|stok|ciabatta|bolletje|afbak|toast|libanees|turks|pinsa|focaccia|krent|rozijn|suiker|kokos|dadel|vijg|kletzen|ontbijt|mais|banaan|banan|abrikoz|noten"
 
 
 def _food_penalty(d: dict, rank: int, words: list) -> float:
@@ -6508,10 +6588,13 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     # Het laatste zoekwoord is het hoofdwoord ("witte wijn" is wijn, geen wijnazijn)
     head = place(words[-1])
     pos = head if head is not None else min((p for p in map(place, words) if p is not None), default=11) + 3
+    sub_same = any(w == words[-1] or w in _stems(words[-1]) or words[-1] in _stems(w) for w in subw)
     if head is None:
-        # Soort van de winkel telt ook: "Bakker van der Akker Rond wit heel" is gewoon brood
-        if any(w == words[-1] or w in _stems(words[-1]) or words[-1] in _stems(w) for w in subw):
-            pos = min(pos, 3.5)
+        # Soort van de winkel telt ook: "Bakker van der Akker Rond wit heel" is gewoon brood (soort: Brood)
+        if sub_same:
+            pos = min(pos, 1.5)
+    elif sub_same:
+        pos -= 1  # soort is precies wat je zoekt
     elif any(words[-1] in w for w in subw):
         pos -= 0.5  # soort past ook: kipfilet bij kip, broden bij brood
     pen = min(rank, 100) * 0.01 + pos
@@ -6528,6 +6611,8 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
             pen += 2
         elif hk is not None and k < hk and w not in _DESCRIPTORS and w not in _FILLER:
             pen += 1.2  # "Gyoza kip", "Mozzarella tomaat": het gezochte woord is hier bijzaak
+        elif hk is None and (w in _DESCRIPTORS or w in _FILLER):
+            pen += 0.3  # "volkoren heel" zegt alleen wat voor brood het is
         else:
             pen += 0.7
 
@@ -6536,7 +6621,8 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     if any(proc_hit(r) for rest in rests for r in rest.split()):
         pen += 5
     # Soort van de winkel: "Verkade Nizza kaneel" staat bij de theebiscuits, dat is geen kaneel
-    elif ctx["sub_ends"] and any(w.endswith(ctx["sub_ends"]) for w in subw):
+    # (maar "Brood en gebak" is gewoon de broodafdeling als je brood zoekt)
+    elif ctx["sub_ends"] and any(w.endswith(ctx["sub_ends"]) for w in subw) and not sub_same:
         pen += 3
     if nonfood:
         pen += 30
@@ -6563,10 +6649,15 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     # Kruidenkaas (Paturain, Boursin) is geen kruidenmix
     if any(q.endswith("kruiden") for q in words) and re.search(r"\b(paturain|boursin|kaas)\b|kaas\b", d["_norm"]):
         pen += 8
-    # Gewoon brood is geen pita, wrap of stokbrood (tenzij je daarom vraagt)
-    if words[-1] in ("brood", "boterhammen") and re.search(r"pita|naan|wrap|tortilla|stokbrood|ciabatta|bolletjes|afbak|toast|krentenbrood|suikerbrood", d["_norm"]) \
-            and not any(re.search(r"pita|naan|wrap|tortilla|stok|ciabatta|bolletje|afbak|toast|krent|suiker", q) for q in words):
+    # Gewoon brood is geen pita, wrap, stokbrood of kokosbrood (tenzij je daarom vraagt)
+    if words[-1] in ("brood", "boterhammen") and re.search(_ODD_BREAD, d["_norm"]) and not any(re.search(_ODD_BREAD_Q, q) for q in words):
         pen += 4
+    if words[-1] == "brood" and "rogge" in d["_norm"] and not any("rogge" in q for q in words):
+        pen += 1.5  # roggebrood is brood, maar niet wat je meestal bedoelt
+    # Een broodje is geen brood, een tomaatje net iets anders dan een tomaat
+    hq_dim = tuple(st + suf for st in _stems(hq) for suf in ("je", "jes", "tje", "tjes"))
+    if not re.search(r"(je|jes)$", hq) and any(w.endswith(hq_dim) for w in nw):
+        pen += 1.5
     # Kruiden- en mixmerken (Knorr, Euroma, Verstegen) alleen als je kruiden, een mix of saus zoekt: "Euroma pizza" is pizzakruiden
     if re.match(r"(knorr|euroma|verstegen|silvo|conimex|honig) ", d["_norm"]) and not any(
             re.search(r"kruid|mix|saus|bouillon|soep|poeder|boemboe|specerij|peper|zout", q) for q in words):
@@ -7225,6 +7316,8 @@ async def camp_shop_store(camp_id: str, data: ShopStoreInput, user: dict = Depen
     if not c:
         raise HTTPException(status_code=404, detail="Kamp niet gevonden")
     split = [x for x in dict.fromkeys(data.split) if x in COMPARE_STORES]
+    if len(split) >= 2 and not user.get("premium"):
+        raise HTTPException(status_code=403, detail="Slim splitsen over winkels is een Premium-functie")
     if not data.store and len(split) < 2:
         await db.camps.update_one({"camp_id": camp_id}, {"$unset": {"shop_store": "", "store_products": "", "split_stores": "", "item_stores": "", "item_was": ""}})
         return {"shop_store": None}

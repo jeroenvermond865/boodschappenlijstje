@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Animated, FlatList, Image, NativeScrollEvent, NativeSyntheticEvent, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
-import { useHideOnScroll } from "@/src/hideOnScroll";
+import { ActivityIndicator, Animated, FlatList, Image, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
+import { HideOnScroll, useHideOnScroll } from "@/src/hideOnScroll";
 import { smartFilter } from "@/src/smartSearch";
 import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
@@ -53,9 +53,9 @@ export function OnlineRecipes({
   onPick,
   pickedIds,
   busyId,
-  onScroll,
+  outer,
 }: {
-  onScroll?: (e: NativeSyntheticEvent<NativeScrollEvent>) => void; // bijv. om de bovenbalk van het scherm mee te laten schuiven
+  outer?: HideOnScroll; // de bovenbalk van het scherm schuift mee
   bottomPadding: number;
   initialFilters?: Filters; // bijv. { gang: ["ontbijt"] } als je vanuit het ontbijt van een kamp zoekt
   onPick?: (r: RecipeTile) => void; // kiezen in plaats van openen
@@ -145,7 +145,7 @@ export function OnlineRecipes({
       return out;
     });
 
-  const hide = useHideOnScroll();
+  const hide = useHideOnScroll(0, outer);
 
   return (
     <View style={{ flex: 1 }}>
@@ -204,23 +204,20 @@ export function OnlineRecipes({
       </Animated.View>
 
       {query.isLoading ? (
-        <View style={styles.center}>
+        <View style={[styles.center, { paddingTop: hide.padTop }]}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
       ) : (
         <FlatList
           scrollEventThrottle={16}
-          onScroll={(e) => {
-            hide.scrollProps.onScroll(e);
-            onScroll?.(e);
-          }}
+          onScroll={hide.scrollProps.onScroll}
           refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={() => query.refetch()} tintColor={colors.brandPrimary} />}
           data={recipes}
           keyExtractor={(r) => r.id}
           key={`recipes-${grid.cols}`}
           numColumns={grid.cols}
           columnWrapperStyle={{ gap: 10 }}
-          contentContainerStyle={{ padding: 16, paddingTop: 8, paddingBottom: bottomPadding, gap: 10 }}
+          contentContainerStyle={{ padding: 16, paddingTop: 8 + hide.padTop, paddingBottom: bottomPadding, gap: 10 }}
           onEndReachedThreshold={0.6}
           onEndReached={() => query.hasNextPage && !query.isFetchingNextPage && query.fetchNextPage()}
           renderItem={({ item }) => (

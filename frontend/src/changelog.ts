@@ -5,6 +5,20 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-26-c",
+    date: "26 oktober 2026",
+    title: "Vegen, verversen en een snelle voorraadkast",
+    changes: [
+      { kind: "nieuw", text: "Voorraadkast in één keer vullen: vink aan wat je al in huis hebt uit wat veel mensen hebben, met een product erbij dat je kunt wisselen." },
+      { kind: "nieuw", text: "Bij een lijstje veeg je opzij naar de vorige of volgende dag." },
+      { kind: "nieuw", text: "Bij een aanbieding blader je met Vorige en Volgende (of vegen) door de andere aanbiedingen. Na een product bekijken kom je terug bij de keuzes." },
+      { kind: "beter", text: "Omlaag trekken om te verversen werkt nu ook in de webapp op je telefoon." },
+      { kind: "beter", text: "De balk bovenin schuift rustig mee met je vinger, ook terug." },
+      { kind: "beter", text: "Zoeken op brood geeft eerst gewoon brood, geen kokosbrood of broodjes." },
+      { kind: "beter", text: "Slim splitsen over winkels is nu Premium. Wat je daarmee bespaart, telt mee in je bespaaroverzicht." },
+    ],
+  },
+  {
     id: "2026-10-26-b",
     date: "26 oktober 2026",
     title: "Meer besparen en slimmer zoeken",

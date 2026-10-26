@@ -10,7 +10,7 @@ import { GOLD } from "@/src/premium";
 import { euro } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Parts = { promo: number; smart: number; pantry: number; promo_day: number; standard: number; premium: number; saving: number; total: number };
+type Parts = { promo: number; smart: number; pantry: number; promo_day: number; split?: number; standard: number; premium: number; saving: number; total: number };
 type Month = Parts & { month: string; lists: { id: string; name: string; standard: number; premium: number; saving: number; total: number }[] };
 type Savings = Parts & { months: Month[]; is_premium: boolean };
 
@@ -64,7 +64,7 @@ export default function SavingsScreen() {
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Met de app</Text>
               <Line label="Aanbiedingen op je lijstjes" value={data!.promo} />
-              <Line label="Slim kiezen waar je wat haalt" value={data!.smart} />
+              <Line label="Alles bij de goedkoopste winkel" value={data!.smart} />
               <Line label="Samen" value={data!.standard} strong />
             </View>
 
@@ -74,6 +74,7 @@ export default function SavingsScreen() {
                 <Text style={[styles.cardTitle, { color: GOLD.text }]}>{premium ? "Extra met Premium" : "Extra met Premium had je kunnen besparen"}</Text>
               </View>
               <Line label="Al in je voorraadkast" value={data!.pantry} gold />
+              <Line label="Slim splitsen over winkels" value={data!.split ?? 0} gold />
               <Line label="Acties op je boodschappendag" value={data!.promo_day} gold />
               <Line label="Samen" value={data!.premium} gold strong />
               {premium ? (
@@ -108,8 +109,8 @@ export default function SavingsScreen() {
               </View>
             ))}
             <Text style={styles.small}>
-              We tellen de korting van aanbiedingen, wat je scheelt door slim te kiezen bij welke winkel je iets haalt, en met Premium ook wat je al in je
-              voorraadkast hebt en de acties op de dag dat je boodschappen doet. Het overzicht wordt bijgewerkt als je een lijst opent. De prijs in de winkel is
+              We tellen de korting van aanbiedingen en wat je scheelt door alles bij de goedkoopste winkel te halen. Met Premium ook slim splitsen over
+              winkels, wat je al in je voorraadkast hebt en de acties op de dag dat je boodschappen doet. Het overzicht wordt bijgewerkt als je een lijst opent. De prijs in de winkel is
               altijd leidend.
             </Text>
           </>

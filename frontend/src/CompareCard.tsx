@@ -11,6 +11,7 @@ import { Button, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { euro } from "@/src/search";
 import { useToast } from "@/src/toast";
+import { GOLD, usePremium } from "@/src/premium";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 export type CompareItem = NonNullable<CompareStore["items"]>[number];
@@ -101,6 +102,8 @@ export function CompareCard({
   const fairTotal = (c: CompareStore) => c.total_fair ?? c.total;
   const best = compare.length > 1 ? compare.reduce((a, b) => (fairTotal(b) < fairTotal(a) ? b : a)) : null;
   const maxTotal = Math.max(1, ...compare.map(fairTotal));
+  const premium = usePremium();
+  const router = useRouter();
   const auto = bestSplit(compare, best ? fairTotal(best) : 0);
   const split = splitPick ? splitFor(compare, splitPick, best ? fairTotal(best) : 0) : auto;
   const togglePick = (st: string) =>
@@ -235,9 +238,9 @@ export function CompareCard({
               </Pressable>
             ) : null}
             {compare.length > 1 && (split || splitPick) ? (
-              <Pressable testID="compare-split" onPress={() => setSplitOpen((v) => !v)} style={styles.splitBox}>
+              <Pressable testID="compare-split" onPress={() => setSplitOpen((v) => !v)} style={[styles.splitBox, !premium && { backgroundColor: GOLD.bg, borderColor: GOLD.border }]}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Icon name="call-split" size={20} color={colors.success} />
+                  <Icon name={premium ? "call-split" : "star-circle"} size={20} color={premium ? colors.success : GOLD.icon} />
                   <Text style={[styles.body, { flex: 1, fontFamily: fonts.bold }]}>
                     Slim splitsen{split ? `: ${split.stores.map((s) => SHORT[s] ?? s).join(" + ")}` : ""}
                   </Text>
@@ -291,7 +294,16 @@ export function CompareCard({
                       </View>
                     ))
                   : null}
-                {split ? (
+                {split && !premium ? (
+                  <Button
+                    label="Slim splitsen is Premium"
+                    sub={split.saving > 0 ? `${euro(split.saving)} extra besparen` : undefined}
+                    icon="star"
+                    variant="secondary"
+                    onPress={() => router.push("/premium")}
+                    testID="compare-split-premium"
+                  />
+                ) : split ? (
                   <Button
                     label={`${shopStore === "split" ? "Opnieuw splitsen" : "Gesplitst halen"} bij ${split.stores.map((s) => SHORT[s] ?? s).join(" + ")}`}
                     icon="call-split"
