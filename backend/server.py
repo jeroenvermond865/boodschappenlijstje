@@ -6659,8 +6659,7 @@ _SYNONYMS = {"diepvriespizza": ["pizza margherita", "pizza salame", "pizza"], "n
              "lente ui": ["bosui"], "lenteui": ["bosui"], "sjalot": ["sjalotten", "sjalot"], "rucola": ["rucola", "rucolasla"],
              "kokostoppers": ["kokostoppen", "kokosmakronen"], "kokostopjes": ["kokostoppen", "kokosmakronen"],
              **{k: ["peper zwart heel", "zwarte peper heel", "peperkorrels", "peper zwart", "zwarte peper", "peper"]
-                for k in ("peperkorrels", "peperkorrel", "zwarte peperkorrels", "zwarte peperkorrel", "zwarte peper korrel", "zwarte peper korrels",
-                          "peper korrel", "peper korrels", "hele zwarte peper", "zwarte peper heel")},
+                for k in ("peperkorrels", "peperkorrel", "peper korrels", "peper korrel", "zwarte peperkorrels", "zwarte peperkorrel", "zwarte peper korrel", "zwarte peper korrels", "hele zwarte peper", "zwarte peper heel")},
              "zwarte peper": ["peper zwart", "zwarte peper", "peper"], "witte peper": ["peper wit", "witte peper"],
              "saffraandraadjes": ["saffraan"], "saffraanpoeder": ["saffraan"]}
 
@@ -6701,6 +6700,11 @@ def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False)
     if len(core) > 1 and core[-1] in ("brood", "broden", "broodje", "broodjes"):
         levels.append((core[:-1], 0.9))
     levels.append((core[-1:], 1.2 if len(core) == 1 else 2.5))
+    # Kleur uit de vraag blijft gelden, ook als we op een kortere naam zoeken: "zwarte peperkorrels" is geen witte of groene peper
+    cols = {"wit": ("witte", "wit"), "rood": ("rode", "rood"), "groen": ("groene", "groen"), "zwart": ("zwarte", "zwart"), "geel": ("gele", "geel")}
+    want = {c for c, ws in cols.items() if any(q in ws for q in words)}
+    other = {w for c, ws in cols.items() if c not in want for w in ws} if want else set()
+    dry = any(w.endswith(("korrel", "korrels", "poeder", "gemalen", "gedroogd", "gedroogde")) for w in words)
     best: dict = {}
     seen = set()
     for lv, extra in levels:
@@ -6716,6 +6720,10 @@ def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False)
                     hits.append(d)
         for rank, d in enumerate(hits[:400]):
             pen = _food_penalty(d, rank, lv) + extra
+            if other and other & set(d["_norm"].split()):
+                pen += 6
+            if dry and d.get("aisle") in _FRESH_AISLES:
+                pen += 4  # "peperkorrels" of "kerriepoeder" komt uit het kruidenrek, niet van de groenteafdeling
             if id(d) not in best or pen < best[id(d)][0]:
                 best[id(d)] = (pen, d)
     ranked = sorted(best.values(), key=lambda x: x[0])[:limit]
@@ -6887,7 +6895,7 @@ def _cheapest_good_raw(pool: list, name: str, store: str) -> Optional[dict]:
     return min(vals, key=lambda x: (x[0][0], x[1]))[2]
 
 
-_FORMS = ("poeder", "korrels", "korrel", "draadjes", "vlokken", "stokjes", "stokje", "snippers", "blaadjes", "zaadjes", "gemalen")
+_FORMS = ("poeder", "korrels", "korrel", "draadjes", "draden", "vlokken", "stokjes", "stokje", "snippers", "blaadjes", "zaadjes", "gemalen")
 _NONFOOD = {"Huishoud & huisdieren", "Kind & drogisterij", "Non food"}
 _NONFOOD_RE = re.compile(r"drogist|huishoud|huisdier|baby|verzorging|cosmetica|non food|shampoo|douche|zeep|tandpasta|wasmiddel|afwas|"
                          r"deodorant|bodylotion|conditioner|wc |toilet|schoonmaak|kattenvoer|hondenvoer|luier|parfum|scheer|haar|navulling|douchegel|handzeep|"
