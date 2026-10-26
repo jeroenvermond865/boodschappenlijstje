@@ -6840,6 +6840,16 @@ def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False)
     want = {c for c, ws in cols.items() if any(q in ws for q in words)}
     other = {w for c, ws in cols.items() if c not in want for w in ws} if want else set()
     dry = any(w.endswith(("korrel", "korrels", "poeder", "gemalen", "gedroogd", "gedroogde")) for w in words)
+    # Vega gevraagd: ook bij een kortere naam ("gyros") nooit vlees, en zoek ook naar de gangbare vega-vervanger ("vegetarische shoarma")
+    vega = any(_VEGA_WORD_RE.match(w) for w in words)
+    if vega:
+        rest = " ".join(w for w in core if not _VEGA_WORD_RE.match(w))
+        if rest:
+            levels += [([v] + rest.split(), 0.2) for v in ("vegetarische", "plantaardige", "vegan", "vega")]
+        for pat, alts in _VEGA_FOR:
+            if rest and re.search(pat, rest):
+                levels += [(a.split(), 1.5 + k * 0.3) for k, a in enumerate(alts)]
+                break
     best: dict = {}
     seen = set()
     for lv, extra in levels:
@@ -6859,6 +6869,8 @@ def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False)
                 pen += 6
             if dry and d.get("aisle") in _FRESH_AISLES:
                 pen += 4  # "peperkorrels" of "kerriepoeder" komt uit het kruidenrek, niet van de groenteafdeling
+            if vega and _MEAT_RE.search(d["_norm"]) and not _VEGA_RE.search(d["_norm"]):
+                pen += 25  # vlees voor een vega-ingrediënt: liever helemaal niets
             if id(d) not in best or pen < best[id(d)][0]:
                 best[id(d)] = (pen, d)
     ranked = sorted(best.values(), key=lambda x: x[0])[:limit]
@@ -7001,8 +7013,8 @@ def _cheapest_good(pool: list, name: str, store: str) -> Optional[dict]:
 def _cheapest_good_raw(pool: list, name: str, store: str) -> Optional[dict]:
     # Het best passende product; zijn er een paar even goede, dan de voordeligste per kilo of liter
     hits = _best_matches(pool, name, 20, with_pen=True)
-    if not hits:
-        return None
+    if not hits or hits[0][0] > 20:
+        return None  # alleen nog iets heel anders (een kruidenmix voor "vega gyros", iets uit de drogisterij): liever niets
     top = hits[0][0]
     good = [d for pen, d in hits if pen <= top + 1.0]
     # Alle woorden moeten kloppen: "halfvolle melk" is geen magere melk, "bruine bolletjes" geen soepbolletjes
