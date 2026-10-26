@@ -1157,6 +1157,7 @@ async def update_dish(dish_id: str, data: DishInput, user: dict = Depends(get_cu
         raise HTTPException(status_code=403, detail="Je kunt alleen je eigen gerechten aanpassen")
     if data.category not in MEAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="Ongeldige categorie")
+    asyncio.create_task(_learn_from_dish(user, doc.get("ingredients") or [], [i.model_dump() for i in data.ingredients]))
     await db.dishes.update_one(
         {"dish_id": dish_id},
         {"$set": {
@@ -1185,6 +1186,7 @@ async def save_camp_dish(camp_id: str, dish_id: str, data: DishInput, user: dict
         raise HTTPException(status_code=400, detail="Ongeldige categorie")
     fields = {"name": data.name.strip(), "category": data.category, "ingredients": [i.model_dump() for i in data.ingredients],
               **({"pantry": [i.model_dump() for i in data.pantry]} if data.pantry is not None else {})}
+    asyncio.create_task(_learn_from_dish(user, doc.get("ingredients") or [], fields["ingredients"]))
     if doc.get("camp_id") == camp_id:
         await db.dishes.update_one({"dish_id": dish_id}, {"$set": fields})
         return dish_public(await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0}))
@@ -2237,6 +2239,7 @@ async def camp_product_swap(camp_id: str, data: ProductSwap, user: dict = Depend
     origin = next((k for k, v in old.items() if v == data.from_id), data.from_id)
     swaps = {**old, origin: data.to_id}
     await db.camps.update_one({"camp_id": camp_id}, {"$set": {"product_swaps": swaps}})
+    asyncio.create_task(_learn_swap(user, origin, data.to_id))
     return {"ok": True}
 
 
@@ -3812,6 +3815,7 @@ async def _load_products() -> None:
     except Exception as e:
         logger.warning("Productlijst laden mislukt: %s", e)
     asyncio.ensure_future(_warm_search())
+    asyncio.ensure_future(_load_learned())
 
 
 async def _warm_search() -> None:
@@ -3833,6 +3837,11 @@ async def _warm_search() -> None:
                 res = (await asyncio.to_thread(_run_search, docs, pq, src, "", None, "", "", False, False, "", src))[0][:15]
                 logger.info("PROBE %s %s: %s", pq, src, [(d["name"], d.get("brand"), d.get("subcategory"),
                                                          round(_food_penalty(d, 0, _norm_text(pq).split()), 1)) for d in res])
+                pool = [d for d in docs if d.get("_src") == src and d.get("is_global")]
+                ing = await asyncio.to_thread(_best_matches, pool, pq, 8, True)
+                pick = await asyncio.to_thread(_cheapest_good, pool, pq, src)
+                logger.info("PROBE ingrediënt %s %s: kies %s; %s", pq, src, pick and pick["name"],
+                            [(d["name"], d.get("unit"), round(pen, 1)) for pen, d in ing])
         if os.environ.get("SEARCH_PROBE"):
             for src in ("Dirk", "Albert Heijn", "Jumbo"):
                 pool = [d for d in docs if d.get("_src") == src and d.get("aisle") == "Brood, beleg & koek"]
@@ -6612,7 +6621,12 @@ _SYNONYMS = {"diepvriespizza": ["pizza margherita", "pizza salame", "pizza"], "n
              "parmezaanse kaas": ["parmigiano reggiano", "grana padano", "parmezaan"], "parmezaan": ["parmigiano reggiano", "grana padano"],
              "creme fraiche": ["creme fraiche", "zure room"], "zalmfilet": ["zalm"], "kipfilet": ["kipfilet", "kip"],
              "lente ui": ["bosui"], "lenteui": ["bosui"], "sjalot": ["sjalotten", "sjalot"], "rucola": ["rucola", "rucolasla"],
-             "kokostoppers": ["kokostoppen", "kokosmakronen"], "kokostopjes": ["kokostoppen", "kokosmakronen"]}
+             "kokostoppers": ["kokostoppen", "kokosmakronen"], "kokostopjes": ["kokostoppen", "kokosmakronen"],
+             **{k: ["peper zwart heel", "zwarte peper heel", "peperkorrels", "peper zwart", "zwarte peper", "peper"]
+                for k in ("peperkorrels", "peperkorrel", "zwarte peperkorrels", "zwarte peperkorrel", "zwarte peper korrel", "zwarte peper korrels",
+                          "peper korrel", "peper korrels", "hele zwarte peper", "zwarte peper heel")},
+             "zwarte peper": ["peper zwart", "zwarte peper", "peper"], "witte peper": ["peper wit", "witte peper"],
+             "saffraandraadjes": ["saffraan"], "saffraanpoeder": ["saffraan"]}
 
 
 def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False) -> list:
@@ -6672,7 +6686,140 @@ def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False)
     return ranked if with_pen else [d for _, d in ranked]
 
 
+# --- De app leert van gebruikers: kiest iemand zelf een beter product bij een ingrediënt, dan onthouden we dat ---
+# Per winkel en ingrediënt (bijv. "Dirk|zwarte peperkorrels") welk product mensen kiezen, en welk product mensen
+# steeds wegwisselen voor welk ander. Telt pas voor iedereen als genoeg mensen het zo kiezen (een beheerder telt dubbel).
+LEARN_MIN_SCORE = 2
+_learned: Dict[str, Dict[str, str]] = {"picks": {}, "swaps": {}}
+
+
+def _learn_key(store: str, name: str) -> str:
+    return store + "|" + _norm_text(re.sub(r"\([^)]*\)", " ", name or "")).strip()
+
+
+def _learned_choice(rows: list) -> Optional[str]:
+    # rows: [(product, score)]; het product met de meeste stemmen, als dat genoeg is en duidelijk wint
+    rows = sorted(rows, key=lambda r: -r[1])
+    if not rows or rows[0][1] < LEARN_MIN_SCORE or (len(rows) > 1 and rows[1][1] >= rows[0][1]):
+        return None
+    return rows[0][0]
+
+
+async def _load_learned() -> None:
+    try:
+        picks: Dict[str, list] = {}
+        async for d in db.learned_picks.find({}, {"_id": 0, "key": 1, "pid": 1, "score": 1}):
+            picks.setdefault(d["key"], []).append((d["pid"], d.get("score") or 0))
+        swaps: Dict[str, list] = {}
+        async for d in db.learned_swaps.find({}, {"_id": 0, "from": 1, "to": 1, "score": 1}):
+            swaps.setdefault(d["from"], []).append((d["to"], d.get("score") or 0))
+        _learned["picks"] = {k: c for k, v in picks.items() if (c := _learned_choice(v))}
+        _learned["swaps"] = {k: c for k, v in swaps.items() if (c := _learned_choice(v)) and c != k}
+        logger.info("Geleerd van gebruikers: %d ingrediënten, %d wissels", len(_learned["picks"]), len(_learned["swaps"]))
+    except Exception as e:
+        logger.warning("Geleerde keuzes laden mislukt: %r", e)
+
+
+async def _learn_vote(coll, match: dict, other: dict, user: dict) -> None:
+    # Eén stem per gebruiker per ingrediënt: kiest iemand later iets anders, dan verhuist zijn stem mee
+    uid = user["user_id"]
+    w = 2 if user.get("role") == "beheerder" else 1
+    old = await coll.find({**match, "users": uid}, {"_id": 0}).to_list(20)
+    for d in old:
+        if all(d.get(k) == v for k, v in other.items()):
+            return
+        await coll.update_one({**match, **{k: d[k] for k in other}}, {"$pull": {"users": uid}, "$inc": {"score": -w}})
+    await coll.update_one({**match, **other}, {"$addToSet": {"users": uid}, "$inc": {"score": w},
+                                               "$set": {"at": now_utc().isoformat()}}, upsert=True)
+
+
+async def _learn_pick(user: dict, store: str, name: str, pid: str) -> None:
+    try:
+        key = _learn_key(store, name)
+        if not pid or key.endswith("|") or _norm_text(name) in _ALWAYS_HOME:
+            return
+        await _learn_vote(db.learned_picks, {"key": key}, {"pid": pid}, user)
+        rows = [(d["pid"], d.get("score") or 0) async for d in db.learned_picks.find({"key": key}, {"_id": 0})]
+        c = _learned_choice(rows)
+        if c:
+            _learned["picks"][key] = c
+        else:
+            _learned["picks"].pop(key, None)
+        _forget_matches()
+    except Exception as e:
+        logger.warning("Leren van keuze mislukt: %r", e)
+
+
+async def _learn_swap(user: dict, from_pid: str, to_pid: str) -> None:
+    try:
+        if not from_pid or not to_pid or from_pid == to_pid:
+            return
+        by_pid = _product_cache.get("by_pid") or {}
+        a, b = by_pid.get(from_pid), by_pid.get(to_pid)
+        if not a or not b or (_LEARN_SKIP.search(_norm_text(b.get("name") or "")) and not _LEARN_SKIP.search(_norm_text(a.get("name") or ""))):
+            return
+        await _learn_vote(db.learned_swaps, {"from": from_pid}, {"to": to_pid}, user)
+        rows = [(d["to"], d.get("score") or 0) async for d in db.learned_swaps.find({"from": from_pid}, {"_id": 0})]
+        c = _learned_choice(rows)
+        if c:
+            _learned["swaps"][from_pid] = c
+        else:
+            _learned["swaps"].pop(from_pid, None)
+        _forget_matches()
+    except Exception as e:
+        logger.warning("Leren van wissel mislukt: %r", e)
+
+
+_LEARN_SKIP = re.compile(r"vega|vegetari|plantaardig|vegan|veggie|glutenvrij|lactosevrij")
+
+
+async def _learn_from_dish(user: dict, old: list, new: list) -> None:
+    # In een gerecht een ander product gekozen bij hetzelfde ingrediënt (in dezelfde winkel): daar leren we van.
+    # Niet bij een vega- of dieetversie, dat is een eigen keuze en geen betere match
+    by_pid = _product_cache.get("by_pid") or {}
+    before: Dict[str, str] = {}
+    for i in old or []:
+        if i.get("product_id"):
+            before.setdefault(_norm_text(i.get("name") or ""), i["product_id"])
+    for i in new or []:
+        n = _norm_text(i.get("name") or "")
+        was, now = before.get(n), i.get("product_id")
+        if not n or not was or not now or was == now:
+            continue
+        a, b = by_pid.get(was), by_pid.get(now)
+        if not a or not b or a.get("_src") != b.get("_src"):
+            continue
+        if _LEARN_SKIP.search(_norm_text(b.get("name") or "")) and not _LEARN_SKIP.search(n):
+            continue
+        await _learn_pick(user, b["_src"], i["name"], now)
+
+
+def _forget_matches() -> None:
+    # Recepten opnieuw koppelen, zodat een geleerde keuze meteen overal zichtbaar is
+    for k in [k for k in _recipe_cache if isinstance(k, tuple) and k and k[0] == "match"]:
+        _recipe_cache.pop(k, None)
+
+
+def _learned_product(store: str, name: str = "", d: Optional[dict] = None) -> Optional[dict]:
+    # Wat gebruikers hier zelf kiezen; anders het gevonden product, of wat mensen daar steeds voor in de plaats nemen
+    by_pid = _product_cache.get("by_pid") or {}
+    pid = _learned["picks"].get(_learn_key(store, name)) if name else None
+    hit = by_pid.get(pid) if pid else None
+    if hit and (hit.get("_src") or product_source(hit)) == store:
+        d = hit
+    if d:
+        to = by_pid.get(_learned["swaps"].get(d.get("product_id") or "") or "")
+        if to and (to.get("_src") or product_source(to)) == (d.get("_src") or product_source(d)):
+            return to
+    return d
+
+
 def _cheapest_good(pool: list, name: str, store: str) -> Optional[dict]:
+    hit = _learned_product(store, name)
+    return hit or _learned_product(store, "", _cheapest_good_raw(pool, name, store))
+
+
+def _cheapest_good_raw(pool: list, name: str, store: str) -> Optional[dict]:
     # Het best passende product; zijn er een paar even goede, dan de voordeligste per kilo of liter
     hits = _best_matches(pool, name, 20, with_pen=True)
     if not hits:
@@ -6704,7 +6851,7 @@ def _cheapest_good(pool: list, name: str, store: str) -> Optional[dict]:
     return min(vals, key=lambda x: (x[0][0], x[1]))[2]
 
 
-_FORMS = ("poeder", "korrels", "vlokken", "stokjes", "stokje", "snippers", "blaadjes", "zaadjes", "gemalen")
+_FORMS = ("poeder", "korrels", "korrel", "draadjes", "vlokken", "stokjes", "stokje", "snippers", "blaadjes", "zaadjes", "gemalen")
 _NONFOOD = {"Huishoud & huisdieren", "Kind & drogisterij", "Non food"}
 _NONFOOD_RE = re.compile(r"drogist|huishoud|huisdier|baby|verzorging|cosmetica|non food|shampoo|douche|zeep|tandpasta|wasmiddel|afwas|"
                          r"deodorant|bodylotion|conditioner|wc |toilet|schoonmaak|kattenvoer|hondenvoer|luier|parfum|scheer|haar|navulling|douchegel|handzeep|"
@@ -6754,7 +6901,9 @@ def _penalty_ctx(words: tuple) -> dict:
                                or any(w.startswith(x) and len(w) <= len(x) + 3 for x in short))
         return v
     ends = tuple(e for x in procs if len(x) > 3 for e in (x, x + "s", x + "en", x + "jes"))
-    return {"related": related, "processed": processed, "sub_ends": ends}
+    # Zoek je een specerij (saffraan, nootmuskaat, peper)? Dan is de soort "Kruiden" juist goed
+    spice = any(_SPICE_RE.search(q) or q in ("peper", "zout") for q in words)
+    return {"related": related, "processed": processed, "sub_ends": ends, "spice": spice}
 
 
 _ODD_BREAD = (r"pita|naan|wrap|tortilla|stokbrood|ciabatta|bolletjes|afbak|toast|libanees|turks|pinsa|focaccia|"
@@ -6835,7 +6984,11 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
         pen += 5
     # Soort van de winkel: "Verkade Nizza kaneel" staat bij de theebiscuits, dat is geen kaneel
     # (maar "Brood en gebak" is gewoon de broodafdeling als je brood zoekt)
-    elif ctx["sub_ends"] and any(w.endswith(ctx["sub_ends"]) for w in subw) and not sub_same:
+    elif ctx["sub_ends"] and any(w.endswith(ctx["sub_ends"]) for w in subw) and not sub_same and not (
+            ctx["spice"] and any(re.search(r"kruid|specerij", w) for w in subw)):
+        pen += 3
+    # "saffraan" is geen saffraanrijst: bij specerijen is een samenstelling iets anders (behalve "kaneelstokjes", "peperkorrels")
+    if ctx["spice"] and hk is not None and nw[hk] != hq and nw[hk].startswith(hq) and nw[hk][len(hq):] not in _FORMS + ("s", "en", "heel"):
         pen += 3
     if nonfood:
         pen += 30
@@ -6873,7 +7026,7 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
         pen += 1.5
     # Kruiden- en mixmerken (Knorr, Euroma, Verstegen) alleen als je kruiden, een mix of saus zoekt: "Euroma pizza" is pizzakruiden
     if re.match(r"(knorr|euroma|verstegen|silvo|conimex|honig) ", d["_norm"]) and not any(
-            re.search(r"kruid|mix|saus|bouillon|soep|poeder|boemboe|specerij|peper|zout", q) for q in words):
+            re.search(r"kruid|mix|saus|bouillon|soep|poeder|boemboe|specerij|peper|zout", q) or _SPICE_RE.search(q) for q in words):
         pen += 5
     # Bakmix van Koopmans is geen brood
     if (brand_of(d) == "koopmans" or d["_norm"].startswith("koopmans ")) and not any(q in ("mix", "bakmix", "meel", "bloem") for q in words):
@@ -6890,6 +7043,11 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     return pen
 
 
+# Specerijen die je juist bij Verstegen of Euroma koopt: "saffraan" is gewoon Verstegen saffraan
+_SPICE_RE = re.compile(r"^(saffraan\w*|nootmuskaat|kaneel\w*|komijn\w*|kurkuma|kardemom\w*|kruidnagel\w*|foelie|piment|steranijs|anijs\w*|karwij\w*|"
+                       r"venkelzaad|korianderzaad|mosterdzaad|fenegriek|sumak|zaatar|garam|masala|kerrie\w*|curry\w*|cayenne\w*|"
+                       r"oregano|laurier\w*|marjolein|majoraan|bonenkruid|"
+                       r"knoflookpoeder|uienpoeder|gemberpoeder|vanille\w*|sesamzaad|maanzaad|jeneverbes\w*|ras|hanout|gedroogde?)$")
 _DRIED_BRANDS = {"verstegen", "euroma", "silvo", "jonnie boer", "santa maria"}
 _CANDY_BRANDS = {"red band", "haribo", "katja", "venco", "look o look", "autodrop", "klene", "lonka", "malaco", "tum tum", "fini"}
 
@@ -6968,6 +7126,10 @@ def _recipe_with_products(rec: dict, user: dict, matches: Optional[dict] = None)
         if doc is None and (matches or {}).get(i["name"]) is not None:
             doc = matches[i["name"]]
             p = {"store": doc["_src"]}
+        # Wat andere gebruikers hier zelf voor kozen gaat voor
+        learned = _learned_product((doc or {}).get("_src") or STORE_LABELS.get(rec.get("store")) or "", i.get("name") or "", doc)
+        if learned is not None and learned is not doc:
+            doc, p = learned, {"store": learned["_src"]}
         ings.append({**i, "pantry": pantry, "product": product_public(_clean(doc), p["store"], user["user_id"], favs) if doc else None})
     return {**rec, "ingredients": ings}
 
@@ -7121,6 +7283,9 @@ async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = Fal
         for k, pid in swaps.items():
             d = by_pid.get(pid)
             if d and str(k).isdigit() and int(k) < len(rec["ingredients"]):
+                was = (rec["ingredients"][int(k)].get("product") or {}).get("id")
+                if was and was != pid:
+                    asyncio.create_task(_learn_pick(user, d["_src"], rec["ingredients"][int(k)].get("name") or "", pid))
                 rec["ingredients"][int(k)] = {**rec["ingredients"][int(k)], "product": product_public(_clean(d), d["_src"], user["user_id"], favs)}
     if reuse and not swaps:
         # Al eerder overgenomen? Dan dat gerecht gebruiken (met jouw aanpassingen)
@@ -7360,6 +7525,7 @@ async def camp_compare_swap(camp_id: str, data: CompareSwap, user: dict = Depend
         if not await db.products.find_one({"product_id": data.product_id, "deleted_at": None}, {"_id": 1}):
             raise HTTPException(status_code=404, detail="Product niet gevonden")
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {field: data.product_id}})
+        asyncio.create_task(_learn_pick(user, data.store, data.name, data.product_id))
     else:
         await db.camps.update_one({"camp_id": camp_id}, {"$unset": {field: ""}})
     return {"ok": True}
