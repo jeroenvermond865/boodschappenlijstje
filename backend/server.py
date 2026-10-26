@@ -5163,17 +5163,21 @@ def _nice(s: str) -> str:
 
 
 async def _ah_schema_probe() -> None:
-    # Testsite: welke velden heeft een AH-recept? (zoeken naar de producten die AH zelf bij "Kies producten" kiest)
-    try:
-        q = """{r:__type(name:"Recipe"){fields{name args{name} type{name kind ofType{name kind ofType{name}}}}}
-          q:__schema{queryType{fields{name}}}}"""
-        d = await _ah_gql(q)
-        logger.info("AH-schema Recipe: %s", [(f["name"], (f["type"].get("name") or (f["type"].get("ofType") or {}).get("name")
-                                                        or ((f["type"].get("ofType") or {}).get("ofType") or {}).get("name"))) for f in (d.get("r") or {}).get("fields") or []])
-        logger.info("AH-schema queries: %s", [f["name"] for f in (d.get("q") or {}).get("queryType", {}).get("fields") or []
-                                              if re.search(r"recipe|shop|basket|list", f["name"], re.I)])
-    except Exception as e:
-        logger.warning("AH-schema: %r", e)
+    # Testsite: zoeken hoe AH de producten bij "Kies producten" doorgeeft (introspectie staat uit, dus velden proberen)
+    await asyncio.sleep(20)
+    rid = 1188190
+    tries = [f"{{recipe(id:{rid}){{ingredients{{name{{singular}} {f}}}}}}}" for f in
+             ("product{id title}", "products{id title}", "productId", "shoppableProducts{id}", "matchedProduct{id}", "productIds")]
+    tries += [f"{{recipe(id:{rid}){{id {f}}}}}" for f in ("products{id}", "shoppingList{id}", "recipeProducts{id}", "ingredientProducts{id}",
+                                                          "shoppableIngredients{id}", "basket{id}", "productSuggestions{id}")]
+    tries += [f"{{{f}}}" for f in (f"recipeProducts(recipeId:{rid}){{id}}", f"recipeShoppingList(id:{rid}){{id}}",
+                                   f"recipeIngredientProducts(recipeId:{rid}){{id}}", f"recipeProductSuggestions(recipeId:{rid}){{id}}")]
+    for q in tries:
+        try:
+            d = await _ah_gql(q)
+            logger.info("AH-probe OK %s -> %s", q, str(d)[:600])
+        except Exception as e:
+            logger.info("AH-probe fout %s -> %s", q, str(e)[:300])
 
 
 async def _ah_gql(query: str, variables: Optional[dict] = None) -> dict:
