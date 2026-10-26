@@ -2503,7 +2503,7 @@ def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set]
 # Productlijst in het geheugen, zodat niet bij elke aanvraag ~30.000 producten uit de database komen.
 # De server heeft weinig rekenkracht: verversen gebeurt op de achtergrond en ondertussen blijft
 # de vorige lijst gewoon werken.
-PRODUCT_CACHE_SECONDS = 1800
+PRODUCT_CACHE_SECONDS = 3 * 3600  # wijzigingen (prijsupdate, beheer) verversen de lijst toch al meteen
 _product_cache: dict = {"at": None, "docs": [], "stale": True, "task": None}
 _search_cache: dict = {}
 
@@ -2573,6 +2573,24 @@ async def _load_products() -> None:
                     {k: (len(v), v[:12]) for k, v in missing.items()})
     except Exception as e:
         logger.warning("Productlijst laden mislukt: %s", e)
+    asyncio.ensure_future(_warm_search())
+
+
+async def _warm_search() -> None:
+    # De Producten-pagina meteen snel: alle producten en elke afdeling alvast klaarzetten, per favoriete winkel
+    docs = _product_cache["docs"]
+    try:
+        await asyncio.to_thread(_aisle_images, docs)
+        for store in COUPLED_STORES:
+            for aisle in [""] + AISLES:
+                if _product_cache["docs"] is not docs:
+                    return  # er is intussen een nieuwe lijst
+                key = ("", store, aisle, "", "", "", False, False, "", None, None)
+                if key not in _search_cache:
+                    _search_cache[key] = await asyncio.to_thread(_run_search, docs, "", "", aisle, None, "", "", False, False, "", store)
+                await asyncio.sleep(0.2)
+    except Exception as e:
+        logger.info("Producten klaarzetten: %r", e)
 
 
 async def _global_products() -> list:
@@ -2803,9 +2821,10 @@ async def search_products(
            tuple(sorted(favs)) if favorites else None, user["user_id"] if own else None)
     hit = _search_cache.get(key)
     if hit is None:
-        hit = _run_search(own + (await _global_products()) if own else await _global_products(),
-                          q, source, aisle, favs if favorites else None, sub, brand, offer, bio, sort, store)
-        if len(_search_cache) > 60:
+        # In een aparte thread: zo blijft de rest van de app bereikbaar terwijl er gezocht wordt
+        hit = await asyncio.to_thread(_run_search, own + (await _global_products()) if own else await _global_products(),
+                                      q, source, aisle, favs if favorites else None, sub, brand, offer, bio, sort, store)
+        if len(_search_cache) > 150:
             _search_cache.pop(next(iter(_search_cache)))
         _search_cache[key] = hit
     docs, aisle_counts, facets = hit
@@ -5136,6 +5155,33 @@ _DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", 
 _STORE_WORDS = {"ah", "jumbo", "dirk", "1 de beste", "excellent", "biologisch"}
 
 
+@functools.lru_cache(maxsize=64)
+def _penalty_ctx(words: tuple) -> dict:
+    # Wat alleen van de zoekwoorden afhangt één keer uitrekenen, niet opnieuw voor elk product
+    qstems = {st for q in words for st in _stems(q)}
+    rel: dict = {}
+
+    def related(w):
+        v = rel.get(w)
+        if v is None:
+            v = rel[w] = any(w == q or w in _stems(q) or q in _stems(w) or q in w or (q.endswith("e") and w == q[:-1]) for q in words)
+        return v
+    procs = [x for x in _PROCESSED if not any(x in q for q in qstems)]
+    long_re = re.compile("|".join(re.escape(x) for x in procs if len(x) > 4) or r"(?!)")
+    short = [x for x in procs if len(x) <= 4]
+    short_set, short_t = set(short), tuple(short)
+    hits: dict = {}
+
+    def processed(w):
+        v = hits.get(w)
+        if v is None:
+            v = hits[w] = bool(w in short_set or (short_t and w.endswith(short_t)) or long_re.search(w)
+                               or any(w.startswith(x) and len(w) <= len(x) + 3 for x in short))
+        return v
+    ends = tuple(e for x in procs if len(x) > 3 for e in (x, x + "s", x + "en", x + "jes"))
+    return {"related": related, "processed": processed, "sub_ends": ends}
+
+
 def _food_penalty(d: dict, rank: int, words: list) -> float:
     # Een recept vraagt om eten: "citroen" is geen afwasmiddel, "aardbeien" geen snoep, "ui" liever uien dan bosui of gehakt met ui
     pre = d.get("_fp")
@@ -5153,10 +5199,8 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
         pre = (d["_norm"], words0, nonfood, _norm_text(d.get("subcategory") or "").split())
         d["_fp"] = pre
     _, nw, nonfood, subw = pre
-    qstems = {st for q in words for st in _stems(q)}
-
-    def related(w):
-        return any(w == q or w in _stems(q) or q in _stems(w) or q in w or (q.endswith("e") and w == q[:-1]) for q in words)
+    ctx = _penalty_ctx(tuple(words))
+    related, proc_hit = ctx["related"], ctx["processed"]
     # Positie telt alleen echte woorden ervoor: "Gele uien" is net zo goed uien als "Uien"
     nw = [w for w in nw if related(w) or w not in _FILLER and w not in _DESCRIPTORS] or nw
 
@@ -5200,14 +5244,12 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
         else:
             pen += 0.7
 
-    def processed(w, x):
-        return x in w if len(x) > 4 else (w == x or w.startswith(x) and len(w) <= len(x) + 3 or w.endswith(x))
     # Ook in samenstellingen: "pastasaus" is geen pasta, "appelsap" geen appel
     rests = [w if not related(w) else w.replace(words[-1], " ") for w in nw]
-    if any(processed(r, x) and not any(x in q for q in qstems) for rest in rests for r in rest.split() for x in _PROCESSED):
+    if any(proc_hit(r) for rest in rests for r in rest.split()):
         pen += 5
     # Soort van de winkel: "Verkade Nizza kaneel" staat bij de theebiscuits, dat is geen kaneel
-    elif any(w.endswith((x, x + "s", x + "en", x + "jes")) and not any(x in q for q in qstems) for w in subw for x in _PROCESSED if len(x) > 3):
+    elif ctx["sub_ends"] and any(w.endswith(ctx["sub_ends"]) for w in subw):
         pen += 3
     if nonfood:
         pen += 30
