@@ -6305,7 +6305,8 @@ _PREPS = {"zonder", "met", "in", "uit", "van", "voor", "op", "naar", "of", "en",
 
 
 # Andere namen in de winkel: "lasagnevel" heet daar lasagnebladen, parmezaan vaak Parmigiano
-_SYNONYMS = {"lasagnevel": ["lasagnebladen", "lasagne"], "lasagnevellen": ["lasagnebladen", "lasagne"], "maizena": ["maizena", "maiszetmeel", "bindmiddel"],
+_SYNONYMS = {"diepvriespizza": ["pizza", "pizza margherita"], "hutspotgroente": ["hutspot", "hutspotgroenten", "wortel ui"],
+             "hutspotgroenten": ["hutspot", "wortel ui"], "lasagnevel": ["lasagnebladen", "lasagne"], "lasagnevellen": ["lasagnebladen", "lasagne"], "maizena": ["maizena", "maiszetmeel", "bindmiddel"],
              "vanille extract": ["vanille extract", "vanillearoma", "vanille"], "vanilleextract": ["vanille extract", "vanillearoma", "vanille"],
              "parmezaanse kaas": ["parmigiano reggiano", "grana padano", "parmezaan"], "parmezaan": ["parmigiano reggiano", "grana padano"],
              "creme fraiche": ["creme fraiche", "zure room"], "zalmfilet": ["zalm"], "kipfilet": ["kipfilet", "kip"],
@@ -6372,7 +6373,7 @@ def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False)
 
 def _cheapest_good(pool: list, name: str, store: str) -> Optional[dict]:
     # Het best passende product; zijn er een paar even goede, dan de voordeligste per kilo of liter
-    hits = _best_matches(pool, name, 12, with_pen=True)
+    hits = _best_matches(pool, name, 20, with_pen=True)
     if not hits:
         return None
     top = hits[0][0]
@@ -6418,7 +6419,7 @@ _PROCESSED = ("koek", "cracker", "tapenade", "azijn", "saus", "chips", "spread",
               "olie", "skyr", "muffin", "viennetta", "feta", "marmelade", "jam", "confiture", "compote", "moes", "gelei", "chutney",
               "bonbons", "tompouce", "gebak", "bonbonniere",
               # Bakkerij: "roomboter croissants" is geen roomboter, "kaasbroodjes" geen kaas
-              "croissant", "broodje", "bolletje", "deeg", "brownie", "cookie", "donut", "flap", "gevuld", "saucijzen")
+              "croissant", "broodje", "bolletje", "deeg", "brownie", "cookie", "donut", "flap", "gevuld", "saucijzen", "knapper")
 # Woorden die alleen iets over het product zeggen ("citroenen verpakt", "kaas plakken")
 _DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", "plakjes", "blokjes", "reepjes", "schijfjes", "zwart", "wit",
                 "rood", "groen", "geel", "bio", "biologisch", "biologische", "naturel", "kruimig", "vastkokend", "s", "m", "l", "xl", "kanjers",
@@ -6544,7 +6545,14 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     # Speciale soorten alleen als je erom vraagt: glutenvrij, lactosevrij, voor kinderen
     if re.search(r"\b(glutenvrij|glutenvrije|lactosevrij|lactosevrije|suikervrij|suikervrije|kids|kinder\w*|baby\w*)\b", d["_norm"]) and not any(
             re.search(r"glutenvrij|lactosevrij|suikervrij|kids|kind|baby", q) for q in words):
-        pen += 2
+        pen += 4
+    # Kruidenkaas (Paturain, Boursin) is geen kruidenmix
+    if any(q.endswith("kruiden") for q in words) and re.search(r"\b(paturain|boursin|kaas)\b|kaas\b", d["_norm"]):
+        pen += 8
+    # Gewoon brood is geen pita, wrap of stokbrood (tenzij je daarom vraagt)
+    if words[-1] in ("brood", "boterhammen") and re.search(r"pita|naan|wrap|tortilla|stokbrood|ciabatta|bolletjes|afbak|toast|krentenbrood|suikerbrood", d["_norm"]) \
+            and not any(re.search(r"pita|naan|wrap|tortilla|stok|ciabatta|bolletje|afbak|toast|krent|suiker", q) for q in words):
+        pen += 4
     # Bakmix van Koopmans is geen brood
     if (brand_of(d) == "koopmans" or d["_norm"].startswith("koopmans ")) and not any(q in ("mix", "bakmix", "meel", "bloem") for q in words):
         pen += 6
