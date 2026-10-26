@@ -10840,6 +10840,19 @@ def _index_html() -> str:
     links = "".join(f'<link rel="preload" href="/{f.relative_to(WEB_DIR).as_posix()}" as="font" type="font/ttf" crossorigin>'
                     for f in WEB_DIR.glob("assets/**/MaterialDesignIcons*.ttf"))
     sw = '<script>if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("/sw.js"))</script>'
+    # Zolang de app laadt (bijv. na "Vernieuwen") een rustig laadscherm in de stijl van de app in plaats van een wit scherm;
+    # React vervangt het vanzelf zodra de app er is
+    splash = ('<div id="root"><div style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;'
+              'gap:18px;background:#2E5E38;color:#fff;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif">'
+              '<div style="width:72px;height:72px;border-radius:22px;background:#fff;display:flex;align-items:center;justify-content:center;'
+              'font-size:38px;animation:slimp 1.2s ease-in-out infinite">&#128722;</div>'
+              '<div style="font-size:17px;font-weight:700">Slim Boodschappenlijstje</div>'
+              '<div style="width:140px;height:4px;border-radius:2px;background:rgba(255,255,255,.25);overflow:hidden">'
+              '<div style="width:40%;height:4px;border-radius:2px;background:#D99C3B;animation:sliml 1.1s ease-in-out infinite"></div></div>'
+              '<style>@keyframes slimp{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}'
+              '@keyframes sliml{0%{transform:translateX(-110%)}100%{transform:translateX(260%)}}</style></div></div>')
+    if '<div id="root"></div>' in html:
+        html = html.replace('<div id="root"></div>', splash, 1)
     return html.replace("</head>", links + sw + "</head>", 1)
 
 

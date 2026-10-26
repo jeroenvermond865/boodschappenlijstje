@@ -1,7 +1,7 @@
 // Updates: als de server even herstart (bij een update) zie je een nette melding in plaats van foutmeldingen,
 // en op de website zie je wanneer er een nieuwe versie klaarstaat.
 import { useEffect, useRef, useState } from "react";
-import { AppState, Platform, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, AppState, Platform, Pressable, Text, View } from "react-native";
 
 import { Icon } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
@@ -21,6 +21,7 @@ export function UpdateNotices() {
   const { colors } = useTheme();
   const [isDown, setIsDown] = useState(down);
   const [newVersion, setNewVersion] = useState(false);
+  const [reloading, setReloading] = useState(false);
   const loaded = useRef<string | null>(null);
 
   useEffect(() => {
@@ -63,6 +64,22 @@ export function UpdateNotices() {
     };
   }, []);
 
+  // Vernieuwen: eerst de nieuwe versie op de achtergrond ophalen (pagina en code), met een laadscherm,
+  // dan pas herladen. Zo komt de app meteen terug in plaats van een tijd te blijven hangen.
+  const refresh = async () => {
+    if (typeof window === "undefined") return;
+    setReloading(true);
+    const go = () => window.location.reload();
+    const t = setTimeout(go, 8000); // lukt het ophalen niet snel, dan gewoon herladen
+    try {
+      const html = await (await fetch("/", { cache: "no-store" })).text();
+      const files = Array.from(html.matchAll(/(?:src|href)="(\/_expo\/static\/[^"]+)"/g)).map((m) => m[1]);
+      await Promise.all(files.map((f) => fetch(f).catch(() => null)));
+    } catch {}
+    clearTimeout(t);
+    go();
+  };
+
   if (isDown) {
     return (
       <View style={styles.overlay} pointerEvents="auto">
@@ -74,15 +91,22 @@ export function UpdateNotices() {
       </View>
     );
   }
+  if (reloading) {
+    return (
+      <View style={[styles.overlay, { backgroundColor: colors.brandPrimary, gap: 14 }]} pointerEvents="auto">
+        <Icon name="cart-outline" size={48} color={colors.onBrandPrimary} />
+        <Text style={[styles.title, { color: colors.onBrandPrimary }]}>Nieuwe versie laden…</Text>
+        <ActivityIndicator color={colors.onBrandPrimary} />
+      </View>
+    );
+  }
   if (newVersion) {
     return (
       <View style={styles.bar}>
         <Icon name="star-four-points-outline" size={18} color={colors.onBrandPrimary} />
         <Text style={styles.barText}>Er is een nieuwe versie van de app.</Text>
         <Pressable
-          onPress={() => {
-            if (typeof window !== "undefined") window.location.reload();
-          }}
+          onPress={refresh}
           style={styles.barBtn}
         >
           <Text style={styles.barBtnText}>Vernieuwen</Text>
