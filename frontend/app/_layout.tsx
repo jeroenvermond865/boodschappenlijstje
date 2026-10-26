@@ -70,6 +70,7 @@ function Gate() {
       <Stack.Screen name="premium" />
       <Stack.Screen name="pantry" />
       <Stack.Screen name="alerts" />
+      <Stack.Screen name="invite" />
       <Stack.Screen name="savings" />
       <Stack.Screen name="store-request" options={{ presentation: "modal" }} />
       <Stack.Screen name="product/[id]" />

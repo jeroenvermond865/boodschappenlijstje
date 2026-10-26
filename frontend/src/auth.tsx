@@ -10,6 +10,7 @@ import { cachedApi, clearOffline } from "@/src/offline";
 WebBrowser.maybeCompleteAuthSession();
 
 const TOKEN_KEY = "scoutkook_token";
+const REF_KEY = "ref_code";
 
 export type User = {
   id: string;
@@ -28,6 +29,7 @@ export type User = {
   premium?: boolean;
   premium_welcome?: boolean;
   premium_org?: string | null;
+  premium_until?: string | null;
 };
 type Status = "loading" | "authed" | "guest";
 
@@ -85,6 +87,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     },
     [persist],
   );
+
+  // Via iemands deel-link binnengekomen (?ref=CODE): onthouden, en na het inloggen doorgeven
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const ref = url.searchParams.get("ref");
+    if (!ref) return;
+    storage.setItem(REF_KEY, ref.slice(0, 12));
+    url.searchParams.delete("ref");
+    window.history.replaceState(window.history.state, "", url.toString());
+  }, []);
+  useEffect(() => {
+    if (status !== "authed") return;
+    (async () => {
+      const ref = await storage.getItem<string | null>(REF_KEY, null);
+      if (!ref) return;
+      await api("/referral/claim", { method: "POST", body: { code: ref } }).catch(() => {});
+      await storage.removeItem(REF_KEY);
+    })();
+  }, [status]);
 
   useEffect(() => {
     (async () => {

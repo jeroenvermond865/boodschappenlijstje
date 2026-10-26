@@ -221,6 +221,7 @@ def public_user(doc: dict) -> dict:
         "premium": bool(doc.get("premium")),
         "premium_welcome": bool(doc.get("premium") and doc.get("premium_welcome")),
         "premium_org": doc.get("premium_org") if doc.get("premium") else None,
+        "premium_until": doc.get("premium_until").isoformat() if doc.get("premium") and doc.get("premium_until") else None,
     }
 
 
@@ -386,6 +387,8 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
     if not user or user.get("deleted_at"):
         raise HTTPException(status_code=401, detail="Gebruiker niet gevonden")
+    if user.get("premium") and user.get("premium_until") and ensure_aware(user["premium_until"]) < now_utc():
+        user = await _premium_expired(user)
     seen = user.get("last_seen_at")
     if not seen or ensure_aware(seen) < now_utc() - timedelta(hours=12):
         await _mark_seen(user["user_id"])
@@ -2330,7 +2333,13 @@ async def _set_premium(target: dict, premium: bool, by_user_id: str, org: Option
     }
     if org:
         update["premium_org"] = org
-    await db.users.update_one({"user_id": target["user_id"]}, {"$set": update})
+    # Door de beheerder aan of uit gezet: geen einddatum (meer) van een verdiende maand
+    await db.users.update_one({"user_id": target["user_id"]}, {"$set": update, "$unset": {"premium_until": ""}})
+    if newly and not org and target.get("referred_by") and not target.get("referral_rewarded"):
+        asyncio.ensure_future(_referral_reward(target))
+    if not premium and target.get("premium_bank", 0) > 0:
+        # Eigen Premium gestopt, maar nog verdiende maanden op het tegoed: die gaan nu in
+        await db.users.update_one({"user_id": target["user_id"]}, {"$set": {"premium": True, "premium_until": now_utc() + timedelta(days=30)}, "$inc": {"premium_bank": -1}})
     if not premium:
         await db.premium_requests.update_many({"user_id": target["user_id"], "status": "approved"}, {"$set": {"status": "ended"}})
     if newly and target.get("email"):
@@ -2346,6 +2355,106 @@ async def _set_premium(target: dict, premium: bool, by_user_id: str, org: Option
             '</td></tr></table>'
         )
         asyncio.create_task(send_email(target["email"], "Je bent nu Premium bij Slim Boodschappenlijstje", html, allow_unsubscribe=False))
+
+
+# ---------------------------------------------------------------------------
+# Delen en Premium verdienen: wie via jouw link komt en Premium neemt, levert jou een maand Premium op.
+# Net als bij Dropbox/Bol-achtige "vriend werft vriend": beloning pas bij een echte aankoop, niet bij aanmelden
+# (anders maak je met nep-accounts gratis Premium). Maximaal 12 maanden per persoon.
+# ---------------------------------------------------------------------------
+REFERRAL_MAX_MONTHS = 12
+REFERRAL_CLAIM_DAYS = 14  # een code kun je tot twee weken na het aanmelden nog invullen
+_REF_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+async def _ref_code(user: dict) -> str:
+    if user.get("ref_code"):
+        return user["ref_code"]
+    for _ in range(20):
+        code = "".join(secrets.choice(_REF_ALPHABET) for _ in range(6))
+        if not await db.users.find_one({"ref_code": code}, {"_id": 1}):
+            await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"ref_code": code}})
+            return code
+    raise HTTPException(status_code=500, detail="Kon geen code maken, probeer het nog eens")
+
+
+async def _premium_expired(user: dict) -> dict:
+    # Verdiende maand voorbij: nog tegoed? Dan de volgende maand, anders weer gewoon account
+    if user.get("premium_bank", 0) > 0:
+        until = ensure_aware(user["premium_until"]) + timedelta(days=30)
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"premium_until": until}, "$inc": {"premium_bank": -1}})
+        return {**user, "premium_until": until, "premium_bank": user["premium_bank"] - 1}
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"premium": False}, "$unset": {"premium_until": ""}})
+    return {**user, "premium": False, "premium_until": None}
+
+
+async def _referral_reward(friend: dict):
+    try:
+        res = await db.users.update_one({"user_id": friend["user_id"], "referral_rewarded": {"$ne": True}}, {"$set": {"referral_rewarded": True, "referral_rewarded_at": now_utc()}})
+        if not res.modified_count:
+            return
+        ref = await db.users.find_one({"user_id": friend["referred_by"], "deleted_at": None}, {"_id": 0})
+        if not ref or ref.get("referral_months", 0) >= REFERRAL_MAX_MONTHS:
+            return
+        inc = {"referral_months": 1}
+        if ref.get("premium") and not ref.get("premium_until"):
+            # Al Premium (zonder einddatum): de maand komt op je tegoed
+            inc["premium_bank"] = 1
+            await db.users.update_one({"user_id": ref["user_id"]}, {"$inc": inc})
+            what = "De maand staat op je tegoed: die gaat in zodra je eigen Premium stopt."
+        else:
+            start = ensure_aware(ref["premium_until"]) if ref.get("premium") and ref.get("premium_until") else now_utc()
+            until = max(start, now_utc()) + timedelta(days=30)
+            await db.users.update_one({"user_id": ref["user_id"]}, {"$set": {"premium": True, "premium_until": until, "premium_welcome": not ref.get("premium")}, "$inc": inc})
+            what = f"Je hebt nu Premium tot en met {until.strftime('%-d-%-m-%Y')}."
+        if ref.get("email"):
+            base = (FRONTEND_URL or "").rstrip("/")
+            html = (
+                '<table role="presentation" width="100%"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#1C1B1A">'
+                '<h2 style="color:#B07A1E;margin:0 0 12px">&#127873; Je hebt een maand Premium verdiend!</h2>'
+                f'<p>Hoi {escape(ref.get("name") or "")},</p>'
+                f'<p>{escape((friend.get("name") or "Iemand").split(" ")[0])} kwam via jouw link en heeft nu Premium. Bedankt voor het delen! {escape(what)}</p>'
+                + (f'<p><a href="{escape(base)}/invite" style="display:inline-block;background:#2E5E38;color:#fff;padding:12px 20px;'
+                   f'border-radius:10px;text-decoration:none;font-weight:bold">Deel nog een keer</a></p>' if base else "")
+                + '<p style="font-size:12px;color:#888">Verstuurd door Slim Boodschappenlijstje.</p>'
+                '</td></tr></table>'
+            )
+            await send_email(ref["email"], "Je hebt een maand Premium verdiend", html, allow_unsubscribe=False)
+    except Exception as e:
+        logger.warning("Delen-beloning: %r", e)
+
+
+@api_router.get("/referral")
+async def my_referral(user: dict = Depends(get_current_user)):
+    code = await _ref_code(user)
+    base = (FRONTEND_URL or "").rstrip("/")
+    invited = await db.users.count_documents({"referred_by": user["user_id"], "deleted_at": None})
+    rewarded = await db.users.count_documents({"referred_by": user["user_id"], "referral_rewarded": True})
+    created = ensure_aware(user.get("created_at") or now_utc())
+    can_claim = not user.get("referred_by") and created > now_utc() - timedelta(days=REFERRAL_CLAIM_DAYS)
+    return {"code": code, "link": f"{base}/?ref={code}" if base else None, "invited": invited, "rewarded": rewarded,
+            "months": user.get("referral_months", 0), "max_months": REFERRAL_MAX_MONTHS, "bank": user.get("premium_bank", 0),
+            "referred": bool(user.get("referred_by")), "can_claim": can_claim}
+
+
+class ReferralClaimInput(BaseModel):
+    code: str
+
+
+@api_router.post("/referral/claim")
+async def claim_referral(data: ReferralClaimInput, request: Request, user: dict = Depends(get_current_user)):
+    # Aangemeld via iemands link (of de code zelf ingevuld): onthouden wie je heeft uitgenodigd
+    limit(f"refclaim:{user['user_id']}", 10, 3600)
+    code = re.sub(r"[^A-Z0-9]", "", (data.code or "").upper())
+    if user.get("referred_by"):
+        return {"ok": False, "detail": "Je bent al uitgenodigd door iemand"}
+    if ensure_aware(user.get("created_at") or now_utc()) < now_utc() - timedelta(days=REFERRAL_CLAIM_DAYS):
+        return {"ok": False, "detail": "Een code kun je alleen in de eerste twee weken na het aanmelden invullen"}
+    ref = await db.users.find_one({"ref_code": code, "deleted_at": None}, {"_id": 0, "user_id": 1, "name": 1})
+    if not ref or ref["user_id"] == user["user_id"]:
+        raise HTTPException(status_code=400, detail="Deze code klopt niet")
+    await db.users.update_one({"user_id": user["user_id"], "referred_by": {"$exists": False}}, {"$set": {"referred_by": ref["user_id"], "referred_at": now_utc()}})
+    return {"ok": True, "by": (ref.get("name") or "").split(" ")[0]}
 
 
 class PremiumRequestInput(BaseModel):
@@ -8451,6 +8560,7 @@ async def startup():
         logger.warning("Object storage init failed: %s", e)
     await db.users.create_index("email", unique=True)
     await db.users.create_index("user_id", unique=True)
+    await db.users.create_index("ref_code", sparse=True)
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)

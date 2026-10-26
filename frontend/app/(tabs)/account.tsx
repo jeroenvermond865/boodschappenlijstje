@@ -116,7 +116,11 @@ export default function AccountScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.premiumTitle}>Premium</Text>
               <Text style={styles.premiumText}>
-                {user.premium_org ? `Via ${user.premium_org}. ` : "Bedankt voor je steun! "}Bekijk wat je allemaal extra hebt.
+                {user.premium_org
+                  ? `Via ${user.premium_org}. `
+                  : user.premium_until
+                    ? `Verdiend met delen, tot ${new Date(user.premium_until).toLocaleDateString("nl-NL", { day: "numeric", month: "long" })}. `
+                    : "Bedankt voor je steun! "}Bekijk wat je allemaal extra hebt.
               </Text>
             </View>
             <Icon name="chevron-right" size={22} color="#7A5212" />
@@ -134,6 +138,12 @@ export default function AccountScreen() {
           </Pressable>
         )}
 
+        <AdminRow
+          testID="invite-link"
+          icon="gift-outline"
+          label="Deel de app en verdien Premium"
+          onPress={() => router.push("/invite")}
+        />
         <AdminRow
           testID="profile-link"
           icon="account-edit-outline"
