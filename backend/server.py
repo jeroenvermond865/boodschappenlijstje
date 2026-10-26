@@ -853,6 +853,7 @@ async def _erase_user(user: dict) -> None:
     await db.premium_requests.delete_many({"user_id": uid})
     await db.pantry.delete_many({"user_id": uid})
     await db.price_alerts.delete_many({"user_id": uid})
+    await db.auto_alert_marks.delete_many({"user_id": uid})
     if user.get("email"):
         for coll in (db.email_prefs, db.password_resets, db.invitations):
             await coll.delete_many({"email": user["email"]})
@@ -7310,10 +7311,55 @@ def _alert_public(alert: dict, prod: Optional[dict]) -> dict:
 async def list_price_alerts(user: dict = Depends(get_current_user)):
     await require_premium(user)
     alerts = await db.price_alerts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
-    prods = {p["product_id"]: p async for p in db.products.find(_live({"product_id": {"$in": [a["product_id"] for a in alerts]}}), {"_id": 0})}
+    own = {a["product_id"] for a in alerts}
+    auto_on = user.get("auto_alerts", True)
+    freq = [pid for pid in await _frequent_products(user["user_id"]) if pid not in own] if auto_on else []
+    prods = {p["product_id"]: p async for p in db.products.find(_live({"product_id": {"$in": list(own) + freq}}), {"_id": 0})}
     out = [_alert_public(a, prods.get(a["product_id"])) for a in alerts]
     out.sort(key=lambda x: not x["hit"])
-    return {"alerts": out}
+    # Vaak gekocht: automatisch in de gaten gehouden, zonder dat je zelf een alarm hoeft te zetten
+    auto = [_alert_public({"product_id": pid, "on_promo": True}, prods[pid]) for pid in freq if pid in prods]
+    auto.sort(key=lambda x: not x["hit"])
+    return {"alerts": out, "auto": auto, "auto_on": auto_on}
+
+
+class AutoAlertsInput(BaseModel):
+    on: bool
+
+
+@api_router.put("/price-alerts/auto")
+async def set_auto_alerts(data: AutoAlertsInput, user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"auto_alerts": data.on}})
+    return {"auto_on": data.on}
+
+
+AUTO_ALERT_DAYS = 120
+AUTO_ALERT_MAX = 40
+
+
+async def _frequent_products(uid: str) -> list:
+    # Producten die je vaak koopt: in minstens twee van je lijstjes van de laatste maanden (gerechten en losse producten)
+    since = (now_utc() - timedelta(days=AUTO_ALERT_DAYS)).isoformat()
+    recent = {"$or": [{"start_date": {"$gte": since[:10]}}, {"created_at": {"$gte": now_utc() - timedelta(days=AUTO_ALERT_DAYS)}}]}
+    camps = await db.camps.find({"$and": [camp_access_filter(uid), recent]},
+                                {"_id": 0, "days": 1, "general": 1}).to_list(100)
+    if not camps:
+        return []
+    dish_ids = {did for c in camps for d in c.get("days") or [] for ids in (d.get("meals") or {}).values() for did in ids}
+    dishes = {d["dish_id"]: d async for d in db.dishes.find({"dish_id": {"$in": list(dish_ids)}}, {"_id": 0, "dish_id": 1, "ingredients": 1})}
+    counts: Dict[str, int] = {}
+    for c in camps:
+        pids = set()
+        for d in c.get("days") or []:
+            for ids in (d.get("meals") or {}).values():
+                for did in ids:
+                    pids |= {i["product_id"] for i in (dishes.get(did) or {}).get("ingredients") or [] if i.get("product_id")}
+            pids |= {e["product_id"] for e in d.get("extras") or [] if e.get("product_id")}
+        pids |= {e["product_id"] for e in c.get("general") or [] if e.get("product_id")}
+        for pid in pids:
+            counts[pid] = counts.get(pid, 0) + 1
+    return [pid for pid, n in sorted(counts.items(), key=lambda kv: -kv[1]) if n >= 2][:AUTO_ALERT_MAX]
 
 
 @api_router.get("/products/{product_id}/price-alert")
@@ -7353,9 +7399,7 @@ async def _check_price_alerts() -> int:
     # Na de prijsronde: per gebruiker één mail met alles wat nu raak is (en nog niet gemeld)
     by_user: Dict[str, list] = {}
     alerts = await db.price_alerts.find({}, {"_id": 0}).to_list(None)
-    if not alerts:
-        return 0
-    prods = {p["product_id"]: p async for p in db.products.find(_live({"product_id": {"$in": list({a["product_id"] for a in alerts})}}), {"_id": 0})}
+    prods = {p["product_id"]: p async for p in db.products.find(_live({"product_id": {"$in": list({a["product_id"] for a in alerts})}}), {"_id": 0})} if alerts else {}
     for a in alerts:
         prod = prods.get(a["product_id"])
         st = _alert_state(a, prod)
@@ -7368,6 +7412,24 @@ async def _check_price_alerts() -> int:
             continue
         await db.price_alerts.update_one(q, {"$set": {"notified_mark": st["mark"], "hit_at": now_utc()}})
         by_user.setdefault(a["user_id"], []).append((prod, st))
+    # Automatisch: wat Premium-gebruikers vaak kopen en nu in de aanbieding is (één keer per aanbieding melden)
+    async for u in db.users.find({"premium": True, "deleted_at": None, "auto_alerts": {"$ne": False}}, {"_id": 0, "user_id": 1}):
+        uid = u["user_id"]
+        try:
+            own = {a["product_id"] for a in alerts if a["user_id"] == uid}
+            freq = [pid for pid in await _frequent_products(uid) if pid not in own]
+            if not freq:
+                continue
+            marks = {m["product_id"]: m.get("mark") async for m in db.auto_alert_marks.find({"user_id": uid}, {"_id": 0})}
+            async for prod in db.products.find(_live({"product_id": {"$in": freq}}), {"_id": 0}):
+                st = _alert_state({"on_promo": True}, prod)
+                pid = prod["product_id"]
+                if not st["hit"] or marks.get(pid) == st["mark"]:
+                    continue
+                await db.auto_alert_marks.update_one({"user_id": uid, "product_id": pid}, {"$set": {"mark": st["mark"], "at": now_utc()}}, upsert=True)
+                by_user.setdefault(uid, []).append((prod, st))
+        except Exception as e:
+            logger.info("Automatisch prijsalarm %s: %r", uid, e)
     base = (FRONTEND_URL or "").rstrip("/")
     sent = 0
     for uid, hits in by_user.items():
@@ -7385,7 +7447,8 @@ async def _check_price_alerts() -> int:
         html = (
             '<div style="font-family:Arial,sans-serif;color:#1C1B1A">'
             f'<h2 style="color:#2E5E38;margin:0 0 12px">&#128276; Prijsalarm</h2>'
-            f'<p>Hoi {escape((u.get("name") or "").split(" ")[0])}, deze producten zijn nu in de aanbieding of onder jouw prijs:</p>'
+            f'<p>Hoi {escape((u.get("name") or "").split(" ")[0])}, deze producten zijn nu in de aanbieding of onder jouw prijs '
+            f'(ook producten die je vaak koopt):</p>'
             f'<table style="width:100%;border-collapse:collapse;font-size:14px">{rows}</table>'
             + (f'<p><a href="{escape(base)}/alerts" style="display:inline-block;background:#2E5E38;color:#fff;padding:12px 20px;'
                f'border-radius:10px;text-decoration:none;font-weight:bold">Bekijk je prijsalarmen</a></p>' if base else "")
