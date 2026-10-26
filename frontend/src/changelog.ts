@@ -5,6 +5,17 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-26-t",
+    date: "26 oktober 2026",
+    title: "Voorraadkast opnieuw ingedeeld",
+    changes: [
+      { kind: "beter", text: "Voorraadkast: zoeken staat bovenaan en filtert meteen ook je eigen voorraad. De voorstellen zijn ingeklapt." },
+      { kind: "beter", text: "Je voorraad staat nu per afdeling en soort, net als bij Alle producten, met een filter (bijv. alleen wat bijna op is)." },
+      { kind: "nieuw", text: "Per product stel je in hoe vol het nu is en hoeveel er af gaat (procent, stuks of gram) per dag, week, maand of een eigen aantal dagen. Het algemene standaardverbruik is weg." },
+      { kind: "opgelost", text: "Vergelijken met andere winkels kiest minder vaak iets heel anders (zoals tonic voor suiker of soep voor kikkererwten)." },
+    ],
+  },
+  {
     id: "2026-10-26-s",
     date: "26 oktober 2026",
     title: "Dag-menu en rustiger budget",

@@ -2562,8 +2562,28 @@ PANTRY_WEEKLY_USE = 10  # standaard: elke week gaat er 10% van je voorraad af (o
 
 
 def _pantry_rate(user: Optional[dict]) -> float:
+    # Geen standaardverbruik meer (sinds 26-10-2026): je stelt per product zelf in hoeveel er per periode af gaat
+    return 0.0
+
+
+def _old_pantry_rate(user: Optional[dict]) -> float:
     v = (user or {}).get("pantry_weekly_use")
     return max(0.0, min(100.0, float(PANTRY_WEEKLY_USE if v is None else v))) / 100
+
+
+async def _pantry_freeze_rate() -> None:
+    # Eenmalig: wat het oude standaardverbruik er al af had gehaald vastleggen, zodat niemands voorraad ineens weer voller lijkt
+    if await db.meta.find_one({"key": "pantry_rate_off"}):
+        return
+    rates: Dict[str, float] = {}
+    async for p in db.pantry.find({"weekly": None}, {"_id": 0}):
+        uid = p.get("user_id")
+        if uid not in rates:
+            rates[uid] = _old_pantry_rate(await db.users.find_one({"user_id": uid}, {"_id": 0, "pantry_weekly_use": 1}))
+        if rates[uid]:
+            await db.pantry.update_one({"item_id": p["item_id"]}, {"$set": {"qty": round(_pantry_now(p, rates[uid]), 2), "updated_at": now_utc()}})
+    await db.meta.insert_one({"key": "pantry_rate_off", "at": now_utc(), "users": len(rates)})
+    logger.info("Voorraadkast: standaardverbruik uitgezet, %d gebruikers vastgelegd", len(rates))
 
 
 def _weeks_since(at) -> float:
@@ -2663,6 +2683,8 @@ class PantryInput(BaseModel):
     unit: str = "stuks"
     product_id: Optional[str] = None
     weekly: Optional[float] = None  # eigen verbruik per week, in dezelfde eenheid (8 eieren, 100% voor een krop sla)
+    use_amount: Optional[float] = None  # of: zoveel (in dezelfde eenheid of %) ...
+    use_days: Optional[float] = None  # ... per zoveel dagen (1 = per dag, 7 = per week, 30 = per maand)
     for_dishes: bool = True  # telt mee voor je gerechten (anders kopen we voor gerechten gewoon alles)
 
 
@@ -2801,6 +2823,23 @@ async def add_pantry_bulk(data: PantryBulk, user: dict = Depends(get_current_use
     return {"added": len(docs)}
 
 
+# Groepen van de voorstellen -> afdeling zoals bij Alle producten (de groep blijft de soort binnen de afdeling)
+_STAPLE_AISLE = {"Bakken": "Voorraadkast", "Kruiden en smaakmakers": "Voorraadkast", "Olie, azijn en sauzen": "Voorraadkast",
+                 "Pasta, rijst en blik": "Voorraadkast", "Sauzen en erbij": "Voorraadkast", "Drinken": "Dranken, sap, koffie & thee",
+                 "Huishouden": "Huishoud & huisdieren", "Ontbijt en beleg": "Brood, beleg & koek", "Snoep en snacks": "Snacks & snoep",
+                 "Verzorging": "Kind & drogisterij"}
+
+
+def _pantry_aisle(p: dict, prod: Optional[dict]) -> tuple:
+    # (afdeling, soort) zoals op de pagina Alle producten
+    if prod and prod.get("aisle"):
+        return prod["aisle"], prod.get("subcategory") or ""
+    g = _pantry_group(p, None)
+    if g in _STAPLE_AISLE:
+        return _STAPLE_AISLE[g], g
+    return "Overig", ""
+
+
 def _pantry_group(p: dict, prod: Optional[dict]) -> str:
     # Voor het overzicht: de groep uit de voorstellen, anders de afdeling van het product
     g = _STAPLE_GROUP.get((p.get("name") or "").lower())
@@ -2835,6 +2874,8 @@ def _pantry_public(p: dict, rate: float = 0) -> dict:
     return {"id": p["item_id"], "name": p["name"], "qty": round(left, 0 if p.get("unit") == "%" else 2), "unit": p.get("unit") or "stuks",
             "learned": bool(p.get("learned")), "updated_at": p.get("updated_at"), "weekly": p.get("weekly"),
             "for_dishes": p.get("for_dishes") is not False, "group": _pantry_group(p, prod), "restock": buy,
+            "aisle": _pantry_aisle(p, prod)[0], "sub": _pantry_aisle(p, prod)[1],
+            "use_amount": p.get("use_amount") if p.get("use_amount") else p.get("weekly"), "use_days": p.get("use_days") or (7 if p.get("weekly") else None),
             "product_id": p.get("product_id"), "product_name": prod["name"] if prod else None, "image": prod.get("image") if prod else None,
             "price": resolve_price(prod.get("prices") or {}, prod.get("_src") or DEFAULT_STORE, prod.get("unavailable") or []) if prod else None}
 
@@ -2844,11 +2885,7 @@ async def list_pantry(user: dict = Depends(get_current_user)):
     await require_premium(user)
     items = await db.pantry.find({"user_id": user["user_id"]}, {"_id": 0}).sort("name_l", 1).to_list(1000)
     rate = _pantry_rate(user)
-    return {"items": [_pantry_public(p, rate) for p in items], "weekly_use": round(rate * 100)}
-
-
-class PantrySettings(BaseModel):
-    weekly_use: float = PANTRY_WEEKLY_USE
+    return {"items": [_pantry_public(p, rate) for p in items]}
 
 
 @api_router.get("/pantry/restock")
@@ -2902,25 +2939,21 @@ async def camp_restock(camp_id: str, data: RestockInput, user: dict = Depends(ge
     return {"added": len(added)}
 
 
-@api_router.put("/pantry/settings")
-async def pantry_settings(data: PantrySettings, user: dict = Depends(get_current_user)):
-    await require_premium(user)
-    v = max(0.0, min(100.0, float(data.weekly_use)))
-    # Eerst de voorraad van nu vastleggen, dan geldt het nieuwe verbruik vanaf vandaag
-    rate = _pantry_rate(user)
-    async for p in db.pantry.find({"user_id": user["user_id"]}, {"_id": 0}):
-        await db.pantry.update_one({"item_id": p["item_id"]}, {"$set": {"qty": round(_pantry_now(p, rate), 2), "updated_at": now_utc()}})
-    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"pantry_weekly_use": v}})
-    return {"weekly_use": v}
-
-
 def _pantry_clean(data: PantryInput) -> dict:
     name = (data.name or "").strip()[:80]
     if not name:
         raise HTTPException(status_code=400, detail="Vul een productnaam in")
     qty = max(0.0, min(float(data.qty or 0), 100000))
+    weekly = data.weekly
+    use_amount = use_days = None
+    if data.use_amount and data.use_days:
+        # Eigen verbruik per zelf gekozen periode; intern rekenen we per week
+        use_amount = round(max(0.0, min(float(data.use_amount), 100000)), 2)
+        use_days = round(max(1.0, min(float(data.use_days), 365)), 1)
+        weekly = use_amount * 7 / use_days
     out = {"name": name, "name_l": name.lower(), "qty": round(qty, 2), "unit": (data.unit or "stuks").strip()[:20], "updated_at": now_utc(),
-           "weekly": round(max(0.0, min(float(data.weekly), 100000)), 2) if data.weekly is not None else None, "for_dishes": bool(data.for_dishes)}
+           "weekly": round(max(0.0, min(float(weekly), 100000)), 3) if weekly else None, "use_amount": use_amount, "use_days": use_days,
+           "for_dishes": bool(data.for_dishes)}
     if data.product_id:
         out["product_id"] = data.product_id[:60]
     return out
@@ -7567,7 +7600,8 @@ def _compare_hit_raw(st: str, cands: list, by_ean: dict, name: str, base: Option
         good = [d for d in hits if _same_kind(base, d)] or [d for d in hits[:3] if _same_kind(base, d, strict=False)]
         same_aisle = [d for d in good if d.get("aisle") == base.get("aisle")]
         if not same_aisle and base.get("aisle"):
-            other_aisle, good = good, []  # uit een andere afdeling: pas als laatste (sinaasappels zijn geen pepermunt)
+            # uit een andere afdeling: pas als laatste, en alleen als het echt hetzelfde is (sinaasappels zijn geen pepermunt, suiker geen tonic)
+            other_aisle, good = [d for d in good if _same_kind(base, d)], []
         hits = same_aisle or good
     if hits:
         return hits[0], True
@@ -7582,7 +7616,8 @@ def _compare_hit_raw(st: str, cands: list, by_ean: dict, name: str, base: Option
         return other_aisle[0], True
     # 3. Op de naam van het ingrediënt zelf (niet het product), in de hele winkel: "melk" vindt altijd wel melk
     if base and _norm_text(name) != _norm_text(terms):
-        hits = [d for d in _best_matches(cands, name, 3) if _same_kind(base, d, strict=False) or d.get("aisle") == base.get("aisle")]
+        hits = [d for d in _best_matches(cands, name, 3) if _same_kind(base, d, strict=False) or
+                (d.get("aisle") == base.get("aisle") and _same_kind({"name": name}, d, strict=False))]
         if hits:
             return hits[0], True
     return None, False
@@ -8327,7 +8362,9 @@ async def product_alternatives(name: str = "", product_id: str = "", user: dict 
 
 _SOFT_WORDS = {"fijn", "grof", "ongebrand", "gebrand", "geroosterd", "plantaardig", "plantaardige", "kids", "ongezoet", "gezoet", "minis",
                "mini", "naturel", "original", "origineel", "classic", "klassiek", "bolletjes", "stand", "gekookt", "verpakt", "los", "heel",
-               "stuks", "stuk", "zout", "azijn", "tomatensaus", "saus", "biologisch", "biologische", "ongezouten", "gezouten", "met"}
+               "stuks", "stuk", "zout", "azijn", "tomatensaus", "saus", "biologisch", "biologische", "ongezouten", "gezouten", "met",
+               "vet", "romig", "romige", "fris", "frisse", "mild", "milde", "pittig", "pittige", "personen", "eetrijp", "friszoet", "sappig",
+               "tablet", "vloeibaar", "groente", "originele", "rosso", "verde", "bianco", "premium", "bosje", "kleinverpakking", "grootverpakking"}
 
 
 def _same_kind(base: dict, cand: dict, strict: bool = True) -> bool:
@@ -8348,9 +8385,14 @@ def _same_kind(base: dict, cand: dict, strict: bool = True) -> bool:
     if not bw or not cw:
         return False
     # Het hoofdwoord is het laatste échte woord: bij "havermout fijn" is dat havermout, niet "fijn"
-    # (anders is "zeezout fijn" ineens hetzelfde als havermout)
-    head = next((w for w in reversed(bw) if w not in _DESCRIPTORS and w not in _FILLER and w not in _SOFT_WORDS), bw[-1])
+    # (anders is "zeezout fijn" ineens hetzelfde als havermout, of "mosterd grof gemalen" komijn)
+    def head_of(ws):
+        return next((w for w in reversed(ws) if w not in _DESCRIPTORS and w not in _FILLER and w not in _SOFT_WORDS and w not in _FORMS), ws[-1])
+    head = head_of(bw)
     if not any(same(c, head) for c in cw):
+        return False
+    # Het andere product moet zelf ook dat soort zijn: "kikkererwten tomatensoep" is soep, "linzen penne" is pasta
+    if not same(stem(head_of([stem(w) for w in cw])), head):
         return False
     if not strict:
         return True  # vergelijken per winkel: "pasta gnocchi" mag voor gnocchi
@@ -10761,6 +10803,10 @@ async def startup():
     await db.invitations.create_index([("email", 1), ("camp_id", 1)], unique=True)
     await db.google_logins.create_index("expires_at", expireAfterSeconds=0)
     await db.password_resets.create_index("expires_at", expireAfterSeconds=0)
+    try:
+        await _pantry_freeze_rate()
+    except Exception as e:
+        logger.warning("Voorraadkast vastleggen mislukt: %r", e)
     # Accounts van voor het bijhouden van "laatst gezien": de twee jaar tellen vanaf nu
     await db.users.update_many({"last_seen_at": {"$exists": False}}, {"$set": {"last_seen_at": now_utc()}})
 

@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, EmptyState, Field, Icon, Select } from "@/src/components/ui";
 import { api } from "@/src/api";
-import { formatQty, UNITS } from "@/src/constants";
+import { AISLES, AISLE_ICONS, formatQty, UNITS } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { PremiumLock, usePremium } from "@/src/premium";
 import { PantrySuggestions } from "@/src/PantrySuggestions";
@@ -26,19 +26,43 @@ type PItem = {
   product_name?: string | null;
   image?: string | null;
   weekly?: number | null; // eigen verbruik per week (in dezelfde eenheid)
+  use_amount?: number | null; // eigen verbruik: zoveel ...
+  use_days?: number | null; // ... per zoveel dagen
   for_dishes?: boolean; // telt mee voor gerechten
   group?: string;
+  aisle?: string; // afdeling zoals bij Alle producten
+  sub?: string; // soort binnen de afdeling
   restock?: number; // bijna op: zoveel voorstellen om te kopen
 };
 
-// Kort zeggen hoeveel er nog is en wat je per week gebruikt
+// Verbruik per periode: per dag, per week, per 2 weken, per maand, of zelf een aantal dagen
+const PERIODS: { days: number; label: string }[] = [
+  { days: 1, label: "per dag" },
+  { days: 7, label: "per week" },
+  { days: 14, label: "per 2 weken" },
+  { days: 30, label: "per maand" },
+];
+function periodText(days: number) {
+  return PERIODS.find((p) => p.days === days)?.label ?? `per ${formatQty(days)} dagen`;
+}
+
+// Kort zeggen hoeveel er nog is en wat je zelf gebruikt
 function stockText(i: PItem) {
   const left = i.unit === "%" ? `${i.qty >= 80 ? "Vol" : i.qty >= 20 ? "Nog wat" : i.qty > 0 ? "Bijna op" : "Op"} (±${Math.round(i.qty)}%)` : `${formatQty(i.qty)} ${i.unit}`;
-  const use = i.weekly ? ` · ${i.unit === "%" ? `${formatQty(i.weekly)}%` : `${formatQty(i.weekly)} ${i.unit}`} per week` : "";
+  const amount = i.use_amount ?? i.weekly;
+  const days = i.use_days ?? 7;
+  const use = amount ? ` · ${i.unit === "%" ? `${formatQty(amount)}%` : `${formatQty(amount)} ${i.unit}`} ${periodText(days)}` : "";
   return left + use;
 }
 
-const USE_STEPS = [0, 5, 10, 15, 20, 25, 30, 40, 50];
+type Filter = "all" | "low" | "dishes" | "nodishes" | "use";
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: "all", label: "Alles" },
+  { key: "low", label: "Bijna op" },
+  { key: "dishes", label: "Telt mee bij gerechten" },
+  { key: "nodishes", label: "Niet bij gerechten" },
+  { key: "use", label: "Met eigen verbruik" },
+];
 
 export default function PantryScreen() {
   const styles = useStyles();
@@ -63,7 +87,7 @@ export default function PantryScreen() {
 
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ["pantry"],
-    queryFn: () => api<{ items: PItem[]; weekly_use: number }>("/pantry"),
+    queryFn: () => api<{ items: PItem[] }>("/pantry"),
     enabled: premium,
   });
   const done = () => {
@@ -87,7 +111,16 @@ export default function PantryScreen() {
     mutationFn: (i: PItem) =>
       api(`/pantry/${i.id}`, {
         method: "PUT",
-        body: { name: i.name, qty: i.qty, unit: i.unit, product_id: i.product_id ?? null, weekly: i.weekly ?? null, for_dishes: i.for_dishes !== false },
+        body: {
+          name: i.name,
+          qty: i.qty,
+          unit: i.unit,
+          product_id: i.product_id ?? null,
+          weekly: i.use_amount && i.use_days ? null : i.weekly ?? null,
+          use_amount: i.use_amount ?? null,
+          use_days: i.use_days ?? null,
+          for_dishes: i.for_dishes !== false,
+        },
       }),
     onSuccess: done,
     onError: fail,
@@ -97,21 +130,44 @@ export default function PantryScreen() {
     onSuccess: done,
     onError: fail,
   });
-  const setUse = useMutation({
-    mutationFn: (v: number) => api("/pantry/settings", { method: "PUT", body: { weekly_use: v } }),
-    onSuccess: done,
-    onError: fail,
-  });
   const [edit, setEdit] = useState<PItem | null>(null);
-  // Overzicht in groepen (kruiden, olie en sauzen, ...); wat bijna op is apart bovenaan
+  const [aisle, setAisle] = useState("all");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [filterOpen, setFilterOpen] = useState(false);
+  // Indeling zoals bij Alle producten: per afdeling, en daarbinnen per soort. Wat je typt bij zoeken filtert ook je voorraad.
+  const shownItems = useMemo(() => {
+    const q = name.trim().toLowerCase();
+    return (data?.items ?? []).filter(
+      (i) =>
+        (!q || i.name.toLowerCase().includes(q) || (i.product_name ?? "").toLowerCase().includes(q)) &&
+        (filter === "all" ||
+          (filter === "low" && (i.restock ?? 0) > 0) ||
+          (filter === "dishes" && i.for_dishes !== false) ||
+          (filter === "nodishes" && i.for_dishes === false) ||
+          (filter === "use" && !!(i.use_amount ?? i.weekly))),
+    );
+  }, [data, name, filter]);
+  const aisleCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    shownItems.forEach((i) => (c[i.aisle || "Overig"] = (c[i.aisle || "Overig"] ?? 0) + 1));
+    return c;
+  }, [shownItems]);
   const groups = useMemo(() => {
-    const out: { group: string; items: PItem[] }[] = [];
-    for (const it of data?.items ?? []) {
-      const g = it.group || "Overig";
-      (out.find((x) => x.group === g) ?? out[out.push({ group: g, items: [] }) - 1]).items.push(it);
+    const out: { aisle: string; subs: { sub: string; items: PItem[] }[]; n: number }[] = [];
+    for (const a of AISLES) {
+      if (aisle !== "all" && a !== aisle) continue;
+      const items = shownItems.filter((i) => (i.aisle || "Overig") === a);
+      if (!items.length) continue;
+      const subs: { sub: string; items: PItem[] }[] = [];
+      for (const it of items) {
+        const k = it.sub || "";
+        (subs.find((x) => x.sub === k) ?? subs[subs.push({ sub: k, items: [] }) - 1]).items.push(it);
+      }
+      subs.sort((x, y) => (!x.sub ? 1 : !y.sub ? -1 : x.sub.localeCompare(y.sub, "nl")));
+      out.push({ aisle: a, subs, n: items.length });
     }
-    return out.sort((a, b) => (a.group === "Overig" ? 1 : b.group === "Overig" ? -1 : a.group.localeCompare(b.group, "nl")));
-  }, [data]);
+    return out;
+  }, [shownItems, aisle]);
   const low = (data?.items ?? []).filter((i) => (i.restock ?? 0) > 0);
   const step = (i: PItem, dir: 1 | -1) => {
     const by = i.unit === "%" ? 10 : i.unit === "gram" || i.unit === "ml" ? 100 : 1;
@@ -134,84 +190,7 @@ export default function PantryScreen() {
           <PremiumLock title="De voorraadkast" text="Houd bij wat je al in huis hebt. Op je boodschappenlijst zie je dan meteen wat je niet hoeft te kopen." />
         ) : (
           <>
-            <Text style={styles.intro}>
-              Wat je al in huis hebt, hoef je voor je gerechten niet te kopen. Tik op een product om in te stellen hoeveel je er zelf per week van gebruikt.
-              Is iets bijna op, dan stellen we voor het in je volgende boodschappenlijst te zetten.
-            </Text>
-            {low.length ? (
-              <View style={[styles.addCard, { borderColor: colors.warning }]} testID="pantry-low">
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Icon name="cart-arrow-down" size={20} color={colors.warning} />
-                  <Text style={[styles.rowName, { flex: 1 }]}>Bijna op: volgende keer kopen</Text>
-                </View>
-                {low.map((i) => (
-                  <Pressable key={i.id} onPress={() => setEdit(i)} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    {i.image ? <Image source={{ uri: i.image }} style={styles.thumb} resizeMode="contain" /> : <View style={styles.thumb} />}
-                    <Text style={[styles.rowQty, { flex: 1 }]} numberOfLines={1}>
-                      <Text style={styles.rowName}>{i.name}</Text> · {stockText(i)}
-                    </Text>
-                  </Pressable>
-                ))}
-                <Text style={styles.rowQty}>Je ziet ze ook bovenaan je boodschappenlijst; daar zet je ze er met één tik bij.</Text>
-              </View>
-            ) : null}
-            {isLoading ? (
-              <ActivityIndicator color={colors.brandPrimary} />
-            ) : (data?.items ?? []).length === 0 ? null : (
-              groups.map((g) => (
-                <View key={g.group} style={{ gap: 6 }}>
-                  <Text style={styles.groupTitle}>
-                    {g.group} <Text style={styles.rowQty}>({g.items.length})</Text>
-                  </Text>
-                  <View style={styles.list}>
-                    {g.items.map((i, n, arr) => (
-                      <Pressable key={i.id} onPress={() => setEdit(i)} style={[styles.row, n < arr.length - 1 && styles.rowBorder]} testID={`pantry-row-${i.id}`}>
-                        {i.image ? <Image source={{ uri: i.image }} style={styles.thumb} resizeMode="contain" /> : <View style={styles.thumb}><Icon name="fridge-outline" size={18} color={colors.muted} /></View>}
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.rowName} numberOfLines={1}>{i.name}</Text>
-                          <Text style={[styles.rowQty, (i.restock ?? 0) > 0 && { color: colors.warning }]} numberOfLines={1}>{stockText(i)}</Text>
-                          <Pressable
-                            onPress={() => update.mutate({ ...i, for_dishes: i.for_dishes === false })}
-                            hitSlop={6}
-                            style={[styles.dishChip, i.for_dishes === false && styles.dishChipOff]}
-                            testID={`pantry-dish-${i.id}`}
-                          >
-                            <Icon name={i.for_dishes === false ? "silverware-variant" : "silverware-fork-knife"} size={13} color={i.for_dishes === false ? colors.muted : colors.brandPrimary} />
-                            <Text style={[styles.dishChipText, i.for_dishes === false && { color: colors.muted }]}>
-                              {i.for_dishes === false ? "Niet bij gerechten" : "Telt mee bij gerechten"}
-                            </Text>
-                          </Pressable>
-                        </View>
-                        <Pressable onPress={() => step(i, -1)} hitSlop={6} style={styles.stepBtn} testID={`pantry-minus-${i.id}`}>
-                          <Icon name="minus" size={18} color={colors.onSurface} />
-                        </Pressable>
-                        <Pressable onPress={() => step(i, 1)} hitSlop={6} style={styles.stepBtn} testID={`pantry-plus-${i.id}`}>
-                          <Icon name="plus" size={18} color={colors.onSurface} />
-                        </Pressable>
-                      </Pressable>
-                    ))}
-                  </View>
-                </View>
-              ))
-            )}
-            {(() => {
-              // Lege voorraadkast: de voorstellen staan meteen open, zo is hij in één keer grotendeels gevuld
-              const empty = !isLoading && (data?.items ?? []).length === 0;
-              const show = sugOpen || empty;
-              return (
-                <View style={styles.addCard}>
-                  <Pressable onPress={() => setSugOpen((v) => !v)} disabled={empty} style={{ flexDirection: "row", alignItems: "center", gap: 8 }} testID="pantry-sug-toggle">
-                    <Icon name="lightbulb-on-outline" size={20} color={colors.brandPrimary} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.rowName}>Voorstellen: wat veel mensen al in huis hebben</Text>
-                      <Text style={styles.rowQty}>Vink aan wat jij hebt en zet het in één keer in je voorraadkast.</Text>
-                    </View>
-                    {empty ? null : <Icon name={show ? "chevron-up" : "chevron-down"} size={20} color={colors.muted} />}
-                  </Pressable>
-                  {show ? <PantrySuggestions onDone={() => setSugOpen(false)} /> : null}
-                </View>
-              );
-            })()}
+            {/* Bovenaan: zoeken (filtert ook je voorraad) en toevoegen */}
             <View style={styles.addCard}>
               <Field
                 label="Zoek een product"
@@ -237,6 +216,7 @@ export default function PantryScreen() {
                 </View>
               ) : name.trim().length > 1 ? (
                 <View style={{ gap: 4 }}>
+                  <Text style={styles.label}>Toevoegen uit de winkel</Text>
                   {found.isLoading ? <ActivityIndicator color={colors.brandPrimary} /> : null}
                   {(found.data?.products ?? []).map((p) => (
                     <Pressable
@@ -263,30 +243,160 @@ export default function PantryScreen() {
                   ) : null}
                 </View>
               ) : null}
-              <View style={{ flexDirection: "row", gap: 10 }}>
-                <Field label="Hoeveel" testID="pantry-qty" value={qty} onChangeText={setQty} keyboardType="decimal-pad" containerStyle={{ flex: 1 }} />
-                <View style={{ flex: 1, gap: 6 }}>
-                  <Text style={styles.label}>Eenheid</Text>
-                  <Select value={unit} options={UNITS} onChange={setUnit} testID="pantry-unit" />
+              {name.trim() ? (
+                <>
+                  <View style={{ flexDirection: "row", gap: 10 }}>
+                    <Field label="Hoeveel" testID="pantry-qty" value={qty} onChangeText={setQty} keyboardType="decimal-pad" containerStyle={{ flex: 1 }} />
+                    <View style={{ flex: 1, gap: 6 }}>
+                      <Text style={styles.label}>Eenheid</Text>
+                      <Select value={unit} options={UNITS} onChange={setUnit} testID="pantry-unit" />
+                    </View>
+                  </View>
+                  <Button label="Toevoegen" onPress={() => add.mutate()} loading={add.isPending} disabled={!name.trim()} testID="pantry-add" />
+                </>
+              ) : null}
+            </View>
+            {(() => {
+              // Standaard ingeklapt, zodat je meteen je voorraad ziet; alleen bij een lege voorraadkast meteen open
+              const empty = !isLoading && (data?.items ?? []).length === 0;
+              const show = sugOpen || empty;
+              return (
+                <View style={styles.addCard}>
+                  <Pressable onPress={() => setSugOpen((v) => !v)} disabled={empty} style={{ flexDirection: "row", alignItems: "center", gap: 8 }} testID="pantry-sug-toggle">
+                    <Icon name="lightbulb-on-outline" size={20} color={colors.brandPrimary} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.rowName}>Voorstellen: wat veel mensen al in huis hebben</Text>
+                      {show ? <Text style={styles.rowQty}>Vink aan wat jij hebt en zet het in één keer in je voorraadkast.</Text> : null}
+                    </View>
+                    {empty ? null : <Icon name={show ? "chevron-up" : "chevron-down"} size={20} color={colors.muted} />}
+                  </Pressable>
+                  {show ? <PantrySuggestions onDone={() => setSugOpen(false)} /> : null}
                 </View>
+              );
+            })()}
+            {low.length ? (
+              <View style={[styles.addCard, { borderColor: colors.warning }]} testID="pantry-low">
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Icon name="cart-arrow-down" size={20} color={colors.warning} />
+                  <Text style={[styles.rowName, { flex: 1 }]}>Bijna op: volgende keer kopen</Text>
+                </View>
+                {low.map((i) => (
+                  <Pressable key={i.id} onPress={() => setEdit(i)} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    {i.image ? <Image source={{ uri: i.image }} style={styles.thumb} resizeMode="contain" /> : <View style={styles.thumb} />}
+                    <Text style={[styles.rowQty, { flex: 1 }]} numberOfLines={1}>
+                      <Text style={styles.rowName}>{i.name}</Text> · {stockText(i)}
+                    </Text>
+                  </Pressable>
+                ))}
+                <Text style={styles.rowQty}>Je ziet ze ook bovenaan je boodschappenlijst; daar zet je ze er met één tik bij.</Text>
               </View>
-              <Button label="Toevoegen" onPress={() => add.mutate()} loading={add.isPending} disabled={!name.trim()} testID="pantry-add" />
-            </View>
-            <View style={styles.addCard}>
-              <Text style={styles.label}>Standaard verbruik voor flessen en potten</Text>
-              <Text style={styles.rowQty}>
-                Voor producten zonder eigen verbruik (zoals olie of kruiden in %): zoveel gaat er elke week vanaf. Per product stel je het zelf in door erop te tikken.
-              </Text>
-              <Select
-                testID="pantry-weekly"
-                value={`${data?.weekly_use ?? 10}% per week`}
-                options={USE_STEPS.map((v) => `${v}% per week`)}
-                onChange={(v) => setUse.mutate(parseInt(v, 10) || 0)}
-              />
-            </View>
+            ) : null}
+            {(data?.items ?? []).length ? (
+              // Afdelingen en filters zoals bij Alle producten
+              <View style={{ gap: 8 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Text style={[styles.groupTitle, { flex: 1, marginTop: 0 }]}>
+                    Jouw voorraad <Text style={styles.rowQty}>({shownItems.length})</Text>
+                  </Text>
+                  <Pressable onPress={() => setFilterOpen(true)} style={[styles.filterBtn, filter !== "all" && styles.filterBtnOn]} testID="pantry-filter">
+                    <Icon name="tune-variant" size={16} color={filter !== "all" ? colors.onBrandPrimary : colors.brandPrimary} />
+                    <Text style={[styles.filterText, filter !== "all" && { color: colors.onBrandPrimary }]}>
+                      {filter === "all" ? "Filters" : FILTERS.find((f) => f.key === filter)?.label}
+                    </Text>
+                  </Pressable>
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                  <Pressable onPress={() => setAisle("all")} style={[styles.deptChip, aisle === "all" && styles.deptChipOn]} testID="pantry-dept-all">
+                    <Text style={[styles.deptText, aisle === "all" && styles.deptTextOn]}>Alle afdelingen</Text>
+                  </Pressable>
+                  {AISLES.filter((a) => (aisleCounts[a] ?? 0) > 0).map((a) => (
+                    <Pressable key={a} onPress={() => setAisle(a)} style={[styles.deptChip, aisle === a && styles.deptChipOn]} testID={`pantry-dept-${a}`}>
+                      <Icon name={(AISLE_ICONS[a] ?? "cart-outline") as any} size={14} color={aisle === a ? colors.onBrandPrimary : colors.brandPrimary} />
+                      <Text style={[styles.deptText, aisle === a && styles.deptTextOn]}>
+                        {a} ({aisleCounts[a]})
+                      </Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            ) : null}
+            {isLoading ? (
+              <ActivityIndicator color={colors.brandPrimary} />
+            ) : (data?.items ?? []).length === 0 ? null : groups.length === 0 ? (
+              <Text style={styles.rowQty}>Niets gevonden in je voorraad{name.trim() ? ` voor "${name.trim()}"` : ""}.</Text>
+            ) : (
+              groups.map((g) => (
+                <View key={g.aisle} style={{ gap: 6 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Icon name={(AISLE_ICONS[g.aisle] ?? "cart-outline") as any} size={18} color={colors.brandSecondary} />
+                    <Text style={styles.groupTitle}>
+                      {g.aisle} <Text style={styles.rowQty}>({g.n})</Text>
+                    </Text>
+                  </View>
+                  {g.subs.map((sg) => (
+                    <View key={sg.sub || "_"} style={{ gap: 4 }}>
+                      {g.subs.length > 1 || sg.sub ? <Text style={styles.subTitle}>{sg.sub || "Overig"}</Text> : null}
+                      <View style={styles.list}>
+                        {sg.items.map((i, n, arr) => (
+                          <Pressable key={i.id} onPress={() => setEdit(i)} style={[styles.row, n < arr.length - 1 && styles.rowBorder]} testID={`pantry-row-${i.id}`}>
+                            {i.image ? <Image source={{ uri: i.image }} style={styles.thumb} resizeMode="contain" /> : <View style={styles.thumb}><Icon name="fridge-outline" size={18} color={colors.muted} /></View>}
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.rowName} numberOfLines={1}>{i.name}</Text>
+                              <Text style={[styles.rowQty, (i.restock ?? 0) > 0 && { color: colors.warning }]} numberOfLines={1}>{stockText(i)}</Text>
+                              <Pressable
+                                onPress={() => update.mutate({ ...i, for_dishes: i.for_dishes === false })}
+                                hitSlop={6}
+                                style={[styles.dishChip, i.for_dishes === false && styles.dishChipOff]}
+                                testID={`pantry-dish-${i.id}`}
+                              >
+                                <Icon name={i.for_dishes === false ? "silverware-variant" : "silverware-fork-knife"} size={13} color={i.for_dishes === false ? colors.muted : colors.brandPrimary} />
+                                <Text style={[styles.dishChipText, i.for_dishes === false && { color: colors.muted }]}>
+                                  {i.for_dishes === false ? "Niet bij gerechten" : "Telt mee bij gerechten"}
+                                </Text>
+                              </Pressable>
+                            </View>
+                            <Pressable onPress={() => step(i, -1)} hitSlop={6} style={styles.stepBtn} testID={`pantry-minus-${i.id}`}>
+                              <Icon name="minus" size={18} color={colors.onSurface} />
+                            </Pressable>
+                            <Pressable onPress={() => step(i, 1)} hitSlop={6} style={styles.stepBtn} testID={`pantry-plus-${i.id}`}>
+                              <Icon name="plus" size={18} color={colors.onSurface} />
+                            </Pressable>
+                          </Pressable>
+                        ))}
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ))
+            )}
+            <Text style={styles.intro}>
+              Wat je al in huis hebt, hoef je voor je gerechten niet te kopen. Tik op een product om in te stellen hoe vol het is en hoeveel je er zelf
+              gebruikt. Is iets bijna op, dan stellen we voor het in je volgende boodschappenlijst te zetten.
+            </Text>
           </>
         )}
       </KeyboardAwareScrollView>
+      <Modal visible={filterOpen} transparent animationType="fade" onRequestClose={() => setFilterOpen(false)}>
+        <Pressable style={styles.backdrop} onPress={() => setFilterOpen(false)}>
+          <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
+            <Text style={styles.headerTitle2}>Filters</Text>
+            {FILTERS.map((f) => (
+              <Pressable
+                key={f.key}
+                onPress={() => {
+                  setFilter(f.key);
+                  setFilterOpen(false);
+                }}
+                style={styles.filterRow}
+                testID={`pantry-filter-${f.key}`}
+              >
+                <Text style={[styles.rowName, filter === f.key && { color: colors.brandPrimary }]}>{f.label}</Text>
+                {filter === f.key ? <Icon name="check" size={18} color={colors.brandPrimary} /> : null}
+              </Pressable>
+            ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
       <EditSheet
         item={edit}
         onClose={() => setEdit(null)}
@@ -341,6 +451,15 @@ const useStyles = makeStyles((colors) => ({
   quickTextOn: { color: colors.onBrandPrimary },
   thumb: { width: 38, height: 38, borderRadius: 8, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   groupTitle: { fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface, marginTop: 4 },
+  subTitle: { fontSize: 13, fontFamily: fonts.semibold, color: colors.muted, marginTop: 2 },
+  filterBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: colors.brandPrimary },
+  filterBtnOn: { backgroundColor: colors.brandPrimary },
+  filterText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  filterRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.divider },
+  deptChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceTertiary },
+  deptChipOn: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  deptText: { fontSize: 13, fontFamily: fonts.medium, color: colors.onSurfaceTertiary },
+  deptTextOn: { color: colors.onBrandPrimary },
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
   sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, gap: 14, maxHeight: "92%" },
   pickRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
@@ -348,7 +467,7 @@ const useStyles = makeStyles((colors) => ({
   stepBtn: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.surfaceTertiary, alignItems: "center", justifyContent: "center" },
 }));
 
-// Eén product instellen: hoeveel je hebt, hoeveel je er zelf per week van gebruikt en of het meetelt voor gerechten.
+// Eén product instellen: hoe vol het nu is, hoeveel je er zelf van gebruikt per zelf gekozen periode, en of het meetelt voor gerechten.
 // Bijhouden in aantal (8 eieren, 500 gram) of in procent (een fles olie: nog 60%, 10% per week).
 const PCT_STEPS = [5, 10, 20, 25, 50, 100];
 
@@ -358,7 +477,9 @@ function EditSheet({ item, onClose, onSave, onDelete }: { item: PItem | null; on
   const insets = useSafeAreaInsets();
   const [qty, setQty] = useState("");
   const [unit, setUnit] = useState("stuks");
-  const [weekly, setWeekly] = useState("");
+  const [use, setUse] = useState("");
+  const [days, setDays] = useState(7);
+  const [ownDays, setOwnDays] = useState("");
   const [forDishes, setForDishes] = useState(true);
   const [key, setKey] = useState<string | null>(null);
   if (item && key !== item.id) {
@@ -366,19 +487,25 @@ function EditSheet({ item, onClose, onSave, onDelete }: { item: PItem | null; on
     setKey(item.id);
     setQty(formatQty(item.qty));
     setUnit(item.unit);
-    setWeekly(item.weekly ? formatQty(item.weekly) : "");
+    const amount = item.use_amount ?? item.weekly;
+    const d = item.use_days ?? 7;
+    setUse(amount ? formatQty(amount) : "");
+    setDays(d);
+    setOwnDays(PERIODS.some((p) => p.days === d) ? "" : formatQty(d));
     setForDishes(item.for_dishes !== false);
   }
   if (!item && key !== null) setKey(null);
   const num = (v: string) => parseFloat(v.replace(",", ".")) || 0;
   const pct = unit === "%";
-  const w = num(weekly);
+  const w = num(use);
+  const own = !PERIODS.some((p) => p.days === days);
   const setMode = (toPct: boolean) => {
     if (toPct === pct) return;
     setUnit(toPct ? "%" : "stuks");
     setQty(toPct ? "100" : "1");
-    setWeekly("");
+    setUse("");
   };
+  const per = periodText(days);
   return (
     <Modal visible={!!item} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
@@ -396,21 +523,6 @@ function EditSheet({ item, onClose, onSave, onDelete }: { item: PItem | null; on
                 </Pressable>
               </View>
               <ScrollView contentContainerStyle={{ gap: 16 }} keyboardShouldPersistTaps="handled">
-                {/* Eerst het belangrijkste: telt het mee voor gerechten */}
-                <View style={styles.dishBox}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowName}>Meerekenen bij gerechten</Text>
-                    <Text style={styles.rowQty}>
-                      {forDishes
-                        ? w
-                          ? "Aan: wat je hebt gaat van je boodschappen af, maar je eigen weekverbruik houden we apart."
-                          : "Aan: wat je hebt, hoef je voor je gerechten niet te kopen."
-                        : "Uit: voor gerechten kopen we het gewoon, ook al heb je het in huis."}
-                    </Text>
-                  </View>
-                  <Switch value={forDishes} onValueChange={setForDishes} testID="pantry-edit-dishes" />
-                </View>
-
                 <View style={{ gap: 6 }}>
                   <Text style={styles.label}>Bijhouden in</Text>
                   <View style={styles.seg}>
@@ -423,71 +535,115 @@ function EditSheet({ item, onClose, onSave, onDelete }: { item: PItem | null; on
                   </View>
                 </View>
 
+                {/* 1. Hoeveel heb je nu */}
                 {pct ? (
-                  <>
-                    <View style={{ gap: 6 }}>
-                      <Text style={styles.label}>Hoe vol is het nu? {Math.round(num(qty))}%</Text>
-                      <View style={styles.chips}>
-                        {[100, 75, 50, 25, 10].map((v) => (
-                          <Pressable key={v} onPress={() => setQty(String(v))} style={[styles.quick, num(qty) === v && styles.quickOn]}>
-                            <Text style={[styles.quickText, num(qty) === v && styles.quickTextOn]}>{v === 100 ? "Vol" : `${v}%`}</Text>
-                          </Pressable>
-                        ))}
-                      </View>
-                    </View>
-                    <View style={{ gap: 6 }}>
-                      <Text style={styles.label}>Hoeveel % gebruik je per week?</Text>
-                      <View style={styles.chips}>
-                        <Pressable onPress={() => setWeekly("")} style={[styles.quick, !w && styles.quickOn]}>
-                          <Text style={[styles.quickText, !w && styles.quickTextOn]}>Standaard</Text>
+                  <View style={{ gap: 6 }}>
+                    <Text style={styles.label}>Hoe vol is het nu? {Math.round(num(qty))}%</Text>
+                    <View style={styles.chips}>
+                      {[100, 75, 50, 25, 10].map((v) => (
+                        <Pressable key={v} onPress={() => setQty(String(v))} style={[styles.quick, num(qty) === v && styles.quickOn]}>
+                          <Text style={[styles.quickText, num(qty) === v && styles.quickTextOn]}>{v === 100 ? "Vol" : `${v}%`}</Text>
                         </Pressable>
-                        {PCT_STEPS.map((v) => (
-                          <Pressable key={v} onPress={() => setWeekly(String(v))} style={[styles.quick, w === v && styles.quickOn]} testID={`pantry-pct-${v}`}>
-                            <Text style={[styles.quickText, w === v && styles.quickTextOn]}>{v === 100 ? "Elke week op" : `${v}%`}</Text>
-                          </Pressable>
-                        ))}
-                      </View>
+                      ))}
                     </View>
-                  </>
+                    <Field label="Of precies (%)" value={qty} onChangeText={setQty} keyboardType="decimal-pad" testID="pantry-edit-pct" />
+                  </View>
                 ) : (
-                  <>
-                    <View style={{ flexDirection: "row", gap: 10 }}>
-                      <Field label="Hoeveel heb je nu" value={qty} onChangeText={setQty} keyboardType="decimal-pad" containerStyle={{ flex: 1 }} testID="pantry-edit-qty" />
-                      <View style={{ flex: 1, gap: 6 }}>
-                        <Text style={styles.label}>Eenheid</Text>
-                        <Select value={unit} options={UNITS} onChange={setUnit} testID="pantry-edit-unit" />
-                      </View>
+                  <View style={{ flexDirection: "row", gap: 10 }}>
+                    <Field label="Hoeveel heb je nu" value={qty} onChangeText={setQty} keyboardType="decimal-pad" containerStyle={{ flex: 1 }} testID="pantry-edit-qty" />
+                    <View style={{ flex: 1, gap: 6 }}>
+                      <Text style={styles.label}>Eenheid</Text>
+                      <Select value={unit} options={UNITS} onChange={setUnit} testID="pantry-edit-unit" />
                     </View>
-                    <View style={{ gap: 6 }}>
-                      <Field
-                        label={`Zelf gebruikt per week (${unit})`}
-                        value={weekly}
-                        onChangeText={setWeekly}
-                        keyboardType="decimal-pad"
-                        placeholder="Bijv. 8 (leeg = niet bijhouden)"
-                        testID="pantry-edit-weekly"
-                      />
-                      <View style={styles.chips}>
-                        <Pressable onPress={() => setWeekly("")} style={[styles.quick, !w && styles.quickOn]}>
-                          <Text style={[styles.quickText, !w && styles.quickTextOn]}>Niet bijhouden</Text>
-                        </Pressable>
-                        <Pressable onPress={() => setWeekly(qty || "1")} style={styles.quick} testID="pantry-edit-allweek">
-                          <Text style={styles.quickText}>Elke week helemaal op</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  </>
+                  </View>
                 )}
+
+                {/* 2. Hoeveel gaat er af, en per welke periode */}
+                <View style={{ gap: 6 }}>
+                  <Field
+                    label={`Zelf gebruikt (${pct ? "%" : unit})`}
+                    value={use}
+                    onChangeText={setUse}
+                    keyboardType="decimal-pad"
+                    placeholder={pct ? "Bijv. 10" : "Bijv. 2 (leeg = niet bijhouden)"}
+                    testID="pantry-edit-use"
+                  />
+                  {pct ? (
+                    <View style={styles.chips}>
+                      {PCT_STEPS.map((v) => (
+                        <Pressable key={v} onPress={() => setUse(String(v))} style={[styles.quick, w === v && styles.quickOn]} testID={`pantry-pct-${v}`}>
+                          <Text style={[styles.quickText, w === v && styles.quickTextOn]}>{v === 100 ? "Helemaal op" : `${v}%`}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  ) : null}
+                  <Text style={[styles.label, { marginTop: 4 }]}>Per</Text>
+                  <View style={styles.chips}>
+                    {PERIODS.map((p) => (
+                      <Pressable key={p.days} onPress={() => {
+                          setDays(p.days);
+                          setOwnDays("");
+                        }} style={[styles.quick, days === p.days && styles.quickOn]} testID={`pantry-period-${p.days}`}>
+                        <Text style={[styles.quickText, days === p.days && styles.quickTextOn]}>{p.label.replace("per ", "")}</Text>
+                      </Pressable>
+                    ))}
+                    <Pressable onPress={() => {
+                        setOwnDays(ownDays || "3");
+                        setDays(num(ownDays || "3"));
+                      }} style={[styles.quick, own && styles.quickOn]} testID="pantry-period-own">
+                      <Text style={[styles.quickText, own && styles.quickTextOn]}>Aantal dagen</Text>
+                    </Pressable>
+                  </View>
+                  {own ? (
+                    <Field
+                      label="Elke hoeveel dagen"
+                      value={ownDays}
+                      onChangeText={(v) => {
+                        setOwnDays(v);
+                        if (num(v) >= 1) setDays(num(v));
+                      }}
+                      keyboardType="decimal-pad"
+                      testID="pantry-edit-days"
+                    />
+                  ) : null}
+                  {w ? (
+                    <Pressable onPress={() => setUse("")} style={{ alignSelf: "flex-start" }}>
+                      <Text style={[styles.rowQty, { color: colors.brandPrimary }]}>Niet bijhouden</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
                 <Text style={styles.rowQty}>
                   {w
-                    ? `Elke week gaat er ${formatQty(w)}${pct ? "%" : ` ${unit}`} af. Is het bijna op, dan stellen we voor het te kopen in je volgende boodschappenlijst.`
-                    : pct
-                      ? "Standaard: het percentage dat onderaan je voorraadkast staat."
-                      : "Gebruik je dit ook buiten je gerechten (eieren bij het ontbijt, een krop sla)? Vul dan in hoeveel per week."}
+                    ? `Er gaat ${formatQty(w)}${pct ? "%" : ` ${unit}`} ${per} af. Is het bijna op, dan stellen we voor het te kopen in je volgende boodschappenlijst.`
+                    : "Gebruik je dit ook buiten je gerechten (olie, koffie, eieren bij het ontbijt)? Vul dan in hoeveel en per welke periode."}
                 </Text>
+
+                <View style={styles.dishBox}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowName}>Meerekenen bij gerechten</Text>
+                    <Text style={styles.rowQty}>
+                      {forDishes
+                        ? w
+                          ? "Aan: wat je hebt gaat van je boodschappen af, maar je eigen verbruik houden we apart."
+                          : "Aan: wat je hebt, hoef je voor je gerechten niet te kopen."
+                        : "Uit: voor gerechten kopen we het gewoon, ook al heb je het in huis."}
+                    </Text>
+                  </View>
+                  <Switch value={forDishes} onValueChange={setForDishes} testID="pantry-edit-dishes" />
+                </View>
                 <Button
                   label="Opslaan"
-                  onPress={() => onSave({ ...item, qty: num(qty), unit, weekly: w > 0 ? w : null, for_dishes: forDishes })}
+                  onPress={() =>
+                    onSave({
+                      ...item,
+                      qty: pct ? Math.min(100, num(qty)) : num(qty),
+                      unit,
+                      weekly: w > 0 ? (w * 7) / Math.max(1, days) : null,
+                      use_amount: w > 0 ? w : null,
+                      use_days: w > 0 ? Math.max(1, days) : null,
+                      for_dishes: forDishes,
+                    })
+                  }
                   testID="pantry-edit-save"
                 />
                 <Pressable onPress={() => onDelete(item)} style={{ alignSelf: "center", flexDirection: "row", gap: 6, alignItems: "center" }} testID="pantry-edit-delete">
