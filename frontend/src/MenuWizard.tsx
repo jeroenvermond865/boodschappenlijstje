@@ -66,7 +66,8 @@ export function MenuWizard({
   const toast = useToast();
   const [cats, setCats] = useState<MealCategory[]>(["avondeten"]);
   const [style, setStyle] = useState<Style>("mix");
-  const [dietPick, setDietPick] = useState("");
+  const [diets, setDiets] = useState<string[]>([]);
+  const toggleDiet = (k: string) => setDiets((v) => (v.includes(k) ? v.filter((x) => x !== k) : [...v, k]));
   const { user } = useAuth();
   const own = storeKey(user?.store);
   const [stores, setStores] = useState<string[]>(own ? [own] : []);
@@ -88,7 +89,7 @@ export function MenuWizard({
       .then((p) => {
         if (p.categories?.length) setCats(p.categories);
         if (p.style) setStyle(p.style);
-        setDietPick(p.diet ?? "");
+        setDiets((p.diet ?? "").split(",").filter(Boolean));
         const saved = p.stores ?? (p.store ? [p.store] : []);
         setStores([...new Set([...(own ? [own] : []), ...saved])]);
         setKind(p.kind ?? "alles");
@@ -120,7 +121,7 @@ export function MenuWizard({
           overwrite,
           days: allDays ? null : pickDays,
           style,
-          diet: dietPick,
+          diet: diets.join(","),
           stores,
           kind,
           cheap,
@@ -242,11 +243,11 @@ export function MenuWizard({
 
             <Text style={styles.head}>Voorkeuren</Text>
             <View style={styles.chips}>
-              <Chip on={dietPick === ""} label="Alles" onPress={() => setDietPick("")} />
-              <Chip on={dietPick === "vega"} label="Vegetarisch" onPress={() => setDietPick("vega")} />
-              <Chip on={dietPick === "vegan"} label="Veganistisch" onPress={() => setDietPick("vegan")} />
-              <Chip on={dietPick === "vlees"} label="Met vlees" onPress={() => setDietPick("vlees")} />
-              <Chip on={dietPick === "vis"} label="Met vis" onPress={() => setDietPick("vis")} />
+              <Chip on={!diets.length} label="Alles" onPress={() => setDiets([])} />
+              <Chip on={diets.includes("vega")} label="Vegetarisch" onPress={() => toggleDiet("vega")} />
+              <Chip on={diets.includes("vegan")} label="Veganistisch" onPress={() => toggleDiet("vegan")} />
+              <Chip on={diets.includes("vlees")} label="Met vlees" onPress={() => toggleDiet("vlees")} />
+              <Chip on={diets.includes("vis")} label="Met vis" onPress={() => toggleDiet("vis")} />
             </View>
             <Check on={promos} label="Gerechten met aanbiedingen eerst" onPress={() => setPromos((v) => !v)} />
             <Check on={cheap} label="Goedkope gerechten eerst" onPress={() => setCheap((v) => !v)} />
