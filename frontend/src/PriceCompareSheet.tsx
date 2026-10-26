@@ -57,7 +57,8 @@ export function PriceCompareSheet({
   const groups = alts.data?.groups ?? [];
   const here = groups.find((g) => g.store === store)?.products ?? [];
   // Het product bij de andere winkel; bij oudere lijstjes weten we alleen de winkel, dan het beste voorstel daar
-  const other = otherQ.data ?? (was ? groups.find((g) => g.store === was.store)?.products[0] : undefined) ?? null;
+  // Bij oudere lijstjes kan het product onbekend zijn; dan tonen we alleen de prijs (geen gok, die klopt vaak niet)
+  const other = otherQ.data ?? null;
   const base = alts.data?.base ?? null;
   const packs = item?.packs ?? 1;
   const diff = was && item?.price ? was.price - item.price : 0;
@@ -71,7 +72,7 @@ export function PriceCompareSheet({
     <Pressable onPress={p ? () => openProduct(p.id) : undefined} style={[styles.side, cheaper && { borderColor: colors.success, borderWidth: 2 }]}>
       <Text style={[styles.sideLabel, cheaper && { color: colors.success }]}>{label}</Text>
       {p?.image ? <Image source={{ uri: p.image }} style={styles.bigImg} resizeMode="contain" /> : <View style={styles.bigImg} />}
-      <Text style={styles.name} numberOfLines={3}>{p?.name ?? "…"}</Text>
+      <Text style={styles.name} numberOfLines={3}>{p?.name ?? (otherQ.isLoading && was?.product_id ? "…" : "Product uit de vergelijking")}</Text>
       {p ? (
         <Text style={styles.meta} numberOfLines={2}>
           {p.unit}

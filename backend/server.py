@@ -2431,6 +2431,8 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
                     total += packs * price
                     w = item_was.get(_ikey(_norm_text(it.get("name") or "")))
                     if w and w.get("store") != b["store"] and (w.get("price") or 0) > it["price"]:
+                        if not w.get("product_id"):
+                            w = {**w, **_was_product(camp_id, w["store"], it.get("name") or "")}
                         it["was"] = w  # gesplitst: hier goedkoper dan bij de andere winkel
                     # Korting door een aanbieding: normale prijs min wat je nu betaalt
                     off = _promo_saving(p, price, packs)
@@ -2966,6 +2968,18 @@ def _deal_saving(now_p: dict, price: float, packs: int) -> float:
     if n == 1 and deal.get("total") and float(deal["total"]) < price:
         return round(packs * (price - float(deal["total"])), 2)
     return 0.0
+
+
+def _was_product(camp_id: str, store: str, name: str) -> dict:
+    # Oudere gesplitste lijsten weten alleen winkel en prijs: het product halen we uit de vergelijking
+    hit = next((v for k, v in _home_cache.items() if isinstance(k, tuple) and k[:2] == ("compare3", camp_id)), None)
+    n = _norm_text(name)
+    for r in (hit[1] if hit else None) or []:
+        if r.get("store") == store:
+            it = next((x for x in r.get("items") or [] if _norm_text(x.get("name") or "") == n), None)
+            if it and it.get("product_id"):
+                return {"product_id": it["product_id"], "product": it.get("product")}
+    return {}
 
 
 def _best_split_saving(rows: list) -> float:
@@ -3878,6 +3892,8 @@ async def _warm_search() -> None:
                 pick = await asyncio.to_thread(_cheapest_good, pool, pq, src)
                 logger.info("PROBE ingrediënt %s %s: kies %s; %s", pq, src, pick and pick["name"],
                             [(d["name"], d.get("unit"), round(pen, 1)) for pen, d in ing])
+        if os.environ.get("COMPARE_AUDIT"):
+            await _compare_audit(docs)
         if os.environ.get("SEARCH_PROBE"):
             for src in ("Dirk", "Albert Heijn", "Jumbo"):
                 pool = [d for d in docs if d.get("_src") == src and d.get("aisle") == "Brood, beleg & koek"]
@@ -3887,6 +3903,39 @@ async def _warm_search() -> None:
                 logger.info("PROBE soorten %s: %s", src, {k: (len(v), v[:4]) for k, v in sorted(subs.items(), key=lambda kv: -len(kv[1]))[:25]})
     except Exception as e:
         logger.info("Producten klaarzetten: %r", e)
+
+
+async def _compare_audit(docs: list) -> None:
+    # Controle (COMPARE_AUDIT=1): alle producten uit gerechten vergelijken met de andere winkels en loggen wat niet klopt
+    pids = set()
+    async for d in db.dishes.find({"deleted_at": None}, {"_id": 0, "ingredients.product_id": 1}):
+        pids.update(i.get("product_id") for i in d.get("ingredients") or [] if i.get("product_id"))
+    by_pid = _product_cache.get("by_pid") or {}
+
+    def work():
+        pools: Dict[str, list] = {st: [] for st in COMPARE_STORES}
+        by_ean: dict = {}
+        for d in docs:
+            if d.get("_src") in pools and d.get("is_global"):
+                pools[d["_src"]].append(d)
+                if d.get("barcode"):
+                    by_ean.setdefault((d["_src"], d["barcode"]), d)
+        bad = []
+        for pid in pids:
+            base = by_pid.get(pid)
+            if not base:
+                continue
+            for st, pool in pools.items():
+                if st == base.get("_src"):
+                    continue
+                hit, alt = _compare_hit(st, pool, by_ean, base["name"], base)
+                if hit and alt and _variant_miss(_variants(base["name"]), hit):
+                    bad.append((base["name"], st, hit["name"]))
+        return len(pids), bad
+    n, bad = await asyncio.to_thread(work)
+    logger.info("AUDIT vergelijken: %d producten, %d met andere variant", n, len(bad))
+    for k in range(0, len(bad), 25):
+        logger.info("AUDIT variant: %s", bad[k:k + 25])
 
 
 async def _global_products() -> list:
@@ -6881,6 +6930,11 @@ def _cheapest_good_raw(pool: list, name: str, store: str) -> Optional[dict]:
         good = full
     elif len(want) > 1:
         good = [d for d in good if has_all(d)] or good
+    # Vraag je gewoon "penne", dan liever geen volkoren of glutenvrij (en andersom)
+    want_v = _variants(name)
+    if len(good) > 1:
+        fewest = min(_variant_miss(want_v, d) for d in good)
+        good = [d for d in good if _variant_miss(want_v, d) == fewest]
     if good[0] is not hits[0][1]:
         hits = [(0, good[0])] + hits
     if len(good) < 2:
@@ -6917,7 +6971,7 @@ _DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", 
                 "rood", "groen", "geel", "bio", "biologisch", "biologische", "naturel", "kruimig", "vastkokend", "s", "m", "l", "xl", "kanjers",
                 "vrije", "uitloop", "scharrel", "per", "kilo", "stuk", "zak", "bak", "pot", "blik", "fles", "flessen", "pak", "pack", "voordeel",
                 "voordeelverpakking", "mini", "groot", "klein", "heel", "halve", "stukjes", "diepvries", "vers", "extra", "fijn", "grof",
-                "volkoren", "meergranen", "half", "bruin", "tarwe", "gesneden"}
+                "volkoren", "meergranen", "half", "bruin", "tarwe", "gesneden", "rigate", "lisce"}
 _STORE_WORDS = {"ah", "jumbo", "dirk", "1 de beste", "excellent", "biologisch"}
 
 
@@ -7410,7 +7464,40 @@ COMPARE_STORES = ["Albert Heijn", "Jumbo", "Dirk"]
 _compare_running: set = set()
 
 
+# Soort-varianten: gewone penne is geen volkoren- of glutenvrije penne. Bij vergelijken liefst dezelfde variant.
+_VARIANT_RE = re.compile(r"\b(volkoren|glutenvrij\w*|lactosevrij\w*|suikervrij\w*|bio|biologisch\w*|light|zero|mini|vegan|vega|vegetarisch\w*|"
+                         r"halfvol\w*|mager\w*|volle|spelt|zilvervlies|ongezouten|gezouten|zoutarm|eiwit|protein)\b")
+
+
+def _variants(name: str) -> set:
+    v = set()
+    for m in _VARIANT_RE.findall(_norm_text(name or "")):
+        v.add(m[:7])  # "glutenvrije" en "glutenvrij" tellen als hetzelfde
+    return v
+
+
+def _variant_miss(want: set, d: dict) -> int:
+    return len(want ^ _variants(d.get("name") or ""))
+
+
 def _compare_hit(st: str, cands: list, by_ean: dict, name: str, base: Optional[dict]) -> tuple:
+    hit, alt = _compare_hit_raw(st, cands, by_ean, name, base)
+    if hit is None or not alt or not base:
+        return hit, alt
+    # Zelfde soort gevonden maar een andere variant (volkoren i.p.v. gewoon)? Kijk of er een betere in dezelfde afdeling is
+    want = _variants(base.get("name") or "")
+    if not _variant_miss(want, hit):
+        return hit, alt
+    terms = _alt_terms(name, base) or name
+    pool = [d for d in _best_matches(cands, terms, 15) if _same_kind(base, d, strict=False) and d.get("aisle") == hit.get("aisle")]
+    better = [d for d in pool if _variant_miss(want, d) < _variant_miss(want, hit)]
+    if better:
+        # Gelijke variant: de voordeligste per kilo of liter (zoals je in die winkel zelf zou kiezen)
+        return min(better, key=lambda d: (_variant_miss(want, d), (d.get("_up") or (_doc_price(d) or 999,))[0])), alt
+    return hit, alt
+
+
+def _compare_hit_raw(st: str, cands: list, by_ean: dict, name: str, base: Optional[dict]) -> tuple:
     # (product, vervangen?) voor één artikel in één winkel
     if base and base.get("_src") == st:
         return base, False
