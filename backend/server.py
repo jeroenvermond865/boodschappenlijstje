@@ -8224,11 +8224,14 @@ async def startup():
     await _trash_orphans()
     await _purge_expired_trash()
 
-    # Start the daily Dirk price/category refresh loop (runs while server is up)
-    asyncio.create_task(_daily_refresh_loop())
+    # Testsite (BACKGROUND_JOBS=0): zelfde database, maar prijsrondes en imports alleen op de echte site
+    if os.environ.get("BACKGROUND_JOBS", "1") != "0":
+        asyncio.create_task(_daily_refresh_loop())
+        asyncio.create_task(_import_extra_terms())
+    else:
+        logger.info("Testsite: achtergrondtaken staan uit")
     asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
-    asyncio.create_task(_import_extra_terms())
     asyncio.create_task(_log_product_counts())
 
 
