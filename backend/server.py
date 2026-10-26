@@ -1416,6 +1416,7 @@ class AutoMenuInput(BaseModel):
     days: Optional[List[int]] = None  # alleen deze dagen (index); leeg = alle dagen
     style: str = "mix"  # vertrouwd (wat je vaker eet), mix, nieuw (iets nieuws proberen)
     diet: str = ""  # "", vega, vegan
+    store: str = ""  # recepten van deze winkel (ah, jumbo, dirk); leeg = alle winkels
     cheap: bool = False  # goedkope gerechten eerst
     promos: bool = True  # gerechten met aanbiedingen eerst
     prefer: List[str] = []  # hier hebben we zin in (woorden in gerecht of ingrediënten)
@@ -1423,7 +1424,7 @@ class AutoMenuInput(BaseModel):
     remember: bool = True
 
 
-_MENU_PREF_KEYS = ("categories", "style", "diet", "cheap", "promos", "prefer", "avoid")
+_MENU_PREF_KEYS = ("categories", "style", "diet", "store", "cheap", "promos", "prefer", "avoid")
 
 
 @api_router.get("/menu-prefs")
@@ -1479,7 +1480,13 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     avoid = [w for w in (_norm_text(x) for x in data.avoid[:30]) if w]
     prefer = [w for w in (_norm_text(x) for x in data.prefer[:30]) if w]
 
+    store = data.store if data.store in _RECIPE_SOURCES else ""
+
     def fits(d):
+        # Gekozen winkel: geen recepten van een andere winkel (je eigen gerechten en standaardgerechten wel)
+        src = (d.get("source") or {}).get("store")
+        if store and src and src != store:
+            return False
         if avoid and any(w in text_of(d) for w in avoid):
             return False
         if data.diet in ("vega", "vegan") and not _diet_of([i.get("name") or "" for i in d["ingredients"]])[1 if data.diet == "vegan" else 0]:
@@ -1503,13 +1510,14 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         slots = sum(1 for idx, day in enumerate(days_all) if replaced(idx, day, cat))
         # Elke dag iets anders: zoveel verschillende gerechten heb je nodig (bij "Iets nieuws" de helft nieuw)
         have = sum(1 for d in dishes if d["category"] == cat and d["dish_id"] not in keep)
-        need = min(slots, 7) - have if data.style != "nieuw" else min(slots, 7) - min(have, slots // 2)
+        want = min(slots, MENU_MAX_DIFFERENT)
+        need = want - have if data.style != "nieuw" else want - min(have, slots // 2)
         if need <= 0:
             continue
         if added_online >= MENU_ONLINE_MAX or time.time() - t_start > MENU_ONLINE_SECONDS:
             break
         try:
-            found = await _menu_recipes(cat, prefer, avoid, need * 3)
+            found = await _menu_recipes(cat, prefer, avoid, need * 3, store)
         except Exception as e:
             logger.warning("Menu aanvullen met recepten: %r", e)
             found = []
@@ -1619,26 +1627,34 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes), "pool": len(dishes), "added_online": added_online}
 
 
-MENU_ONLINE_MAX = 10  # zoveel nieuwe recepten per keer invullen; de rest vult de app met wat er al is (herhalen)
-MENU_ONLINE_SECONDS = 30
+MENU_MAX_DIFFERENT = 14  # zoveel verschillende gerechten per maaltijd; bij langere activiteiten komen ze na twee weken terug
+MENU_ONLINE_MAX = 16  # zoveel nieuwe recepten per keer invullen; de rest vult de app met wat er al is (herhalen)
+MENU_ONLINE_SECONDS = 45
 
 _MENU_COURSE = {"ontbijt": "ontbijt", "lunch": "lunch", "avondeten": "hoofdgerecht", "snacks": "borrel"}
 
 
-async def _menu_recipes(cat: str, prefer: list, avoid: list, n: int) -> list:
+async def _menu_recipes(cat: str, prefer: list, avoid: list, n: int, store: str = "") -> list:
     # Recepten uit de winkels voor één soort maaltijd, passend bij wat je graag (niet) wilt; willekeurig voor afwisseling
     import json as _json
-    flt = {"gang": [_MENU_COURSE.get(cat, "hoofdgerecht")]}  # vega/vegan controleren we na het overnemen (ingrediënten)
+    course = _MENU_COURSE.get(cat, "hoofdgerecht")
+    flt = {"gang": [course]}  # vega/vegan controleren we na het overnemen (ingrediënten)
+    if store:
+        # Eén winkel: het filter in de woorden van die winkel
+        k, v = _COURSE_MAP[store].get(course, (None, None))
+        flt = {k: [v]} if k else {}
+    where = store or "all"
     out: list = []
     start = random.randint(0, 3)
-    for q, page in ([(q, 0) for q in prefer[:3]] or [("", start), ("", start + 1)]):
+    pages = [("", start + i) for i in range(max(2, min(5, n // 6 + 1)))]
+    for q, page in ([(q, 0) for q in prefer[:3]] or pages):
         try:
-            res = await _search_recipes(q, "all", page, _json.dumps(flt))
+            res = await _search_recipes(q, where, page, _json.dumps(flt))
         except HTTPException:
             continue
         out += res.get("recipes") or []
-    if not out and prefer:
-        out = (await _search_recipes("", "all", 0, _json.dumps(flt))).get("recipes") or []
+    if not out:
+        out = (await _search_recipes("", where, 0, _json.dumps(flt))).get("recipes") or []
     out = [r for r in out if r.get("id") and not any(w in _norm_text(r.get("title") or "") for w in avoid)]
     random.shuffle(out)
     seen, uniq = set(), []

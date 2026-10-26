@@ -6,19 +6,29 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { Button, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { useAuth } from "@/src/auth";
 import { CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory } from "@/src/constants";
 import { dietConflicts } from "@/src/diet";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Style = "vertrouwd" | "mix" | "nieuw";
-type Prefs = { categories?: MealCategory[]; style?: Style; diet?: string; cheap?: boolean; promos?: boolean; prefer?: string[]; avoid?: string[] };
+type Prefs = { categories?: MealCategory[]; style?: Style; diet?: string; store?: string; cheap?: boolean; promos?: boolean; prefer?: string[]; avoid?: string[] };
 
 const STYLES: { key: Style; label: string; sub: string; icon: string }[] = [
   { key: "vertrouwd", label: "Vertrouwd", sub: "Wat je vaker eet", icon: "home-heart" },
   { key: "mix", label: "Mix", sub: "Bekend en nieuw door elkaar", icon: "shuffle-variant" },
   { key: "nieuw", label: "Iets nieuws", sub: "Gerechten die je nog niet had", icon: "star-shooting-outline" },
 ];
+
+// Recepten van welke winkel? Standaard je eigen supermarkt
+const STORES: { key: string; label: string }[] = [
+  { key: "", label: "Alle winkels" },
+  { key: "ah", label: "Albert Heijn" },
+  { key: "jumbo", label: "Jumbo" },
+  { key: "dirk", label: "Dirk" },
+];
+const storeKey = (label?: string | null) => STORES.find((s) => s.key && s.label === label)?.key ?? "";
 
 const words = (t: string) =>
   t
@@ -50,6 +60,8 @@ export function MenuWizard({
   const [cats, setCats] = useState<MealCategory[]>(["avondeten"]);
   const [style, setStyle] = useState<Style>("mix");
   const [dietPick, setDietPick] = useState("");
+  const { user } = useAuth();
+  const [store, setStore] = useState(storeKey(user?.store));
   const [cheap, setCheap] = useState(false);
   const [promos, setPromos] = useState(true);
   const [prefer, setPrefer] = useState("");
@@ -67,6 +79,7 @@ export function MenuWizard({
         if (p.categories?.length) setCats(p.categories);
         if (p.style) setStyle(p.style);
         setDietPick(p.diet ?? "");
+        setStore(p.store !== undefined ? p.store : storeKey(user?.store));
         setCheap(!!p.cheap);
         setPromos(p.promos ?? true);
         setPrefer((p.prefer ?? []).join(", "));
@@ -95,6 +108,7 @@ export function MenuWizard({
           days: allDays ? null : pickDays,
           style,
           diet: dietPick,
+          store,
           cheap,
           promos,
           prefer: words(prefer),
@@ -181,6 +195,13 @@ export function MenuWizard({
                 {style === s.key ? <Icon name="check" size={18} color={colors.brandPrimary} /> : null}
               </Pressable>
             ))}
+
+            <Text style={styles.head}>Recepten van</Text>
+            <View style={styles.chips}>
+              {STORES.map((s) => (
+                <Chip key={s.key || "all"} on={store === s.key} label={s.label} onPress={() => setStore(s.key)} />
+              ))}
+            </View>
 
             <Text style={styles.head}>Voorkeuren</Text>
             <View style={styles.chips}>
