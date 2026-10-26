@@ -547,6 +547,25 @@ export default function ShoppingScreen() {
               ) : null}
             </View>
           ) : null}
+          {tab === "total" && onRoute && !route.tipOff && data?.by_store?.length ? (
+            // Elke winkel is anders ingedeeld: de standaardvolgorde is een gok, de gebruiker zet hem goed voor zijn eigen filiaal
+            <View style={styles.routeTip} testID="route-tip">
+              <Icon name="information-outline" size={18} color={colors.brandPrimary} />
+              <View style={{ flex: 1, gap: 6 }}>
+                <Text style={styles.routeTipText}>
+                  De looproute is een gewone indeling van een supermarkt. Elk filiaal ligt anders, dus zet hem bij "Aanpassen" in de volgorde van de winkel waar jij meestal komt. De app onthoudt dat.
+                </Text>
+                <View style={{ flexDirection: "row", gap: 16 }}>
+                  <Pressable onPress={() => setRouteEdit(data.by_store[0].store)} hitSlop={6}>
+                    <Text style={styles.pantryLinkText}>Nu instellen</Text>
+                  </Pressable>
+                  <Pressable onPress={route.hideTip} hitSlop={6} testID="route-tip-hide">
+                    <Text style={[styles.pantryLinkText, { color: colors.muted }]}>Niet meer tonen</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          ) : null}
           {tab === "total" && grandTotal > 0 ? (
             <View style={styles.totalCard}>
               <Text style={styles.totalLabel}>Geschat totaal</Text>
@@ -888,6 +907,8 @@ const useStyles = makeStyles((colors) => ({
   segText: { fontSize: 14, fontFamily: fonts.medium, color: colors.muted },
   segTextActive: { color: colors.onSurface, fontFamily: fonts.semibold },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
+  routeTip: { flexDirection: "row", gap: 8, backgroundColor: colors.surfaceSecondary, borderRadius: 12, padding: 12, borderWidth: 1, borderColor: colors.border },
+  routeTipText: { fontSize: 13, lineHeight: 18, fontFamily: fonts.regular, color: colors.onSurfaceSecondary },
   multiBanner: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.brandTertiary, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, padding: 10 },
   multiText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.onBrandTertiary, flex: 1 },
   storeHeader: { flexDirection: "row", alignItems: "center", gap: 8, paddingBottom: 2 },

@@ -53,21 +53,34 @@ const storeOf = (s: string) => s.replace(/^alg:/, "");
 export function useRoute() {
   const [on, setOnState] = useState(false);
   const [custom, setCustom] = useState<Record<string, string[]>>({});
+  const [tipOff, setTipOff] = useState(true); // uitleg "zet de route goed voor jouw filiaal"; pas tonen na het laden
   useEffect(() => {
     storage.getItem<string | null>(KEY, null).then((raw) => {
-      if (!raw) return;
+      if (!raw) {
+        setTipOff(false);
+        return;
+      }
       try {
         const v = JSON.parse(raw);
         setOnState(!!v.on);
         setCustom(v.custom ?? {});
-      } catch {}
+        setTipOff(!!v.tipOff);
+      } catch {
+        setTipOff(false);
+      }
     });
   }, []);
-  const save = (next: { on: boolean; custom: Record<string, string[]> }) => storage.setItem(KEY, JSON.stringify(next));
+  const save = (next: { on: boolean; custom: Record<string, string[]>; tipOff?: boolean }) =>
+    storage.setItem(KEY, JSON.stringify({ tipOff, ...next }));
   const order = (store: string) => custom[storeOf(store)] ?? DEFAULT_ROUTE[storeOf(store)] ?? BASE;
   return {
     version: JSON.stringify(custom),
     on,
+    tipOff,
+    hideTip: () => {
+      setTipOff(true);
+      save({ on, custom, tipOff: true });
+    },
     setOn: (v: boolean) => {
       setOnState(v);
       save({ on: v, custom });
