@@ -23,7 +23,7 @@ import { GOLD, usePremium } from "@/src/premium";
 import { useSwipePages } from "@/src/useSwipePages";
 import { goBack } from "@/src/nav";
 import { VegaPicker } from "@/src/VegaPicker";
-import { DishPreview, dishProductFor, fullDishRoute, type AltSwap, type PreviewTarget } from "@/src/DishPreview";
+import { DishPreview, dishProductFor, fullDishRoute, slotOf, type AltSwap, type PreviewTarget } from "@/src/DishPreview";
 import { MenuWizard } from "@/src/MenuWizard";
 import { DateField } from "@/src/DateField";
 import { useToast } from "@/src/toast";
@@ -84,6 +84,7 @@ export default function CampDetailScreen() {
   const [pickerCat, setPickerCat] = useState<MealCategory | null>(null);
   // Gerecht in je lijstje aantikken: eerst bekijken, dan kiezen voor het hele gerecht of aanpassen voor dit lijstje
   const [dishView, setDishView] = useState<Dish | null>(null);
+  const [dishMeal, setDishMeal] = useState<MealCategory | null>(null); // bij welke maaltijd het bekeken gerecht staat
   const [membersOpen, setMembersOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [extraTarget, setExtraTarget] = useState<"day" | "general" | null>(null);
@@ -213,17 +214,39 @@ export default function CampDetailScreen() {
   };
 
   // Wisseltip uit het recept ("liever vlees? vervang de vega gyros door gyros"): voor dit hele lijstje wisselen
-  const altSwap = async (dish: Dish, sw: AltSwap) => {
-    const from = dishProductFor(dish, sw);
-    if (!from) {
-      toast.show("Dit product staat niet in het gerecht; pas het gerecht aan om te wisselen", "error");
-      return;
+  // Nog een keer tikken: terug wisselen. Een tip als "lekker met feta" zet het product bij deze maaltijd (of haalt het weg)
+  const altDone = (dish: Dish | null, sw: AltSwap) => {
+    if (sw.kind === "add") {
+      const d = camp?.days.find((x) => x.index === selected);
+      return !!d && (d.extras ?? []).some((ex) => ex.product_id === sw.product.id && (ex.meal ?? null) === (dishMeal ?? dish?.category ?? null));
     }
+    const from = dish ? dishProductFor(dish, sw) : null;
+    return !!from && (camp?.product_swaps ?? {})[from] === sw.product.id;
+  };
+  const altSwap = async (dish: Dish, sw: AltSwap) => {
+    const on = altDone(dish, sw);
     try {
-      await api(`/camps/${id}/product-swap`, { method: "POST", body: { from_id: from, to_id: sw.product.id } });
+      if (sw.kind === "add") {
+        await api(`/camps/${id}/tip-extra`, {
+          method: "POST",
+          body: { product_id: sw.product.id, day_index: selected, meal: dishMeal ?? dish.category, on: !on },
+        });
+      } else {
+        const from = dishProductFor(dish, sw);
+        if (!from) {
+          toast.show("Dit product staat niet in het gerecht; pas het gerecht aan om te wisselen", "error");
+          return;
+        }
+        await api(`/camps/${id}/product-swap`, { method: "POST", body: on ? { from_id: sw.product.id, to_id: from } : { from_id: from, to_id: sw.product.id } });
+      }
       await Promise.all(["camp", "shopping", "budget"].map((k) => qc.invalidateQueries({ queryKey: [k, id] })));
       qc.invalidateQueries({ queryKey: ["dish-prep"] });
-      toast.show(`${sw.from} vervangen door ${sw.product.name}`, "success");
+      toast.show(
+        sw.kind === "add"
+          ? on ? `${sw.product.name} weggehaald` : `${sw.product.name} toegevoegd`
+          : on ? `Terug gewisseld naar ${sw.from}` : `${sw.from} vervangen door ${sw.product.name}`,
+        "success",
+      );
     } catch (e: any) {
       toast.show(e?.message ?? "Wisselen mislukt", "error");
     }
@@ -554,7 +577,11 @@ export default function CampDetailScreen() {
                       <View style={styles.dishRow}>
                         <Pressable
                           disabled={!dish}
-                          onPress={() => dish && setDishView(dish)}
+                          onPress={() => {
+                            if (!dish) return;
+                            setDishView(dish);
+                            setDishMeal(cat);
+                          }}
                           style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6 }}
                         >
                           {dish?.online ? <Icon name="web" size={15} color={colors.muted} /> : null}
@@ -637,11 +664,8 @@ export default function CampDetailScreen() {
         campId={id}
         target={dishView ? { dish: dishView } : null}
         onClose={() => setDishView(null)}
-        swapDone={(sw) => {
-          const from = dishView ? dishProductFor(dishView, sw) : null;
-          return !!from && (camp.product_swaps ?? {})[from] === sw.product.id;
-        }}
-        onAltSwap={(sw) => dishView && altSwap(dishView, sw)}
+        swapDone={(sw) => altDone(dishView, sw)}
+        onAltSwap={(sw) => (dishView ? altSwap(dishView, sw) : undefined)}
         actions={
           dishView
             ? [
@@ -1326,12 +1350,12 @@ function DishPickerModal({
           setPreview(null);
           setRecSwaps({});
         }}
-        swapDone={(sw) => recSwaps[String(sw.index)] === sw.product.id}
+        swapDone={(sw) => recSwaps[slotOf(sw)] === sw.product.id}
         onAltSwap={
           preview && "recipe" in preview
             ? (sw) =>
                 setRecSwaps((x) => {
-                  const k = String(sw.index);
+                  const k = slotOf(sw);
                   const { [k]: cur, ...rest } = x;
                   return cur === sw.product.id ? rest : { ...rest, [k]: sw.product.id };
                 })

@@ -4,6 +4,7 @@ import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "rea
 import Modal from "@/src/components/Modal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
@@ -12,12 +13,16 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 import type { Dish } from "@/app/(tabs)/dishes";
 import type { RecipeTile } from "@/src/OnlineRecipes";
 import type { Product } from "@/src/ProductBrowser";
+import { ShopSwapSheet } from "@/src/ShopSwap";
 
 export type PreviewAction = { label: string; icon?: string; onPress: () => void; primary?: boolean; testID?: string };
 export type PreviewTarget = { dish: Dish } | { recipe: RecipeTile };
 
-// Wisseltip van de site ("Liever vlees? Vervang de vega gyros door gyros") met het product om naar te wisselen
-export type AltSwap = { index: number; label: string; from: string; to: string; text: string; product: Product };
+// Wisseltip van de site ("Liever vlees? Vervang de vega gyros door gyros") met het product om naar te wisselen,
+// of een andere tip ("Lekker met wat extra feta") met een product om toe te voegen (kind "add")
+export type AltSwap = { index: number; slot?: string; kind?: "swap" | "add"; label: string; from: string; to: string; text: string; product: Product };
+// Waar de keuze onder bewaard wordt: het volgnummer van het ingrediënt, of "add-…" voor iets wat erbij komt
+export const slotOf = (s: AltSwap) => s.slot ?? String(s.index);
 type RecipeDetail = {
   title: string;
   image?: string | null;
@@ -41,29 +46,67 @@ export function dishProductFor(dish: Dish, s: AltSwap): string | null {
   return hit?.product_id ?? null;
 }
 
-export function AltSwapList({ swaps, done, onSwap }: { swaps: AltSwap[]; done: (s: AltSwap) => boolean; onSwap: (s: AltSwap) => void }) {
+export function AltSwapList({
+  swaps,
+  done,
+  onSwap,
+}: {
+  swaps: AltSwap[];
+  done: (s: AltSwap) => boolean;
+  onSwap: (s: AltSwap) => Promise<unknown> | void;
+}) {
   const styles = useStyles();
   const { colors } = useTheme();
+  // Zelf een ander product gekozen bij een tip (geldt hier; de app leert ervan)
+  const [own, setOwn] = useState<Record<string, Product>>({});
+  const [pickFor, setPickFor] = useState<AltSwap | null>(null);
   if (!swaps.length) return null;
+  const withOwn = (s: AltSwap): AltSwap => (own[slotOf(s)] ? { ...s, product: own[slotOf(s)] } : s);
+  const pick = async (p: Product) => {
+    const s = pickFor;
+    setPickFor(null);
+    if (!s) return;
+    const cur = withOwn(s);
+    setOwn((x) => ({ ...x, [slotOf(s)]: p }));
+    api("/recipes/tip-choice", { method: "POST", body: { name: s.to || s.from, product_id: p.id } }).catch(() => {});
+    // Stond het voorstel al aan? Dan dat terugdraaien en het gekozen product nemen
+    if (done(cur)) await onSwap(cur);
+    await onSwap({ ...s, product: p });
+  };
   return (
     <View style={{ gap: 8 }}>
-      {swaps.map((s) => {
+      {swaps.map((raw) => {
+        const s = withOwn(raw);
         const on = done(s);
+        const add = s.kind === "add";
         return (
-          <View key={`${s.index}-${s.to}`} style={styles.swap}>
+          <View key={`${slotOf(s)}-${raw.to}`} style={styles.swap}>
             {s.product.image ? <Image source={{ uri: s.product.image }} style={styles.swapImg} resizeMode="contain" /> : null}
-            <View style={{ flex: 1 }}>
-              <Text style={styles.swapTitle}>{s.label}?</Text>
-              <Text style={styles.meta} numberOfLines={2}>
-                {s.from} vervangen door {s.product.name}
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={styles.swapTitle} numberOfLines={s.label === "Tip" ? 3 : 1}>
+                {s.label === "Tip" ? `Tip: ${s.text}` : `${s.label}?`}
               </Text>
+              <Text style={styles.meta} numberOfLines={2}>
+                {add ? `${s.product.name} erbij` : `${s.from} vervangen door ${s.product.name}`}
+              </Text>
+              <Pressable onPress={() => setPickFor(raw)} hitSlop={6} testID={`alt-swap-other-${slotOf(s)}`}>
+                <Text style={styles.swapOther}>Ander product</Text>
+              </Pressable>
             </View>
-            <Pressable onPress={() => onSwap(s)} style={[styles.swapBtn, on && { backgroundColor: colors.success }]} testID={`alt-swap-${s.index}`}>
-              <Text style={styles.swapBtnText}>{on ? "Gewisseld" : "Vervangen"}</Text>
+            <Pressable onPress={() => onSwap(s)} style={[styles.swapBtn, on && styles.swapBtnOn]} testID={`alt-swap-${slotOf(s)}`}>
+              <Text style={[styles.swapBtnText, on && { color: colors.brandPrimary }]}>
+                {on ? (add ? "Weghalen" : "Terug wisselen") : add ? "Toevoegen" : "Vervangen"}
+              </Text>
             </Pressable>
           </View>
         );
       })}
+      <ShopSwapSheet
+        item={pickFor ? { name: pickFor.to || pickFor.from, product: withOwn(pickFor).product.name, product_id: withOwn(pickFor).product.id } : null}
+        store={pickFor?.product.source ?? ""}
+        onClose={() => setPickFor(null)}
+        onPick={(p) => pick(p as unknown as Product)}
+      />
     </View>
   );
 }
@@ -127,7 +170,7 @@ export function DishPreview({
   onClose: () => void;
   actions: PreviewAction[];
   swapDone?: (s: AltSwap) => boolean;
-  onAltSwap?: (s: AltSwap) => void;
+  onAltSwap?: (s: AltSwap) => Promise<unknown> | void;
   campId?: string;
 }) {
   const styles = useStyles();
@@ -243,7 +286,9 @@ const useStyles = makeStyles((colors) => ({
   swapImg: { width: 44, height: 44, borderRadius: 8, backgroundColor: "#fff" },
   swapTitle: { fontSize: 14, fontFamily: fonts.bold, color: colors.onSurface },
   swapBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.brandPrimary },
+  swapBtnOn: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.brandPrimary },
   swapBtnText: { fontSize: 13, fontFamily: fonts.bold, color: colors.onBrandPrimary },
+  swapOther: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
   btn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 14, paddingVertical: 13 },
   btnPrimary: { backgroundColor: colors.brandPrimary },
   btnSecondary: { backgroundColor: colors.brandTertiary },

@@ -108,7 +108,7 @@ export function DayMenuSheet({ campId, days, start, onClose }: { campId: string;
                         </View>
                         <Icon name={isOpen ? "chevron-up" : "chevron-down"} size={22} color={colors.muted} />
                       </Pressable>
-                      {isOpen ? <DishDetail dishId={m.dish_id} campId={campId} onOpen={openFull} /> : null}
+                      {isOpen ? <DishDetail dishId={m.dish_id} campId={campId} dayIndex={d.index} meal={m.meal} onOpen={openFull} /> : null}
                     </View>
                   );
                 })}
@@ -133,10 +133,15 @@ export function DayMenuSheet({ campId, days, start, onClose }: { campId: string;
   );
 }
 
-function DishDetail({ dishId, campId, onOpen }: { dishId: string; campId: string; onOpen: (d: Dish) => void }) {
+type CampSwaps = {
+  product_swaps?: Record<string, string>;
+  days?: { index: number; extras?: { product_id?: string | null; meal?: string | null }[] }[];
+};
+
+function DishDetail({ dishId, campId, dayIndex, meal, onOpen }: { dishId: string; campId: string; dayIndex: number; meal: string; onOpen: (d: Dish) => void }) {
   const qc = useQueryClient();
   const toast = useToast();
-  const camp = useQuery({ queryKey: ["camp", campId], queryFn: () => api<{ product_swaps?: Record<string, string> }>(`/camps/${campId}`), staleTime: 60 * 1000 });
+  const camp = useQuery({ queryKey: ["camp", campId], queryFn: () => api<CampSwaps>(`/camps/${campId}`), staleTime: 60 * 1000 });
   const styles = useStyles();
   const { colors } = useTheme();
   const dish = useQuery({ queryKey: ["dish", dishId], queryFn: () => api<Dish>(`/dishes/${dishId}`), staleTime: 10 * 60 * 1000 });
@@ -152,14 +157,33 @@ function DishDetail({ dishId, campId, onOpen }: { dishId: string; campId: string
   if (dish.isLoading) return <ActivityIndicator color={colors.brandPrimary} style={{ margin: 10 }} />;
   if (!dish.data) return <Text style={[styles.meta, { padding: 10 }]}>Dit gerecht kon niet geladen worden.</Text>;
   // "Liever vlees? Vervang ...": voor dit hele lijstje wisselen
-  const swap = async (sw: AltSwap) => {
+  // Nog een keer tikken: terug wisselen. Een tip als "lekker met feta" zet het product bij deze maaltijd (of haalt het weg)
+  const isDone = (sw: AltSwap) => {
+    if (sw.kind === "add") {
+      const day = camp.data?.days?.find((x) => x.index === dayIndex);
+      return !!day && (day.extras ?? []).some((ex) => ex.product_id === sw.product.id && (ex.meal ?? null) === meal);
+    }
     const from = dish.data ? dishProductFor(dish.data as any, sw) : null;
-    if (!from) return toast.show("Dit product staat niet in het gerecht; pas het gerecht aan om te wisselen", "error");
+    return !!from && camp.data?.product_swaps?.[from] === sw.product.id;
+  };
+  const swap = async (sw: AltSwap) => {
+    const on = isDone(sw);
     try {
-      await api(`/camps/${campId}/product-swap`, { method: "POST", body: { from_id: from, to_id: sw.product.id } });
+      if (sw.kind === "add") {
+        await api(`/camps/${campId}/tip-extra`, { method: "POST", body: { product_id: sw.product.id, day_index: dayIndex, meal, on: !on } });
+      } else {
+        const from = dish.data ? dishProductFor(dish.data as any, sw) : null;
+        if (!from) return toast.show("Dit product staat niet in het gerecht; pas het gerecht aan om te wisselen", "error");
+        await api(`/camps/${campId}/product-swap`, { method: "POST", body: on ? { from_id: sw.product.id, to_id: from } : { from_id: from, to_id: sw.product.id } });
+      }
       await Promise.all(["camp", "shopping", "budget"].map((k) => qc.invalidateQueries({ queryKey: [k, campId] })));
       qc.invalidateQueries({ queryKey: ["dish-prep"] });
-      toast.show(`${sw.from} vervangen door ${sw.product.name}`, "success");
+      toast.show(
+        sw.kind === "add"
+          ? on ? `${sw.product.name} weggehaald` : `${sw.product.name} toegevoegd`
+          : on ? `Terug gewisseld naar ${sw.from}` : `${sw.from} vervangen door ${sw.product.name}`,
+        "success",
+      );
     } catch (e: any) {
       toast.show(e?.message ?? "Wisselen mislukt", "error");
     }
@@ -175,10 +199,7 @@ function DishDetail({ dishId, campId, onOpen }: { dishId: string; campId: string
       ))}
       <AltSwapList
         swaps={rec.data?.alt_swaps ?? []}
-        done={(sw) => {
-          const from = dish.data ? dishProductFor(dish.data as any, sw) : null;
-          return !!from && camp.data?.product_swaps?.[from] === sw.product.id;
-        }}
+        done={isDone}
         onSwap={swap}
       />
       <View style={{ marginTop: 6 }}>

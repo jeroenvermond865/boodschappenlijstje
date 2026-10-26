@@ -15,7 +15,7 @@ import { euro } from "@/src/search";
 import { STORE_LABEL } from "@/src/OnlineRecipes";
 import type { Product } from "@/app/(tabs)/products";
 import { BetterPack, PackBetter, PackPlan, packText } from "@/src/packs";
-import { AltSwapList, type AltSwap } from "@/src/DishPreview";
+import { AltSwapList, slotOf, type AltSwap } from "@/src/DishPreview";
 
 type Recipe = {
   id: string;
@@ -72,7 +72,8 @@ export default function RecipeScreen() {
     retry: 1,
   });
   // Zelf gewisseld (bijv. naar een voordeligere verpakking): per ingrediënt het andere product
-  const [swaps, setSwaps] = useState<Record<number, Product>>({});
+  // Sleutel is het volgnummer van het ingrediënt, of "add-…" voor een product dat er via een tip bij komt
+  const [swaps, setSwaps] = useState<Record<string, Product>>({});
   const r = useMemo(
     () => (q.data ? { ...q.data, ingredients: q.data.ingredients.map((i, k) => (swaps[k] ? { ...i, product: swaps[k], site_packs: null } : i)) } : undefined),
     [q.data, swaps],
@@ -253,11 +254,11 @@ export default function RecipeScreen() {
               {/* "Liever vlees? Vervang ...": met één tik wisselen; gaat mee naar je lijstje */}
               <AltSwapList
                 swaps={q.data?.alt_swaps ?? []}
-                done={(s) => swaps[s.index]?.id === s.product.id}
+                done={(s) => swaps[slotOf(s)]?.id === s.product.id}
                 onSwap={(s) =>
                   setSwaps((x) => {
-                    const { [s.index]: cur, ...rest } = x;
-                    return cur?.id === s.product.id ? rest : { ...rest, [s.index]: s.product as Product };
+                    const { [slotOf(s)]: cur, ...rest } = x;
+                    return cur?.id === s.product.id ? rest : { ...rest, [slotOf(s)]: s.product as Product };
                   })
                 }
               />

@@ -5,6 +5,17 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-a",
+    date: "27 oktober 2026",
+    title: "Tips bij gerechten: echt doen, en terug wisselen",
+    changes: [
+      { kind: "beter", text: "Gewisseld bij een gerecht (bijv. 'Liever vlees?')? De knop wordt nu 'Terug wisselen', zodat je met één tik weer terug bent." },
+      { kind: "nieuw", text: "Andere tips bij een recept, zoals 'lekker met wat extra feta' of 'je kunt ook spinazie gebruiken', komen nu met een productvoorstel. Tik Toevoegen of Vervangen en het staat op je lijstje." },
+      { kind: "nieuw", text: "Past het voorgestelde product niet? Tik 'Ander product' en kies zelf. De app onthoudt wat je kiest en stelt dat de volgende keer voor." },
+      { kind: "opgelost", text: "Wisselen van vega naar vlees geldt alleen voor jou en wordt niet meer aan anderen voorgesteld." },
+    ],
+  },
+  {
     id: "2026-10-26-v",
     date: "26 oktober 2026",
     title: "Bereiding die past bij jouw producten",

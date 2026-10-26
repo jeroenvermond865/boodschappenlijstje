@@ -2392,9 +2392,45 @@ async def camp_product_swap(camp_id: str, data: ProductSwap, user: dict = Depend
     # Al eens gewisseld? Dan vervangt het nieuwe product het oorspronkelijke
     old = camp.get("product_swaps") or {}
     origin = next((k for k, v in old.items() if v == data.from_id), data.from_id)
+    if data.to_id == origin:
+        # Terug wisselen naar het oorspronkelijke product
+        swaps = {k: v for k, v in old.items() if k != origin}
+        await db.camps.update_one({"camp_id": camp_id}, {"$set": {"product_swaps": swaps}})
+        return {"ok": True}
     swaps = {**old, origin: data.to_id}
     await db.camps.update_one({"camp_id": camp_id}, {"$set": {"product_swaps": swaps}})
     asyncio.create_task(_learn_swap(user, origin, data.to_id))
+    return {"ok": True}
+
+
+class TipExtra(BaseModel):
+    product_id: str
+    day_index: int
+    meal: Optional[str] = None
+    on: bool = True
+
+
+@api_router.post("/camps/{camp_id}/tip-extra")
+async def camp_tip_extra(camp_id: str, data: TipExtra, user: dict = Depends(get_current_user)):
+    # Tip bij een gerecht ("lekker met feta"): het product bij die maaltijd zetten, of weer weghalen
+    camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "days": 1})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
+    days = camp.get("days") or []
+    day = next((d for d in days if d.get("index") == data.day_index), None)
+    if not day:
+        raise HTTPException(status_code=400, detail="Die dag bestaat niet")
+    meal = data.meal if data.meal in MEAL_CATEGORIES else None
+    extras = [x for x in day.get("extras") or [] if not (x.get("product_id") == data.product_id and x.get("meal") == meal)]
+    if data.on:
+        await _global_products()
+        p = (_product_cache.get("by_pid") or {}).get(data.product_id) or await db.products.find_one({"product_id": data.product_id}, {"_id": 0})
+        if not p:
+            raise HTTPException(status_code=404, detail="Product niet gevonden")
+        extras.append({"name": p["name"], "unit": "stuks", "qty": 1, "aisle": p.get("aisle") or "Overig", "product_id": data.product_id,
+                       "store": product_source(p), "meal": meal, "auto": False})
+    day["extras"] = extras
+    await db.camps.update_one({"camp_id": camp_id}, {"$set": {"days": days}})
     return {"ok": True}
 
 
@@ -7145,7 +7181,7 @@ async def _learn_swap(user: dict, from_pid: str, to_pid: str) -> None:
             return
         by_pid = _product_cache.get("by_pid") or {}
         a, b = by_pid.get(from_pid), by_pid.get(to_pid)
-        if not a or not b or (_LEARN_SKIP.search(_norm_text(b.get("name") or "")) and not _LEARN_SKIP.search(_norm_text(a.get("name") or ""))):
+        if not a or not b or _diet_differs(a, b):
             return
         await _learn_vote(db.learned_swaps, {"from": from_pid}, {"to": to_pid}, user)
         rows = [(d["to"], d.get("score") or 0) async for d in db.learned_swaps.find({"from": from_pid}, {"_id": 0})]
@@ -7160,6 +7196,11 @@ async def _learn_swap(user: dict, from_pid: str, to_pid: str) -> None:
 
 
 _LEARN_SKIP = re.compile(r"vega|vegetari|plantaardig|vegan|veggie|glutenvrij|lactosevrij")
+
+
+def _diet_differs(a: dict, b: dict) -> bool:
+    # Vega naar vlees (of andersom) wisselen is een eigen keuze: dat geldt niet voor iedereen
+    return bool(_LEARN_SKIP.search(_norm_text(a.get("name") or ""))) != bool(_LEARN_SKIP.search(_norm_text(b.get("name") or "")))
 
 
 async def _learn_from_dish(user: dict, old: list, new: list) -> None:
@@ -7198,7 +7239,7 @@ def _learned_product(store: str, name: str = "", d: Optional[dict] = None) -> Op
         d = hit
     if d:
         to = by_pid.get(_learned["swaps"].get(d.get("product_id") or "") or "")
-        if to and (to.get("_src") or product_source(to)) == (d.get("_src") or product_source(d)):
+        if to and (to.get("_src") or product_source(to)) == (d.get("_src") or product_source(d)) and not _diet_differs(d, to):
             return to
     return d
 
@@ -7644,6 +7685,94 @@ def _recipe_alt_swaps(rec: dict, user: dict) -> list:
     return out[:4]
 
 
+# Andere tips bij een recept ("Lekker met wat extra feta", "Serveer met naanbrood", "Je kunt ook spinazie gebruiken"):
+# met een productvoorstel, zodat je ze echt kunt doen
+_TIP_ADD_RES = [
+    re.compile(r"(?:lekker|heerlijk|serveer|garneer|bestrooi|top|maak\s+af|combineer)\w*\s+(?:het\s+|dit\s+|de\s+\w+\s+)?(?:gerecht\s+|af\s+)?met\s+(?P<x>[^.!?;:]+)", re.I),
+    re.compile(r"voeg\s+(?:er\s+)?(?:eventueel\s+)?(?:nog\s+)?(?P<x>[^.!?;:]+?)\s+(?:aan\s+toe|toe)\b", re.I),
+    re.compile(r"(?P<x>[^.!?;:,]+?)\s+(?:past|passen|smaakt|smaken|is|zijn)\s+(?:er\s+)?(?:hier\s+)?(?:ook\s+)?(?:goed|prima|heerlijk|erg\s+lekker|lekker)\s+(?:bij|in|op|mee|erbij)", re.I),
+]
+_TIP_ALT_RE = re.compile(r"(?:(?:kun|kan)\s+(?:je|u)|(?:je|u)\s+(?:kunt|kan))\s+(?:ook\s+)?(?:prima\s+)?(?P<x>[^.!?;:]+?)\s+(?:gebruiken|nemen|doen)\b", re.I)
+_TIP_FILLER = re.compile(r"^(?:de|het|een|wat|nog|extra|eventueel|beetje|paar|handje|handjevol|plakjes?|schijfjes?|blaadjes?|stukjes?|snufje|scheutje|klodder|toefje|ook|verse|vers|gehakte|geraspte|"
+                         r"[\d.,½¼]+|g|gr|gram|ml|el|tl|eetlepels?|theelepels?)\s+", re.I)
+_TIP_TAIL = re.compile(r"\s+(?:erbij|erover|ernaast|eroverheen|als\s+bijgerecht|voor\s+erbij|bij\s+het\s+\w+|naar\s+smaak|voor\s+\w+)\b.*$", re.I)
+
+
+def _tip_names(x: str) -> list:
+    out = []
+    for part in re.split(r",|\s+of\s+|\s+en\s+|\s+met\s+", x):
+        n = _TIP_TAIL.sub("", part.strip())
+        while True:
+            m = _TIP_FILLER.sub("", n, count=1)
+            if m == n:
+                break
+            n = m
+        n = re.sub(r"\([^)]*\)", "", n).strip(" -")
+        if 2 < len(n) <= 40 and len(n.split()) <= 4 and not re.search(r"\b(je|jij|het\s+gerecht|dit|deze|die|zelf|smaak)\b", n, re.I):
+            out.append(n)
+    return out
+
+
+def _recipe_tip_actions(rec: dict, user: dict, used: list) -> list:
+    sources = [rec.get("tip"), rec.get("description"), rec.get("alt_text")]
+    steps = [st for st in rec.get("steps") or [] if _TIP_ALT_RE.search(st or "") or re.search(r"\b(?:lekker|heerlijk)\s+met\b", st or "", re.I)]
+    sentences = []
+    for t in [x for x in sources + steps if x]:
+        sentences += [x.strip() for x in re.split(r"(?<=[.!?])\s+", t) if x.strip()]
+    sentences = [x for x in dict.fromkeys(sentences) if not any(x in u or u in x for u in used if u)]
+    if not sentences:
+        return []
+    docs = _product_cache.get("docs") or []
+    favs = set(user.get("favorite_products") or [])
+    ings = rec.get("ingredients") or []
+    have = {(i.get("product") or {}).get("id") for i in ings}
+    have_names = " ".join(_norm_text(i.get("name") or "") for i in ings)
+    store = next(((i.get("product") or {}).get("source") for i in ings if i.get("product")), None) or STORE_LABELS.get(rec.get("store")) or DEFAULT_STORE
+    pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
+    out = []
+    for sent in sentences:
+        alt = _TIP_ALT_RE.search(sent)
+        hits = [("swap", m.group("x")) for m in [alt] if m] + [("add", m.group("x")) for r in _TIP_ADD_RES for m in r.finditer(sent)]
+        for kind, x in hits:
+            for name in _tip_names(x):
+                nn = _norm_text(name)
+                if kind == "add" and (nn in have_names or any(w in have_names.split() for w in nn.split() if len(w) > 4)):
+                    continue  # staat al in het recept
+                d = _cheapest_good(pool, name, store)
+                if not d or d.get("product_id") in have or any(o["product"]["id"] == d.get("product_id") for o in out):
+                    continue
+                index, frm = -1, ""
+                if kind == "swap":
+                    # Wat vervang je: het ingrediënt uit dezelfde afdeling (spinazie voor andijvie, kip voor gehakt)
+                    k = next((k for k, i in enumerate(ings) if i.get("alt_for") is None and (i.get("product") or {}).get("aisle")
+                              and (i["product"]).get("aisle") == d.get("aisle") and not _diet_differs(i["product"], d)), None)
+                    if k is None:
+                        kind = "add"
+                    else:
+                        index, frm = k, ings[k].get("name") or ""
+                slot = str(index) if kind == "swap" else f"add-{len(out)}"
+                out.append({"index": index, "slot": slot, "kind": kind, "label": "Tip", "from": frm, "to": name, "text": sent[:200],
+                            "product": product_public(_clean(d), d["_src"], user["user_id"], favs)})
+                if len(out) >= 3:
+                    return out
+    return out
+
+
+class TipChoice(BaseModel):
+    name: str
+    product_id: str
+
+
+@api_router.post("/recipes/tip-choice")
+async def recipe_tip_choice(data: TipChoice, user: dict = Depends(get_current_user)):
+    # Bij een tip zelf een ander product gekozen: de app leert dat, zodat het voorstel de volgende keer klopt
+    await _global_products()
+    d = (_product_cache.get("by_pid") or {}).get(data.product_id)
+    if d and data.name.strip():
+        asyncio.create_task(_learn_pick(user, d["_src"], data.name.strip()[:60], data.product_id))
+    return {"ok": True}
+
+
 @api_router.get("/recipes/detail")
 async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
     try:
@@ -7737,6 +7866,10 @@ async def _recipe_products(rec: dict, user: dict, light: bool = False) -> dict:
     except Exception as e:
         logger.info("Recept %s wisseltip: %r", rec.get("id"), e)
         out["alt_swaps"] = []
+    try:
+        out["alt_swaps"] += await asyncio.to_thread(_recipe_tip_actions, out, user, [x.get("text") or "" for x in out["alt_swaps"]])
+    except Exception as e:
+        logger.info("Recept %s tips: %r", rec.get("id"), e)
     out["is_favorite"] = any(f.get("id") == rec["id"] for f in user.get("recipe_favorites") or [])
     return out
 
@@ -7796,12 +7929,15 @@ async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = Fal
     if category not in MEAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="Ongeldige categorie")
     rec = await _recipe_products(await _recipe_detail(rid), user, light=light)
+    extra_pids: List[str] = []  # via een tip erbij ("lekker met feta"): één verpakking voor het hele recept
     if swaps:
         by_pid = _product_cache.get("by_pid") or {}
         favs = set(user.get("favorite_products") or [])
         for k, pid in swaps.items():
             d = by_pid.get(pid)
-            if d and str(k).isdigit() and int(k) < len(rec["ingredients"]):
+            if d and str(k).startswith("add"):
+                extra_pids.append(pid)
+            elif d and str(k).isdigit() and int(k) < len(rec["ingredients"]):
                 was = (rec["ingredients"][int(k)].get("product") or {}).get("id")
                 if was and was != pid:
                     asyncio.create_task(_learn_pick(user, d["_src"], rec["ingredients"][int(k)].get("name") or "", pid))
@@ -7825,6 +7961,12 @@ async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = Fal
                                aisle=(prod or {}).get("aisle") or "Overig", price=(prod or {}).get("price") or 0,
                                product_id=(prod or {}).get("id"), store=(prod or {}).get("source") or (STORE_LABELS.get(rec["store"]) if prod else None),
                                recipe_text=i["text"]).model_dump())
+    for pid in extra_pids:
+        d = (_product_cache.get("by_pid") or {}).get(pid)
+        if d:
+            per = round(1 / persons, 3)
+            ings.append(Ingredient(name=d["name"], unit="stuks", qty_adult=per, qty_child=round(per / 2, 3), aisle=d.get("aisle") or "Overig",
+                                   price=_doc_price(d) or 0, product_id=pid, store=d["_src"], recipe_text=None).model_dump())
     # Wat je niet meekoopt heb je dus in huis: de voorraadkast leert dat
     learn = [i["name"] or i["text"] for n, i in enumerate(rec["ingredients"]) if i.get("pantry") and n not in keep and _norm_text(i["name"] or "") not in _ALWAYS_HOME]
     if learn:
