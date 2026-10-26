@@ -9,6 +9,8 @@ import { goBack } from "@/src/nav";
 import { AISLE_ICONS } from "@/src/constants";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { euro } from "@/src/search";
+import { PriceAlertCard, PriceHistory } from "@/src/PriceTools";
+import { PremiumLock, usePremium } from "@/src/premium";
 import type { Product, Promo } from "@/app/(tabs)/products";
 
 type Details = {
@@ -37,6 +39,7 @@ export default function ProductScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
+  const premium = usePremium();
 
   const product = useQuery({ queryKey: ["product", id], queryFn: () => api<Product>(`/products/${id}`) });
   const details = useQuery({
@@ -120,6 +123,15 @@ export default function ProductScreen() {
 
           {p.promo ? <PromoCard promo={p.promo} now /> : null}
           {p.promo_next ? <PromoCard promo={p.promo_next} now={false} /> : null}
+
+          {p.is_global && !premium ? (
+            <PremiumLock plural title="Prijsalarm en prijsgeschiedenis" text="Krijg een mail als dit product in de aanbieding is, en zie of een aanbieding echt goed is." />
+          ) : p.is_global ? (
+            <>
+              <PriceAlertCard productId={p.id} price={p.price} />
+              <PriceHistory productId={p.id} />
+            </>
+          ) : null}
 
           {details.isLoading ? (
             <View style={styles.loadingBox}>

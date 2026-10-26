@@ -42,14 +42,14 @@ export function AdSlot({ place }: { place: string }) {
 }
 
 // Wat je ziet bij een Premium-functie als je nog geen Premium hebt
-export function PremiumLock({ title, text }: { title: string; text?: string }) {
+export function PremiumLock({ title, text, plural }: { title: string; text?: string; plural?: boolean }) {
   const styles = useStyles();
   const router = useRouter();
   return (
     <View style={styles.lock} testID="premium-lock">
       <Icon name="star-circle" size={30} color={GOLD.icon} />
       <View style={{ flex: 1, gap: 2 }}>
-        <Text style={styles.lockTitle}>{title} is een Premium-functie</Text>
+        <Text style={styles.lockTitle}>{title} {plural ? "zijn Premium-functies" : "is een Premium-functie"}</Text>
         {text ? <Text style={styles.lockText}>{text}</Text> : null}
         <Pressable onPress={() => router.push("/premium")} hitSlop={8} testID="premium-lock-more">
           <Text style={styles.lockLink}>Meer over Premium</Text>

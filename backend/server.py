@@ -851,6 +851,7 @@ async def _erase_user(user: dict) -> None:
     await db.store_requests.delete_many({"requested_by": uid})
     await db.premium_requests.delete_many({"user_id": uid})
     await db.pantry.delete_many({"user_id": uid})
+    await db.price_alerts.delete_many({"user_id": uid})
     if user.get("email"):
         for coll in (db.email_prefs, db.password_resets, db.invitations):
             await coll.delete_many({"email": user["email"]})
@@ -5545,6 +5546,7 @@ async def home(user: dict = Depends(get_current_user)):
     if "manage_users" in perms:
         todo["premium"] = await db.premium_requests.count_documents({"status": "pending"})
     own_dishes = await db.dishes.count_documents({"owner_id": user["user_id"], "deleted_at": None})
+    alerts_hit = await db.price_alerts.count_documents({"user_id": user["user_id"], "notified_mark": {"$exists": True}}) if user.get("premium") else 0
     try:
         interest = {} if user.get("no_personal") else await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0}) or {}
         by_pid = _product_cache.get("by_pid") or {}
@@ -5561,7 +5563,7 @@ async def home(user: dict = Depends(get_current_user)):
         logger.warning("Persoonlijke acties: %r", e)
         promos = [{k: v for k, v in c.items() if not k.startswith("_")} for c in promos[:24]]
     return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "compare_pending": compare_pending, "promos": promos,
-            "recipes": recipes, "todo": todo, "own_dishes": own_dishes}
+            "recipes": recipes, "todo": todo, "own_dishes": own_dishes, "alerts_hit": alerts_hit}
 
 
 # --- Andere producten voor een ingrediënt: logische voorstellen per winkel, goedkoper of in de aanbieding ---
@@ -6639,7 +6641,212 @@ async def _refresh_dirk_prices_all() -> dict:
         if fn is _refresh_jumbo_prices:
             asyncio.create_task(_load_folders())  # Jumbo-acties komen mee met de producten
     await db.settings.update_one({"key": "app"}, {"$set": {"dirk_refreshed_at": now_utc()}}, upsert=True)
+    try:
+        await _snapshot_prices()
+    except Exception as e:
+        logger.warning("Prijsgeschiedenis: %r", e)
+    try:
+        await _check_price_alerts()
+    except Exception as e:
+        logger.warning("Prijsalarm: %r", e)
     return {"updated": updated}
+
+
+# ---------------------------------------------------------------------------
+# Prijsgeschiedenis (Premium): na elke prijsronde noteren we wat er veranderd is
+# ---------------------------------------------------------------------------
+HIST_MAX_POINTS = 400
+
+
+def _hist_now(doc: dict) -> tuple:
+    store = product_source(doc)
+    price = float((doc.get("prices") or {}).get(store) or 0) if store else 0.0
+    promo = None
+    if price:
+        now_p, _ = _promo_public(doc, price)
+        if now_p and now_p.get("price") and float(now_p["price"]) < price:
+            promo = round(float(now_p["price"]), 2)
+    return round(price, 2), promo
+
+
+async def _snapshot_prices() -> int:
+    from pymongo import UpdateOne
+    today = datetime.now(timezone.utc).date().isoformat()
+    hist_ops, prod_ops, changed = [], [], 0
+
+    async def flush():
+        if hist_ops:
+            await db.price_history.bulk_write(hist_ops, ordered=False)
+        if prod_ops:
+            await db.products.bulk_write(prod_ops, ordered=False)
+        hist_ops.clear()
+        prod_ops.clear()
+
+    proj = {"_id": 0, "product_id": 1, "prices": 1, "dirk_id": 1, "ah_id": 1, "jumbo_id": 1, "promo": 1, "promos": 1, "hist_last": 1}
+    async for doc in db.products.find({"is_global": True, "deleted_at": None}, proj):
+        price, promo = _hist_now(doc)
+        if not price:
+            continue
+        mark = f"{price}|{promo}"
+        if doc.get("hist_last") == mark:
+            continue
+        point = {"d": today, "p": price, "a": promo}
+        hist_ops.append(UpdateOne({"product_id": doc["product_id"]},
+                                  {"$push": {"points": {"$each": [point], "$slice": -HIST_MAX_POINTS}}, "$set": {"updated": today}}, upsert=True))
+        prod_ops.append(UpdateOne({"product_id": doc["product_id"]}, {"$set": {"hist_last": mark}}))
+        changed += 1
+        if len(hist_ops) >= 500:
+            await flush()
+    await flush()
+    logger.info("Prijsgeschiedenis: %d producten bijgewerkt", changed)
+    return changed
+
+
+def _history_summary(points: list, today: str) -> dict:
+    # Wat kostte het, wat is laag en wat is normaal; per dag de prijs die je toen betaalde (actie telt mee)
+    if not points:
+        return {"points": [], "since": None}
+    pay = [{"d": x["d"], "p": x["p"], "a": x.get("a"), "pay": x.get("a") or x["p"]} for x in points]
+    cutoff = (datetime.fromisoformat(today) - timedelta(days=365)).date().isoformat()
+    recent = [x for x in pay if x["d"] >= cutoff] or pay[-1:]
+    lows = [x["pay"] for x in recent]
+    now = pay[-1]
+    regular = sorted(x["p"] for x in recent)[len(recent) // 2]
+    return {
+        "points": pay,
+        "since": pay[0]["d"],
+        "now": now["pay"],
+        "regular": regular,
+        "lowest": min(lows),
+        "highest": max(x["p"] for x in recent),
+        "is_lowest": now["pay"] <= min(lows),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Prijsalarm (Premium): een seintje bij een aanbieding of als de prijs onder jouw bedrag zakt
+# ---------------------------------------------------------------------------
+class PriceAlertInput(BaseModel):
+    on_promo: bool = True
+    target: Optional[float] = None
+
+
+def _alert_state(alert: dict, prod: Optional[dict]) -> dict:
+    price, promo = _hist_now(prod) if prod else (0.0, None)
+    pay = promo or price
+    target = alert.get("target")
+    hit = bool(price) and ((alert.get("on_promo") and promo is not None) or (target is not None and pay <= target))
+    return {"price": price, "promo": promo, "pay": pay, "hit": hit, "mark": f"{price}|{promo}"}
+
+
+def _alert_public(alert: dict, prod: Optional[dict]) -> dict:
+    st = _alert_state(alert, prod)
+    promo_label = None
+    if prod and st["promo"] is not None:
+        now_p, _ = _promo_public(prod, st["price"])
+        promo_label = (now_p or {}).get("label")
+    return {"product_id": alert["product_id"], "on_promo": bool(alert.get("on_promo")), "target": alert.get("target"),
+            "name": (prod or {}).get("name"), "image": (prod or {}).get("image"), "store": product_source(prod) if prod else None,
+            "unit": (prod or {}).get("unit"), "price": st["price"], "promo": st["promo"], "promo_label": promo_label, "hit": st["hit"],
+            "gone": not prod}
+
+
+@api_router.get("/price-alerts")
+async def list_price_alerts(user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    alerts = await db.price_alerts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    prods = {p["product_id"]: p async for p in db.products.find({"product_id": {"$in": [a["product_id"] for a in alerts]}, "deleted_at": None}, {"_id": 0})}
+    out = [_alert_public(a, prods.get(a["product_id"])) for a in alerts]
+    out.sort(key=lambda x: not x["hit"])
+    return {"alerts": out}
+
+
+@api_router.get("/products/{product_id}/price-alert")
+async def get_price_alert(product_id: str, user: dict = Depends(get_current_user)):
+    if not user.get("premium"):
+        return {"alert": None}
+    a = await db.price_alerts.find_one({"user_id": user["user_id"], "product_id": product_id}, {"_id": 0})
+    return {"alert": {"on_promo": bool(a.get("on_promo")), "target": a.get("target")} if a else None}
+
+
+@api_router.put("/products/{product_id}/price-alert")
+async def set_price_alert(product_id: str, data: PriceAlertInput, user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    if not await db.products.find_one({"product_id": product_id, "deleted_at": None}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Product niet gevonden")
+    target = round(float(data.target), 2) if data.target and data.target > 0 else None
+    if not data.on_promo and target is None:
+        raise HTTPException(status_code=400, detail="Kies een aanbieding of een prijs")
+    exists = await db.price_alerts.find_one({"user_id": user["user_id"], "product_id": product_id}, {"_id": 1})
+    if not exists and await db.price_alerts.count_documents({"user_id": user["user_id"]}) >= 100:
+        raise HTTPException(status_code=400, detail="Je kunt maximaal 100 prijsalarmen hebben")
+    await db.price_alerts.update_one(
+        {"user_id": user["user_id"], "product_id": product_id},
+        {"$set": {"on_promo": data.on_promo, "target": target}, "$unset": {"notified_mark": ""}, "$setOnInsert": {"created_at": now_utc()}},
+        upsert=True,
+    )
+    return {"alert": {"on_promo": data.on_promo, "target": target}}
+
+
+@api_router.delete("/products/{product_id}/price-alert")
+async def delete_price_alert(product_id: str, user: dict = Depends(get_current_user)):
+    await db.price_alerts.delete_one({"user_id": user["user_id"], "product_id": product_id})
+    return {"ok": True}
+
+
+async def _check_price_alerts() -> int:
+    # Na de prijsronde: per gebruiker één mail met alles wat nu raak is (en nog niet gemeld)
+    by_user: Dict[str, list] = {}
+    alerts = await db.price_alerts.find({}, {"_id": 0}).to_list(None)
+    if not alerts:
+        return 0
+    prods = {p["product_id"]: p async for p in db.products.find({"product_id": {"$in": list({a["product_id"] for a in alerts})}, "deleted_at": None}, {"_id": 0})}
+    for a in alerts:
+        prod = prods.get(a["product_id"])
+        st = _alert_state(a, prod)
+        q = {"user_id": a["user_id"], "product_id": a["product_id"]}
+        if not st["hit"]:
+            if a.get("notified_mark"):
+                await db.price_alerts.update_one(q, {"$unset": {"notified_mark": ""}})
+            continue
+        if a.get("notified_mark") == st["mark"]:
+            continue
+        await db.price_alerts.update_one(q, {"$set": {"notified_mark": st["mark"], "hit_at": now_utc()}})
+        by_user.setdefault(a["user_id"], []).append((prod, st))
+    base = (FRONTEND_URL or "").rstrip("/")
+    sent = 0
+    for uid, hits in by_user.items():
+        u = await db.users.find_one({"user_id": uid, "deleted_at": None})
+        if not u or not u.get("premium") or not u.get("email") or u.get("email_opt_out"):
+            continue
+        rows = "".join(
+            f'<tr><td style="padding:6px 0;border-bottom:1px solid #eee">{escape(p.get("name") or "")}'
+            f'<br/><span style="color:#888;font-size:12px">{escape(product_source(p) or "")}</span></td>'
+            f'<td style="padding:6px 0;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">'
+            + (f'<s style="color:#999">{_euro(st["price"])}</s> <b style="color:#C85A32">{_euro(st["promo"])}</b>' if st["promo"] else f'<b>{_euro(st["price"])}</b>')
+            + '</td></tr>'
+            for p, st in hits
+        )
+        html = (
+            '<div style="font-family:Arial,sans-serif;color:#1C1B1A">'
+            f'<h2 style="color:#2E5E38;margin:0 0 12px">&#128276; Prijsalarm</h2>'
+            f'<p>Hoi {escape((u.get("name") or "").split(" ")[0])}, deze producten zijn nu in de aanbieding of onder jouw prijs:</p>'
+            f'<table style="width:100%;border-collapse:collapse;font-size:14px">{rows}</table>'
+            + (f'<p><a href="{escape(base)}/alerts" style="display:inline-block;background:#2E5E38;color:#fff;padding:12px 20px;'
+               f'border-radius:10px;text-decoration:none;font-weight:bold">Bekijk je prijsalarmen</a></p>' if base else "")
+            + '</div>'
+        )
+        await send_email(u["email"], f"Prijsalarm: {len(hits)} {'product' if len(hits) == 1 else 'producten'} goedkoper", html)
+        sent += 1
+    logger.info("Prijsalarm: %d mails", sent)
+    return sent
+
+
+@api_router.get("/products/{product_id}/price-history")
+async def price_history(product_id: str, user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    doc = await db.price_history.find_one({"product_id": product_id}, {"_id": 0})
+    return _history_summary((doc or {}).get("points") or [], datetime.now(timezone.utc).date().isoformat())
 
 
 @api_router.post("/admin/products/refresh-prices")
@@ -7496,6 +7703,8 @@ async def startup():
     await db.store_requests.create_index("req_id", unique=True)
     await db.premium_requests.create_index("req_id", unique=True)
     await db.pantry.create_index([("user_id", 1), ("name_l", 1)])
+    await db.price_history.create_index("product_id", unique=True)
+    await db.price_alerts.create_index([("user_id", 1), ("product_id", 1)], unique=True)
     await db.premium_requests.create_index([("user_id", 1), ("created_at", -1)])
     for i, s in enumerate(STORES):
         await db.stores.update_one(
@@ -7705,6 +7914,13 @@ async def _daily_refresh_loop():
                 await _purge_expired_trash()
         except Exception as e:
             logger.warning("Daily Dirk refresh error: %s", e)
+        try:
+            # Eerste keer na de update: meteen een beginstand van de prijzen vastleggen
+            if not await db.meta.find_one({"key": "hist_seeded"}):
+                await db.meta.update_one({"key": "hist_seeded"}, {"$set": {"at": now_utc()}}, upsert=True)
+                await _snapshot_prices()
+        except Exception as e:
+            logger.warning("Prijsgeschiedenis begin: %r", e)
         try:
             doc = await db.meta.find_one({"key": "inactive_check"}) or {}
             if not doc.get("at") or ensure_aware(doc["at"]) < now_utc() - timedelta(hours=22):
