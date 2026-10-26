@@ -6305,7 +6305,8 @@ _PREPS = {"zonder", "met", "in", "uit", "van", "voor", "op", "naar", "of", "en",
 
 
 # Andere namen in de winkel: "lasagnevel" heet daar lasagnebladen, parmezaan vaak Parmigiano
-_SYNONYMS = {"diepvriespizza": ["pizza", "pizza margherita"], "hutspotgroente": ["hutspot", "hutspotgroenten", "wortel ui"],
+_SYNONYMS = {"diepvriespizza": ["pizza margherita", "pizza salame", "pizza"], "nasi kruiden": ["nasi goreng kruiden", "boemboe nasi goreng", "mix nasi goreng"],
+             "taco kruiden": ["taco kruidenmix", "mix taco", "taco seasoning"], "wraps": ["tortilla wraps", "wraps naturel", "tortilla"], "hutspotgroente": ["hutspot", "hutspotgroenten", "wortel ui"],
              "hutspotgroenten": ["hutspot", "wortel ui"], "lasagnevel": ["lasagnebladen", "lasagne"], "lasagnevellen": ["lasagnebladen", "lasagne"], "maizena": ["maizena", "maiszetmeel", "bindmiddel"],
              "vanille extract": ["vanille extract", "vanillearoma", "vanille"], "vanilleextract": ["vanille extract", "vanillearoma", "vanille"],
              "parmezaanse kaas": ["parmigiano reggiano", "grana padano", "parmezaan"], "parmezaan": ["parmigiano reggiano", "grana padano"],
@@ -6553,6 +6554,10 @@ def _food_penalty(d: dict, rank: int, words: list) -> float:
     if words[-1] in ("brood", "boterhammen") and re.search(r"pita|naan|wrap|tortilla|stokbrood|ciabatta|bolletjes|afbak|toast|krentenbrood|suikerbrood", d["_norm"]) \
             and not any(re.search(r"pita|naan|wrap|tortilla|stok|ciabatta|bolletje|afbak|toast|krent|suiker", q) for q in words):
         pen += 4
+    # Kruiden- en mixmerken (Knorr, Euroma, Verstegen) alleen als je kruiden, een mix of saus zoekt: "Euroma pizza" is pizzakruiden
+    if re.match(r"(knorr|euroma|verstegen|silvo|conimex|honig) ", d["_norm"]) and not any(
+            re.search(r"kruid|mix|saus|bouillon|soep|poeder|boemboe|specerij|peper|zout", q) for q in words):
+        pen += 5
     # Bakmix van Koopmans is geen brood
     if (brand_of(d) == "koopmans" or d["_norm"].startswith("koopmans ")) and not any(q in ("mix", "bakmix", "meel", "bloem") for q in words):
         pen += 6
