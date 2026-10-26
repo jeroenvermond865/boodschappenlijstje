@@ -1429,6 +1429,7 @@ class AutoMenuInput(BaseModel):
     exclude: List[str] = []  # gerechten die niet passen (bijv. allergieën, die kent alleen het apparaat)
     overwrite: bool = False
     days: Optional[List[int]] = None  # alleen deze dagen (index); leeg = alle dagen
+    day_categories: Dict[int, List[str]] = {}  # per dag andere maaltijden (dag-index -> maaltijden); anders "categories"
     style: str = "mix"  # vertrouwd (wat je vaker eet), mix, nieuw (iets nieuws proberen)
     diet: str = ""  # leeg = alles; anders een of meer van vega, vegan, vlees, vis (met komma's)
     store: str = ""  # oud: één winkel (ah, jumbo, dirk)
@@ -1472,7 +1473,13 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(uid)}, {"_id": 0})
     if not camp:
         raise HTTPException(status_code=404, detail="Kamp niet gevonden")
-    cats = [c for c in data.categories if c in MEAL_CATEGORIES]
+    day_cats = {int(k): [c for c in v if c in MEAL_CATEGORIES] for k, v in (data.day_categories or {}).items()}
+    base_cats = [c for c in data.categories if c in MEAL_CATEGORIES]
+    cats = [c for c in MEAL_CATEGORIES if c in base_cats or any(c in v for v in day_cats.values())]
+
+    def cat_on(di, cat):
+        # Deze maaltijd op deze dag invullen? Per dag gekozen, anders wat voor alle dagen geldt
+        return cat in day_cats.get(di, base_cats)
     if not cats:
         raise HTTPException(status_code=400, detail="Kies minstens één maaltijd")
     if data.remember:
@@ -1541,7 +1548,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
 
     def replaced(idx, day, cat):
         # Wordt deze maaltijd nu (opnieuw) ingevuld?
-        return cat in cats and (only_days is None or day.get("index", idx) in only_days) and (data.overwrite or not (day.get("meals") or {}).get(cat))
+        return cat_on(day.get("index", idx), cat) and (only_days is None or day.get("index", idx) in only_days) and (data.overwrite or not (day.get("meals") or {}).get(cat))
     # Wat blijft staan in dit lijstje: dat liever niet nog eens kiezen (wat we nu vervangen telt niet mee)
     keep = {did for idx, day in enumerate(days_all) for cat, ids in (day.get("meals") or {}).items()
             if not replaced(idx, day, cat) for did in ids}
@@ -1660,7 +1667,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         k = 0
         prev = None  # (dag-index, gerecht) dat vandaag ook voor morgen gekookt kan worden
         for idx, day in enumerate(days):
-            if only is not None and day.get("index", idx) not in only:
+            if (only is not None and day.get("index", idx) not in only) or not cat_on(day.get("index", idx), cat):
                 continue
             meals = day.setdefault("meals", {})
             if meals.get(cat) and not data.overwrite:

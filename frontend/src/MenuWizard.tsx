@@ -77,8 +77,15 @@ export function MenuWizard({
   const [promos, setPromos] = useState(true);
   const [prefer, setPrefer] = useState("");
   const [avoid, setAvoid] = useState("");
-  const [allDays, setAllDays] = useState(true);
-  const [pickDays, setPickDays] = useState<number[]>([]);
+  // Per dag andere maaltijden: tik op een dag en zet die dag zelf aan of uit (standaard wat voor alle dagen geldt)
+  const [sel, setSel] = useState<number | null>(null);
+  const [dayCats, setDayCats] = useState<Record<number, MealCategory[]>>({});
+  const catsOf = (i: number | null) => (i == null ? cats : dayCats[i] ?? cats);
+  const toggleCat = (c: MealCategory) => {
+    const flip = (v: MealCategory[]) => (v.includes(c) ? v.filter((x) => x !== c) : [...v, c]);
+    if (sel == null) setCats(flip);
+    else setDayCats((m) => ({ ...m, [sel]: flip(m[sel] ?? cats) }));
+  };
   const [overwrite, setOverwrite] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -117,9 +124,9 @@ export function MenuWizard({
         method: "POST",
         body: {
           categories: cats,
+          day_categories: Object.fromEntries(Object.entries(dayCats).filter(([, v]) => v.join() !== cats.join())),
           exclude,
           overwrite,
-          days: allDays ? null : pickDays,
           style,
           diet: diets.join(","),
           stores,
@@ -173,32 +180,40 @@ export function MenuWizard({
             </Pressable>
           </View>
           <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ gap: 6 }}>
-            <Text style={styles.head}>Welke maaltijden?</Text>
+            <Text style={styles.head}>Welke dagen?</Text>
+            <View style={styles.chips}>
+              <Chip on={sel == null} label="Alle dagen" onPress={() => setSel(null)} />
+              {days.map((d) => {
+                const own = dayCats[d.index];
+                const off = own && !own.length;
+                const diff = own && own.join() !== cats.join();
+                return (
+                  <Chip
+                    key={d.index}
+                    on={sel === d.index}
+                    label={`${dayLabel(d.index)}${off ? " (niets)" : diff ? " •" : ""}`}
+                    onPress={() => setSel((v) => (v === d.index ? null : d.index))}
+                  />
+                );
+              })}
+            </View>
+            <Text style={styles.sub}>Tik op een dag om de maaltijden van alleen die dag te kiezen.</Text>
+
+            <Text style={styles.head}>{sel == null ? "Welke maaltijden?" : `Welke maaltijden op ${dayLabel(sel)}?`}</Text>
             {MEAL_CATEGORIES.map((c) => (
               <Check
                 key={c}
                 testID={`auto-menu-cat-${c}`}
-                on={cats.includes(c)}
+                on={catsOf(sel).includes(c)}
                 label={CATEGORY_LABELS[c]}
-                onPress={() => setCats((v) => (v.includes(c) ? v.filter((x) => x !== c) : [...v, c]))}
+                onPress={() => toggleCat(c)}
               />
             ))}
-
-            <Text style={styles.head}>Welke dagen?</Text>
-            <View style={styles.chips}>
-              <Chip on={allDays} label="Alle dagen" onPress={() => setAllDays(true)} />
-              {days.map((d) => (
-                <Chip
-                  key={d.index}
-                  on={!allDays && pickDays.includes(d.index)}
-                  label={dayLabel(d.index)}
-                  onPress={() => {
-                    setAllDays(false);
-                    setPickDays((v) => (allDays ? [d.index] : v.includes(d.index) ? v.filter((x) => x !== d.index) : [...v, d.index]));
-                  }}
-                />
-              ))}
-            </View>
+            {sel != null && dayCats[sel] ? (
+              <Pressable onPress={() => setDayCats(({ [sel]: _, ...rest }) => rest)} hitSlop={6}>
+                <Text style={[styles.sub, { color: colors.brandPrimary, fontFamily: fonts.bold }]}>Zelfde als alle dagen</Text>
+              </Pressable>
+            ) : null}
 
             <Text style={styles.head}>Waar heb je zin in?</Text>
             {STYLES.map((s) => (
@@ -268,7 +283,7 @@ export function MenuWizard({
             label="Invullen"
             onPress={run}
             loading={busy}
-            disabled={!cats.length || (!allDays && !pickDays.length)}
+            disabled={days.every((d) => !catsOf(d.index).length)}
             testID="auto-menu-run"
           />
         </Pressable>
