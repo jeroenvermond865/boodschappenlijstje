@@ -158,6 +158,7 @@ export default function ShoppingScreen() {
     try {
       await api(`/camps/${id}/shop-store`, { method: "POST", body: { store: null } });
       await Promise.all(["shopping", "compare", "home", "budget"].map((k) => qc.invalidateQueries({ queryKey: k === "home" ? [k] : [k, id] })));
+      toast.show("Terug naar je eigen winkels", "success");
     } catch (e: any) {
       toast.show(e?.message ?? "Dat lukte niet", "error");
     }
@@ -465,18 +466,25 @@ export default function ShoppingScreen() {
               <Text style={styles.multiText}>Samen boodschappen doen: wat de anderen afvinken, zie je hier meteen.</Text>
             </View>
           ) : null}
-          {data?.shop_store ? (
-            <View style={styles.multiBanner}>
-              <Icon name="cart-check" size={16} color={colors.onBrandTertiary} />
+          {data?.shop_store || multi ? (
+            // Eén balkje: waar je alles haalt; tik erop om terug te gaan naar je eigen winkels
+            <Pressable
+              testID="shop-store-banner"
+              disabled={!data?.shop_store}
+              onPress={backToOwn}
+              style={styles.multiBanner}
+            >
+              <Icon name={data?.shop_store === "split" ? "call-split" : data?.shop_store ? "cart-check" : "storefront-outline"} size={16} color={colors.onBrandTertiary} />
               <Text style={styles.multiText}>
-                {data.shop_store === "split"
-                  ? `Je haalt elk product waar het het goedkoopst is: ${(data.split_stores ?? []).join(" en ")}.`
-                  : `Je haalt alles bij ${data.shop_store}, met de producten uit de vergelijking.`}{" "}
-                <Text onPress={backToOwn} style={{ fontFamily: fonts.bold, textDecorationLine: "underline" }}>
-                  Terug naar je eigen winkels
-                </Text>
+                {data?.shop_store === "split"
+                  ? `Je haalt elk product waar het het goedkoopst is: ${(data.split_stores ?? []).join(", ").replace(/, ([^,]*)$/, " en $1")}. Elke winkel heeft een eigen lijstje.`
+                  : data?.shop_store
+                    ? `Je haalt alles bij ${data.shop_store}, met de producten uit de vergelijking.`
+                    : "Meerdere winkels: elke winkel heeft een eigen lijstje."}
+                {data?.shop_store ? <Text style={{ fontFamily: fonts.bold }}>{"\n"}Tik om terug te gaan naar je eigen winkels</Text> : null}
               </Text>
-            </View>
+              {data?.shop_store ? <Icon name="undo-variant" size={18} color={colors.onBrandTertiary} /> : null}
+            </Pressable>
           ) : null}
           {cmp.data && (cmp.data.compare_pending || cmpFound.length > 1) ? (
             <View style={{ gap: 10 }}>
@@ -506,12 +514,6 @@ export default function ShoppingScreen() {
                 Op je inkoopdag ({new Date(data.shop_day!).toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" })}) zijn{" "}
                 {data.promo_then === 1 ? "1 product" : `${data.promo_then} producten`} in de aanbieding. Ze staan hieronder gemarkeerd.
               </Text>
-            </View>
-          ) : null}
-          {multi ? (
-            <View style={styles.multiBanner}>
-              <Icon name="storefront-outline" size={16} color={colors.onBrandTertiary} />
-              <Text style={styles.multiText}>Meerdere winkels — elk lijstje staat apart.</Text>
             </View>
           ) : null}
           {premium && !(data?.has_pantry && covered.length) ? (
