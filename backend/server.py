@@ -1441,6 +1441,7 @@ class AutoMenuInput(BaseModel):
     store: str = ""  # oud: één winkel (ah, jumbo, dirk)
     stores: List[str] = []  # recepten van deze winkels (ah, jumbo, dirk); leeg = alle winkels
     cook_twice: bool = True  # kleine groep: één keer koken voor twee dagen (lunch en avondeten), dan blijft er minder over
+    twice_gap: int = 1  # restje eten: 1 = de dag erna, 2 = om de dag, 7 = een week later (ingevroren)
     cheap: bool = False  # goedkope gerechten eerst
     kind: str = "alles"  # oud: gewoon, recepten of alles
     kinds: List[str] = []  # app (gewone app-gerechten), recepten (van de winkels), eigen (zelf gemaakt); leeg = alles
@@ -1450,7 +1451,7 @@ class AutoMenuInput(BaseModel):
     remember: bool = True
 
 
-_MENU_PREF_KEYS = ("categories", "style", "diet", "store", "stores", "cook_twice", "cheap", "kinds", "promos", "prefer", "avoid")
+_MENU_PREF_KEYS = ("categories", "style", "diet", "store", "stores", "cook_twice", "twice_gap", "cheap", "kinds", "promos", "prefer", "avoid")
 
 
 @api_router.get("/menu-prefs")
@@ -1676,7 +1677,9 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         if not pool:
             continue
         k = 0
-        prev = None  # (dag-index, gerecht) dat vandaag ook voor morgen gekookt kan worden
+        prev = None  # (dag-index, gerecht) van de vorige ingevulde dag (brood niet twee dagen achter elkaar)
+        later = {}  # dag-index -> (dag-index, gerecht): restje dat op die dag gegeten wordt
+        gap = data.twice_gap if data.twice_gap in (1, 2, 3, 7) else 1
         for idx, day in enumerate(days):
             if (only is not None and day.get("index", idx) not in only) or not cat_on(day.get("index", idx), cat):
                 continue
@@ -1690,10 +1693,11 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
             # Wat het menu eerder als losse producten zette (brood met beleg) gaat eruit
             day["extras"] = [e for e in day.get("extras") or [] if not (e.get("auto") and e.get("meal") == cat)]
             (day.get("meal_names") or {}).pop(cat, None)
-            if data.cook_twice and small and cat in ("lunch", "avondeten") and prev and prev[0] == di - 1 and not prev[1].get("bread"):
-                # Restje van gisteren: zelfde gerecht, niets extra kopen
-                meals[cat] = [prev[1]["dish_id"]]
-                left[cat] = prev[0]
+            if data.cook_twice and small and cat in ("lunch", "avondeten") and di in later:
+                # Restje (van gisteren, eerder deze week of uit de vriezer): zelfde gerecht, niets extra kopen
+                src = later.pop(di)
+                meals[cat] = [src[1]["dish_id"]]
+                left[cat] = src[0]
                 prev = None
                 filled += 1
                 twice += 1
@@ -1720,6 +1724,8 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
             used.add(pick["dish_id"])
             chosen_pids.update(i.get("product_id") for i in pick["ingredients"] if i.get("product_id"))
             prev = (di, pick)
+            if data.cook_twice and small and cat in ("lunch", "avondeten"):
+                later.setdefault(di + gap, (di, pick))
             filled += 1
             if any(i.get("product_id") in on_promo for i in pick["ingredients"]):
                 promo_dishes.add(pick["name"])

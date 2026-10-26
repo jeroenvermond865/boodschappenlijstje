@@ -530,7 +530,7 @@ export default function CampDetailScreen() {
                       ) : next ? (
                         <View style={styles.leftBadge}>
                           <Icon name="pot-steam-outline" size={14} color={colors.onBrandTertiary} />
-                          <Text style={styles.leftText}>Kook dubbel: dag {next.index + 1} eet je de rest. Je koopt het één keer in.</Text>
+                          <Text style={styles.leftText}>Kook dubbel: dag {next.index + 1} eet je de rest{next.index - day.index >= 3 ? " (vries het tussendoor in)" : ""}. Je koopt het één keer in.</Text>
                         </View>
                       ) : null}
                       </View>

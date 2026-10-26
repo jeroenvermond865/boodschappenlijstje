@@ -14,7 +14,7 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Style = "vertrouwd" | "mix" | "nieuw";
 type Kind = "app" | "recepten" | "eigen";
-type Prefs = { categories?: MealCategory[]; style?: Style; diet?: string; store?: string; stores?: string[]; kinds?: Kind[]; cook_twice?: boolean; cheap?: boolean; promos?: boolean; prefer?: string[]; avoid?: string[] };
+type Prefs = { categories?: MealCategory[]; style?: Style; diet?: string; store?: string; stores?: string[]; kinds?: Kind[]; cook_twice?: boolean; twice_gap?: number; cheap?: boolean; promos?: boolean; prefer?: string[]; avoid?: string[] };
 
 const STYLES: { key: Style; label: string; sub: string; icon: string }[] = [
   { key: "vertrouwd", label: "Vertrouwd", sub: "Wat je vaker eet", icon: "home-heart" },
@@ -74,6 +74,7 @@ export function MenuWizard({
   const [kinds, setKinds] = useState<Kind[]>(["app", "recepten", "eigen"]);
   const [cheap, setCheap] = useState(false);
   const [twice, setTwice] = useState(true);
+  const [gap, setGap] = useState(1);
   const [promos, setPromos] = useState(true);
   const [prefer, setPrefer] = useState("");
   const [avoid, setAvoid] = useState("");
@@ -102,6 +103,7 @@ export function MenuWizard({
         if (p.kinds?.length) setKinds(p.kinds);
         setCheap(!!p.cheap);
         setTwice(p.cook_twice ?? true);
+        setGap(p.twice_gap ?? 1);
         setPromos(p.promos ?? true);
         setPrefer((p.prefer ?? []).join(", "));
         setAvoid((p.avoid ?? []).join(", "));
@@ -134,6 +136,7 @@ export function MenuWizard({
           cheap,
           promos,
           cook_twice: twice,
+          twice_gap: gap,
           prefer: words(prefer),
           avoid: words(avoid),
         },
@@ -144,7 +147,7 @@ export function MenuWizard({
       onClose();
       toast.show(
         res.filled
-          ? `${res.filled} maaltijden ingevuld${res.promo_dishes.length ? `, ${res.promo_dishes.length} met aanbiedingen` : ""}${res.twice ? `, ${res.twice}× restjes van de dag ervoor` : ""}${res.added_online ? ` (${res.added_online} nieuwe recepten)` : ""}`
+          ? `${res.filled} maaltijden ingevuld${res.promo_dishes.length ? `, ${res.promo_dishes.length} met aanbiedingen` : ""}${res.twice ? `, ${res.twice}× een restje` : ""}${res.added_online ? ` (${res.added_online} nieuwe recepten)` : ""}`
           : res.pool
             ? "Alle maaltijden waren al gekozen. Vink 'Ook maaltijden vervangen' aan om ze te vervangen."
             : "Geen gerechten gevonden die bij je keuzes passen",
@@ -272,6 +275,16 @@ export function MenuWizard({
             <Check on={cheap} label="Goedkope gerechten eerst" onPress={() => setCheap((v) => !v)} />
             <Check on={twice} label="Restjes slim gebruiken: één keer koken voor twee dagen" onPress={() => setTwice((v) => !v)} />
             <Text style={styles.sub}>Voor kleine groepen (tot 4 personen) bij lunch en avondeten. Je koopt dan één keer in en houdt minder over.</Text>
+            {twice ? (
+              <>
+                <Text style={styles.label}>Wanneer eet je de rest?</Text>
+                <View style={styles.chips}>
+                  <Chip on={gap === 1} label="De dag erna" onPress={() => setGap(1)} />
+                  <Chip on={gap === 2} label="Om de dag" onPress={() => setGap(2)} />
+                  <Chip on={gap === 7} label="Week later (vriezer)" onPress={() => setGap(7)} />
+                </View>
+              </>
+            ) : null}
             <Text style={styles.label}>Graag (bijv. pasta, kip, Mexicaans)</Text>
             <TextInput value={prefer} onChangeText={setPrefer} placeholder="Laat leeg als het niet uitmaakt" placeholderTextColor={colors.muted} style={styles.input} />
             <Text style={styles.label}>Liever niet (bijv. vis, champignons)</Text>
