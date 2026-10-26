@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Image, Pressable, ScrollView, Share, Text, TextInput, View } from "react-native";
 import Modal from "@/src/components/Modal";
+import { norm } from "@/src/smartSearch";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Linking from "expo-linking";
@@ -41,6 +42,11 @@ type Ing = {
   diet: "all" | "vega" | "meat";
 };
 type AltProduct = Product & { note?: string | null; offer?: boolean };
+
+// Producten waar iedereen een eigen smaak in heeft (zelfde lijst als _CHOICE_RE op de server)
+const CHOICE_RE =
+  /\b(chips|tortillachips|nacho\w*|frisdrank|limonade|siroop|ranja|cola|sap|vruchtensap|koek\w*|snoep\w*|drop|chocolade\w*|ijs|roomijs|bier|wijn|toetje\w*|vla|yoghurtdrank|zuiveldrank|smaakje|beleg|zoet beleg|hartig beleg|thee|koffie|ontbijtgranen|muesli|cruesli)\b/;
+const isChoice = (name: string) => CHOICE_RE.test(norm(name));
 const STORE_SHORT: Record<string, string> = { "Albert Heijn": "AH", Jumbo: "Jumbo", Dirk: "Dirk" };
 
 // Vlees en vis zijn alleen voor de vleeseters (zelfde regel als op de server)
@@ -121,6 +127,12 @@ export default function DishEditScreen() {
   );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [swapIdx, setSwapIdx] = useState<number | null>(null);
+  // Pop-up met het product zelf (en eventueel het voorstel om te wisselen) voordat je kiest
+  const [swapFocus, setSwapFocus] = useState<{ current?: AltProduct | null; suggest?: AltProduct | null }>({});
+  const openSwap = (idx: number, focus: { current?: AltProduct | null; suggest?: AltProduct | null } = {}) => {
+    setSwapFocus(focus);
+    setSwapIdx(idx);
+  };
 
   // Gekoppelde producten (foto, winkel, prijs) en voorstellen om te wisselen
   const linkedIds = ings.map((i) => i.productId).filter(Boolean) as string[];
@@ -418,9 +430,20 @@ export default function DishEditScreen() {
             </View>
 
             {ing.recipeText ? <Text style={styles.recipeText}>In het recept: {ing.recipeText}</Text> : null}
+            {isChoice(ing.name) ? (
+              <View style={styles.chooseHint}>
+                <Icon name="gesture-tap" size={14} color={colors.brandPrimary} />
+                <Text style={styles.chooseHintText}>Smaak verschilt per persoon: je kiest de soort zelf op je boodschappenlijst.</Text>
+              </View>
+            ) : null}
 
             {ing.productId && byId[ing.productId] ? (
               <View style={styles.linkedRow}>
+                <Pressable
+                  testID={`ing-product-${idx}`}
+                  onPress={() => openSwap(idx, { current: byId[ing.productId!] })}
+                  style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }}
+                >
                 {byId[ing.productId].image ? (
                   <Image source={{ uri: byId[ing.productId].image! }} style={styles.linkedImg} resizeMode="contain" />
                 ) : (
@@ -435,15 +458,16 @@ export default function DishEditScreen() {
                     {byId[ing.productId].price > 0 ? `€ ${(byId[ing.productId].promo?.price ?? byId[ing.productId].price).toFixed(2).replace(".", ",")}` : "—"}
                   </Text>
                 </View>
+                </Pressable>
                 {!readOnly ? (
-                  <Pressable onPress={() => setSwapIdx(idx)} style={styles.swapBtn} testID={`ing-swap-${idx}`}>
+                  <Pressable onPress={() => openSwap(idx, { current: byId[ing.productId!] })} style={styles.swapBtn} testID={`ing-swap-${idx}`}>
                     <Icon name="swap-horizontal" size={16} color={colors.brandPrimary} />
                     <Text style={styles.swapText}>Wissel</Text>
                   </Pressable>
                 ) : null}
               </View>
             ) : !readOnly ? (
-              <Pressable onPress={() => setSwapIdx(idx)} style={styles.linkBtn} testID={`ing-link-${idx}`}>
+              <Pressable onPress={() => openSwap(idx)} style={styles.linkBtn} testID={`ing-link-${idx}`}>
                 <Icon name="link-variant-plus" size={16} color={colors.brandPrimary} />
                 <Text style={styles.swapText}>Koppel aan een product</Text>
               </Pressable>
@@ -455,11 +479,13 @@ export default function DishEditScreen() {
               return (
                 <View style={styles.hint}>
                   <Icon name="lightbulb-on-outline" size={16} color={colors.success} />
-                  <Text style={styles.hintText} numberOfLines={2}>
-                    Bij {STORE_SHORT[sg.source ?? ""] ?? sg.source}: {sg.name} · {sg.note}
-                  </Text>
-                  <Pressable onPress={() => swapProduct(idx, sg)} hitSlop={6}>
-                    <Text style={styles.swapText}>Wissel</Text>
+                  <Pressable onPress={() => openSwap(idx, { current: byId[ing.productId!], suggest: sg })} style={{ flex: 1 }} testID={`ing-hint-${idx}`}>
+                    <Text style={styles.hintText} numberOfLines={2}>
+                      Bij {STORE_SHORT[sg.source ?? ""] ?? sg.source}: {sg.name} · {sg.note}
+                    </Text>
+                  </Pressable>
+                  <Pressable onPress={() => openSwap(idx, { current: byId[ing.productId!], suggest: sg })} hitSlop={6}>
+                    <Text style={styles.swapText}>Bekijk</Text>
                   </Pressable>
                   <Pressable onPress={() => setDismissed((d) => ({ ...d, [`${ing.productId}>${sg.id}`]: true }))} hitSlop={6}>
                     <Icon name="close" size={16} color={colors.muted} />
@@ -650,6 +676,8 @@ export default function DishEditScreen() {
       <DishProductPicker key={pickerOpen ? "open" : "closed"} open={pickerOpen} onClose={() => setPickerOpen(false)} onPick={addProductIngredient} />
       <SwapSheet
         ing={swapIdx != null ? ings[swapIdx] : null}
+        focus={swapFocus}
+        readOnly={readOnly}
         onClose={() => setSwapIdx(null)}
         onPick={(p) => swapIdx != null && swapProduct(swapIdx, p)}
       />
@@ -657,9 +685,22 @@ export default function DishEditScreen() {
   );
 }
 
-function SwapSheet({ ing, onClose, onPick }: { ing: Ing | null; onClose: () => void; onPick: (p: Product) => void }) {
+function SwapSheet({
+  ing,
+  focus,
+  readOnly,
+  onClose,
+  onPick,
+}: {
+  ing: Ing | null;
+  focus?: { current?: AltProduct | null; suggest?: AltProduct | null };
+  readOnly?: boolean;
+  onClose: () => void;
+  onPick: (p: Product) => void;
+}) {
   const styles = useStyles();
   const { colors } = useTheme();
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const [q, setQ] = useState("");
   const [src, setSrc] = useState<string>("");
@@ -708,18 +749,73 @@ function SwapSheet({ ing, onClose, onPick }: { ing: Ing | null; onClose: () => v
     </Pressable>
   );
 
+  const Big = ({ p, label, action }: { p: AltProduct; label: string; action?: { text: string; onPress: () => void } }) => (
+    <View style={styles.bigCard}>
+      <Text style={styles.altHead}>{label}</Text>
+      <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
+        {p.image ? <Image source={{ uri: p.image }} style={styles.bigImg} resizeMode="contain" /> : <View style={styles.bigImg} />}
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={styles.bigName}>{p.name}</Text>
+          <Text style={styles.pickerMeta}>
+            {STORE_SHORT[p.source ?? ""] ?? p.source ?? "Eigen"} · {p.unit}
+            {p.unit_price ? ` · ${p.unit_price}` : ""}
+          </Text>
+          <Text style={styles.bigPrice}>{p.price > 0 ? `€ ${(p.promo?.price ?? p.price).toFixed(2).replace(".", ",")}` : "—"}</Text>
+          {p.promo || p.note ? (
+            <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
+              {p.note ? <Text style={styles.altGood}>{p.note}</Text> : null}
+              {p.promo ? <Text style={styles.altOffer}>{p.promo.label ?? "Aanbieding"}</Text> : null}
+            </View>
+          ) : null}
+        </View>
+      </View>
+      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+        {action ? (
+          <Pressable onPress={action.onPress} style={[styles.swapBtn, { backgroundColor: colors.brandPrimary }]}>
+            <Icon name="swap-horizontal" size={16} color={colors.onBrandPrimary} />
+            <Text style={[styles.swapText, { color: colors.onBrandPrimary }]}>{action.text}</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          onPress={() => {
+            close();
+            router.push(`/product/${p.id}`);
+          }}
+          style={styles.swapBtn}
+        >
+          <Icon name="information-outline" size={16} color={colors.brandPrimary} />
+          <Text style={styles.swapText}>Alles over dit product</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+
   return (
     <Modal visible={open} animationType="fade" transparent onRequestClose={close}>
       <View style={styles.pickerBackdrop}>
         <View style={[styles.pickerSheet, { paddingBottom: insets.bottom + 16, maxHeight: "92%" }]}>
           <View style={styles.pickerHeader}>
             <Text style={styles.pickerTitle} numberOfLines={1}>
-              Ander product voor {ing?.name}
+              {focus?.current || focus?.suggest ? ing?.name : `Ander product voor ${ing?.name}`}
             </Text>
             <Pressable onPress={close} hitSlop={8}>
               <Icon name="close" size={22} color={colors.onSurface} />
             </Pressable>
           </View>
+          {focus?.current || focus?.suggest ? (
+            <View style={{ gap: 10, flexShrink: 0 }}>
+              {focus.suggest ? (
+                <Big
+                  p={focus.suggest}
+                  label="Voorstel"
+                  action={readOnly ? undefined : { text: "Wissel naar dit product", onPress: () => onPick(focus.suggest!) }}
+                />
+              ) : null}
+              {focus.current && !focus.suggest ? <Big p={focus.current} label="In dit gerecht" /> : null}
+              {!readOnly ? <Text style={styles.altHead}>Of kies een ander product</Text> : null}
+            </View>
+          ) : null}
+          {readOnly ? null : (
           <View style={styles.pickerSearch}>
             <Icon name="magnify" size={20} color={colors.muted} />
             <TextInput
@@ -730,6 +826,7 @@ function SwapSheet({ ing, onClose, onPick }: { ing: Ing | null; onClose: () => v
               style={styles.pickerSearchInput}
             />
           </View>
+          )}
           {searching ? (
             <ScrollView
               horizontal
@@ -744,7 +841,7 @@ function SwapSheet({ ing, onClose, onPick }: { ing: Ing | null; onClose: () => v
               ))}
             </ScrollView>
           ) : null}
-          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 4 }}>
+          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 4 }} style={readOnly ? { display: "none" } : undefined}>
             {searching ? (
               (search.data?.products ?? []).map((p) => <Row key={p.id} p={p} />)
             ) : alts.isLoading ? (
@@ -981,4 +1078,10 @@ const useStyles = makeStyles((colors) => ({
     borderTopColor: colors.divider,
     backgroundColor: colors.surface,
   },
+  bigCard: { gap: 10, padding: 12, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary },
+  bigImg: { width: 96, height: 96, borderRadius: 12, backgroundColor: colors.surface },
+  bigName: { fontSize: 16, fontFamily: fonts.bold, color: colors.onSurface },
+  bigPrice: { fontSize: 16, fontFamily: fonts.bold, color: colors.brandPrimary },
+  chooseHint: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
+  chooseHintText: { flex: 1, fontSize: 12, fontFamily: fonts.medium, color: colors.brandPrimary },
 }));

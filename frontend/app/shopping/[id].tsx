@@ -23,7 +23,7 @@ import { CompareCard, type CompareStore } from "@/src/CompareCard";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; image?: string | null; better?: PackBetter | null; in_pantry?: number; was?: { store: string; price: number }; promo_then?: { label: string; start?: string | null; period?: string | null } };
+type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; orig_product_id?: string | null; choose?: "todo" | "auto"; image?: string | null; better?: PackBetter | null; in_pantry?: number; was?: { store: string; price: number }; promo_then?: { label: string; start?: string | null; period?: string | null } };
 type Grouped = { aisle: string; items: Item[] };
 type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: number; saving?: number };
 
@@ -647,7 +647,9 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
   // Wisselen naar het voordeligere product: alleen voor deze lijst
   const swap = async (b: PackBetter) => {
     try {
-      await api(`/camps/${id}/product-swap`, { method: "POST", body: { from_id: item.product_id, to_id: b.product_id } });
+      // Door de app gekozen soort: wisselen vanaf het oorspronkelijke product, dan blijft jouw keuze staan
+      const from = item.choose === "auto" ? item.orig_product_id ?? item.product_id : item.product_id;
+      await api(`/camps/${id}/product-swap`, { method: "POST", body: { from_id: from, to_id: b.product_id } });
       qc.invalidateQueries({ queryKey: ["shopping"] });
       qc.invalidateQueries({ queryKey: ["budget"] });
       toast.show(`Gewisseld naar ${b.name}`, "success");
@@ -676,6 +678,14 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
           <Text style={styles.itemPack} numberOfLines={1}>
             {packText(item.packs, item.pack_unit)}
           </Text>
+        ) : null}
+        {item.choose && !checked ? (
+          <Pressable onPress={() => setSwapOpen(true)} hitSlop={4} style={[styles.choosePill, item.choose === "auto" && styles.choosePillAuto]} testID={`item-choose-${item.name.toLowerCase()}`}>
+            <Icon name={item.choose === "auto" ? "auto-fix" : "gesture-tap"} size={13} color={item.choose === "auto" ? colors.muted : colors.onBrandSecondary} />
+            <Text style={[styles.chooseText, item.choose === "auto" && { color: colors.muted }]}>
+              {item.choose === "auto" ? "Door de app gekozen, tik om zelf te kiezen" : "Kies zelf je soort"}
+            </Text>
+          </Pressable>
         ) : null}
         {item.was && item.price ? (
           <Text style={styles.itemWas} numberOfLines={1}>
@@ -778,4 +788,7 @@ const useStyles = makeStyles((colors) => ({
   shareOption: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 13, borderTopWidth: 1, borderTopColor: colors.divider },
   shareOptionText: { fontSize: 16, fontFamily: fonts.semibold, color: colors.onSurface },
   emptyDay: { fontSize: 14, fontFamily: fonts.regular, color: colors.muted, paddingHorizontal: 4 },
+  choosePill: { flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "flex-start", backgroundColor: colors.brandSecondary, borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3, marginTop: 3 },
+  choosePillAuto: { backgroundColor: colors.surfaceTertiary },
+  chooseText: { fontSize: 11, fontFamily: fonts.semibold, color: colors.onBrandSecondary },
 }));

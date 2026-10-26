@@ -39,8 +39,10 @@ export function Button({
   icon,
   testID,
   style,
+  sub,
 }: {
   label: string;
+  sub?: string; // klein tweede regeltje onder de tekst, bijv. "toevoegen"
   onPress: () => void;
   variant?: "primary" | "secondary" | "ghost";
   loading?: boolean;
@@ -73,7 +75,14 @@ export function Button({
       ) : (
         <View style={styles.btnRow}>
           {icon ? <Icon name={icon} size={18} color={fg} /> : null}
-          <Text style={[styles.btnText, { color: fg }]}>{label}</Text>
+          {sub ? (
+            <View style={{ alignItems: "center" }}>
+              <Text style={[styles.btnText, { color: fg }]} numberOfLines={1}>{label}</Text>
+              <Text style={{ fontSize: 11, fontFamily: fonts.medium, color: fg, opacity: 0.85, marginTop: -1 }}>{sub}</Text>
+            </View>
+          ) : (
+            <Text style={[styles.btnText, { color: fg }]}>{label}</Text>
+          )}
         </View>
       )}
     </Pressable>

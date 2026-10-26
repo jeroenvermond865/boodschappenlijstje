@@ -25,10 +25,10 @@ export function AddProductButtons({ productId, productName }: { productId: strin
     <>
       <View style={{ flexDirection: "row", gap: 10 }}>
         <View style={{ flex: 1 }}>
-          <Button label={`Op ${T.one}`} icon="playlist-plus" onPress={() => setMode("camp")} testID="product-to-camp" />
+          <Button label={`Op ${T.one}`} sub="toevoegen" icon="playlist-plus" onPress={() => setMode("camp")} testID="product-to-camp" />
         </View>
         <View style={{ flex: 1 }}>
-          <Button label="Aan gerecht" icon="silverware-fork-knife" variant="secondary" onPress={() => setMode("dish")} testID="product-to-dish" />
+          <Button label="Aan gerecht" sub="toevoegen" icon="silverware-fork-knife" variant="secondary" onPress={() => setMode("dish")} testID="product-to-dish" />
         </View>
       </View>
       <AddSheet mode={mode} onClose={() => setMode(null)} productId={productId} productName={productName} />

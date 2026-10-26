@@ -1733,7 +1733,8 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
             if any(i.get("product_id") in on_promo for i in pick["ingredients"]):
                 promo_dishes.add(pick["name"])
     if filled:
-        await db.camps.update_one({"camp_id": camp_id}, {"$set": {"days": days}})
+        # Onthouden dat de app het menu koos, met de voorkeuren: dan kiest de app ook bij "smaak-producten" (chips, frisdrank) zelf een soort
+        await db.camps.update_one({"camp_id": camp_id}, {"$set": {"days": days, "auto_menu": {"prefer": data.prefer[:20], "avoid": data.avoid[:20], "diet": data.diet}}})
     updated = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0})
     return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes), "pool": len(dishes), "added_online": added_online, "twice": twice}
 
@@ -1946,6 +1947,29 @@ def _group_items(item_map: dict) -> tuple:
         by_aisle.setdefault(it["aisle"], []).append(it)
     grouped = [{"aisle": a, "items": by_aisle[a]} for a in AISLES if a in by_aisle]
     return items, grouped
+
+
+# Producten waar iedereen een eigen smaak in heeft: "1 zak chips" kan naturel, paprika of bolognese zijn. Die kiest de klant zelf.
+_CHOICE_RE = re.compile(r"\b(chips|tortillachips|nacho\w*|frisdrank|limonade|siroop|ranja|cola|sap|vruchtensap|koek\w*|snoep\w*|drop|chocolade\w*|"
+                        r"ijs|roomijs|bier|wijn|toetje\w*|vla|yoghurtdrank|zuiveldrank|smaakje|beleg|zoet beleg|hartig beleg|thee|koffie|ontbijtgranen|muesli|cruesli)\b")
+
+
+def _is_choice(name: str) -> bool:
+    return bool(_CHOICE_RE.search(_norm_text(name)))
+
+
+def _auto_choice(p: dict, prefs: dict, favs: set, store: str) -> Optional[dict]:
+    # Door de app gekozen menu: kies zelf een soort die past bij de voorkeuren (zin in / liever niet) of bij je favorieten
+    pool = [d for d in _product_cache.get("docs") or [] if d.get("_src") == store and d.get("is_global")]
+    hits = [d for d in _best_matches(pool, _alt_terms(p["name"], p) or p["name"], 25) if _same_kind(p, d, strict=False)] or [p]
+    prefer = [_norm_text(w) for w in prefs.get("prefer") or [] if w]
+    avoid = [_norm_text(w) for w in prefs.get("avoid") or [] if w]
+
+    def score(d):
+        n = d.get("_norm") or _norm_text(d.get("name") or "")
+        return ((d["product_id"] in favs) * 3 + sum(2 for w in prefer if w in n) - sum(5 for w in avoid if w in n),
+                -(resolve_price(d.get("prices") or {}, store, d.get("unavailable") or []) or 99))
+    return max(hits, key=score)
 
 
 def _add_item(store_map: dict, store: str, name: str, unit: str, aisle: str, qty: float, product_id: Optional[str] = None):
@@ -2362,6 +2386,24 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
     if any(not it.get("product_id") for b in by_store + general for it in b["flat"]):
         docs = await _global_products()
         await asyncio.to_thread(_match_missing, by_store + general + [x for d in per_day for x in d["by_store"]], docs, prods)
+    # Smaak-producten (chips, frisdrank): nog niet zelf gekozen? Dan zie je "Kies je soort". Koos de app het menu, dan kiest de app ook de soort.
+    auto_prefs = camp.get("auto_menu")
+    favs_set = set(user.get("favorite_products") or [])
+    for b in by_store + general + [x for d in per_day for x in d["by_store"]]:
+        for it in b["flat"]:
+            if not _is_choice(it.get("name") or "") or it.get("orig_product_id") in swaps or it.get("product_id") != it.get("orig_product_id"):
+                continue  # al zelf gewisseld of gekozen
+            p0 = prods.get(it.get("product_id") or "")
+            if p0 and _norm_text(p0.get("name") or "") == _norm_text(it.get("name") or ""):
+                continue  # precies dit product op de lijst gezet
+            if auto_prefs and p0:
+                pick = _auto_choice(p0, auto_prefs, favs_set, b["store"])
+                if pick and pick["product_id"] != p0["product_id"]:
+                    it["product_id"] = pick["product_id"]
+                    prods.setdefault(pick["product_id"], pick)
+                it["choose"] = "auto"
+            else:
+                it["choose"] = "todo"
     piece_ids = {it.get("product_id") for b in by_store + general for it in b["flat"] if (it.get("unit") or "").lower().strip() in ("", "stuks", "stuk", "st")}
     await _learn_pack_counts([prods[x] for x in piece_ids if x in prods], 4)
 
