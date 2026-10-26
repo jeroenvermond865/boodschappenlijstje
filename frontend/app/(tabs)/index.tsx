@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Icon } from "@/src/components/ui";
 import { niceDate } from "@/src/DateField";
 import { api } from "@/src/api";
+import { cachedApi } from "@/src/offline";
 import { AdSlot, GOLD, usePremium } from "@/src/premium";
 import { useTerms } from "@/src/settings";
 import { usesNativeTabs } from "@/src/navigation";
@@ -106,7 +107,7 @@ export default function HomeScreen() {
 
   const { data, refetch, isRefetching, isLoading } = useQuery({
     queryKey: ["home"],
-    queryFn: () => api<Home>("/home"),
+    queryFn: () => cachedApi<Home>("/home"),
     staleTime: 60 * 1000,
     // De vergelijking wordt op de achtergrond uitgerekend: even later nog eens vragen
     refetchInterval: (q) => (q.state.data?.compare_pending ? 4000 : false),

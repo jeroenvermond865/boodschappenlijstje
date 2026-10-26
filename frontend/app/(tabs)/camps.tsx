@@ -7,6 +7,7 @@ import Animated, { FadeInDown } from "react-native-reanimated";
 
 import { Button, EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { cachedApi } from "@/src/offline";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings, useTerms } from "@/src/settings";
 import { useToast } from "@/src/toast";
@@ -28,7 +29,7 @@ export default function CampsScreen() {
 
   const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: ["camps"],
-    queryFn: () => api<{ camps: Camp[] }>("/camps"),
+    queryFn: () => cachedApi<{ camps: Camp[] }>("/camps"),
   });
 
   const restore = useMutation({

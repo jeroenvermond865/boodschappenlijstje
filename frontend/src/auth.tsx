@@ -5,6 +5,7 @@ import * as Linking from "expo-linking";
 
 import { api, setAuthToken } from "@/src/api";
 import { storage } from "@/src/utils/storage";
+import { cachedApi, clearOffline } from "@/src/offline";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -57,7 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const exchanged = useRef<Set<string>>(new Set());
 
   const loadMe = useCallback(async () => {
-    const res = await api<{ user: User; permissions: string[] }>("/auth/me");
+    const res = await cachedApi<{ user: User; permissions: string[] }>("/auth/me");
     setUser(res.user);
     setPermissions(res.permissions ?? []);
     setStatus("authed");
@@ -112,7 +113,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setAuthToken(token);
       try {
         await loadMe();
-      } catch {
+      } catch (e) {
+        // Geen internet (en nog niets bewaard): niet uitloggen, alleen bij een verlopen of ongeldige sessie
+        if (!(e as { status?: number })?.status) {
+          setStatus("guest");
+          return;
+        }
         setAuthToken(null);
         await storage.secureRemove(TOKEN_KEY);
         setStatus("guest");
@@ -184,6 +190,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     setAuthToken(null);
     await storage.secureRemove(TOKEN_KEY);
+    await clearOffline();
     setUser(null);
     setPermissions([]);
     setStatus("guest");

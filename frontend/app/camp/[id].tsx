@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, EmptyState, Icon, Select, Stepper } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { cachedApi } from "@/src/offline";
 import { useTerms } from "@/src/settings";
 import { fetchProducts, useDebounced } from "@/src/search";
 import { ProductBrowser } from "@/src/ProductBrowser";
@@ -89,7 +90,7 @@ export default function CampDetailScreen() {
 
   const { data: camp, isLoading } = useQuery({
     queryKey: ["camp", id],
-    queryFn: () => api<Camp>(`/camps/${id}`),
+    queryFn: () => cachedApi<Camp>(`/camps/${id}`),
   });
 
   const { data: dishesData } = useQuery({

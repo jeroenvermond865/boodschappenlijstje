@@ -9,6 +9,7 @@ import * as Sharing from "expo-sharing";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
+import { cachedApi, offlineText } from "@/src/offline";
 import { BetterPack, PackBetter, packText } from "@/src/packs";
 import { AISLE_ICONS, formatQty } from "@/src/constants";
 import { goBack } from "@/src/nav";
@@ -54,11 +55,11 @@ export default function ShoppingScreen() {
 
   const { data, isLoading } = useQuery({
     queryKey: ["shopping", id],
-    queryFn: () => api<ShoppingData>(`/camps/${id}/shopping-list`),
+    queryFn: () => cachedApi<ShoppingData>(`/camps/${id}/shopping-list`),
   });
   const { data: camp } = useQuery({
     queryKey: ["camp", id],
-    queryFn: () => api<{ name: string }>(`/camps/${id}`),
+    queryFn: () => cachedApi<{ name: string }>(`/camps/${id}`),
   });
 
   const multi = data?.multi_store ?? false;
@@ -291,6 +292,12 @@ export default function ShoppingScreen() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32, gap: 16 }}>
+          {data?.offline_at ? (
+            <View style={styles.multiBanner}>
+              <Icon name="wifi-off" size={16} color={colors.onBrandTertiary} />
+              <Text style={styles.multiText}>{offlineText(data.offline_at)} Afvinken werkt gewoon.</Text>
+            </View>
+          ) : null}
           {multi ? (
             <View style={styles.multiBanner}>
               <Icon name="storefront-outline" size={16} color={colors.onBrandTertiary} />

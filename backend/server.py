@@ -8251,6 +8251,38 @@ async def healthz():
 _SCAN_RE = re.compile(r"(^|/)\.|\.(php\d?|env|bak|old|orig|save|swp|sql|sqlite|db|ini|cfg|conf|config|ya?ml|xml|json|log|asp|aspx|jsp|cgi|pl|sh|zip|tar|gz|rar|7z)(~)?$", re.I)
 
 
+# Service worker: de website opent ook zonder internet (de app zelf bewaart de lijst op het toestel).
+# Plaatjes en code met een vaste naam uit de cache, de pagina zelf eerst van internet en anders de bewaarde versie.
+_SW_JS = """
+const C = "slim-app-v1";
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (e) => e.waitUntil(
+  caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== C).map((k) => caches.delete(k)))).then(() => self.clients.claim())));
+self.addEventListener("fetch", (e) => {
+  const r = e.request;
+  if (r.method !== "GET") return;
+  const u = new URL(r.url);
+  if (u.origin !== location.origin || u.pathname.startsWith("/api/")) return;
+  if (u.pathname.startsWith("/_expo/static/") || u.pathname.startsWith("/assets/")) {
+    e.respondWith(caches.open(C).then((c) => c.match(r).then((hit) => hit || fetch(r).then((res) => {
+      if (res.ok) c.put(r, res.clone());
+      return res;
+    }))));
+  } else if (r.mode === "navigate") {
+    e.respondWith(fetch(r).then((res) => {
+      if (res.ok) { const copy = res.clone(); caches.open(C).then((c) => c.put("/", copy)); }
+      return res;
+    }).catch(() => caches.match("/")));
+  }
+});
+"""
+
+
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    return Response(_SW_JS, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/{full_path:path}", include_in_schema=False)
 async def serve_web(full_path: str):
     if full_path.startswith("api/") or not WEB_DIR.is_dir():
@@ -8273,7 +8305,8 @@ def _index_html() -> str:
     html = (WEB_DIR / "index.html").read_text()
     links = "".join(f'<link rel="preload" href="/{f.relative_to(WEB_DIR).as_posix()}" as="font" type="font/ttf" crossorigin>'
                     for f in WEB_DIR.glob("assets/**/MaterialDesignIcons*.ttf"))
-    return html.replace("</head>", links + "</head>", 1) if links else html
+    sw = '<script>if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("/sw.js"))</script>'
+    return html.replace("</head>", links + sw + "</head>", 1)
 
 
 @app.on_event("shutdown")
