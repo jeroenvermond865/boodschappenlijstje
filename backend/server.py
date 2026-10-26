@@ -5492,8 +5492,18 @@ def _compare_stores(items: list, docs: list) -> list:
                           "image": hit.get("image") if hit and price else None, "price": round(price, 2) if hit and price else None,
                           "alternative": bool(hit and price and alt and not (base and _norm_text(base["name"]) == hit["_norm"]))})
         out.append({"store": st, "total": round(total, 2), "found": found, "count": len(items), "items": lines})
+    return _finish_compare(out)
+
+
+def _finish_compare(out: list) -> list:
     # Ontbrekende artikelen: reken met de gemiddelde prijs bij de winkels die het wel hebben
-    for k in range(len(items)):
+    n = len(out[0]["items"]) if out else 0
+    for o in out:
+        o["total"] = round(sum(i["price"] or 0 for i in o["items"]), 2)
+        o["found"] = sum(1 for i in o["items"] if i["price"])
+        for i in o["items"]:
+            i.pop("estimate", None)
+    for k in range(n):
         known = [o["items"][k]["price"] for o in out if o["items"][k]["price"]]
         guess = round(sum(known) / len(known), 2) if known else 0
         for o in out:
@@ -5504,6 +5514,66 @@ def _compare_stores(items: list, docs: list) -> list:
         o["estimated"] = round(est, 2)
         o["total_fair"] = round(o["total"] + est, 2)
     return out
+
+
+def _apply_compare_swaps(compare: list, swaps: dict, by_pid: dict) -> list:
+    # Zelf gekozen producten per winkel (bijv. als het vervangende product niet klopt)
+    if not swaps or not compare:
+        return compare
+    import copy
+    out = copy.deepcopy(compare)
+    for o in out:
+        mine = swaps.get(_ikey(o["store"])) or {}
+        for i in o["items"]:
+            pid = mine.get(_ikey(_norm_text(i["name"])))
+            d = by_pid.get(pid) if pid else None
+            price = resolve_price(d.get("prices") or {}, o["store"], d.get("unavailable") or []) if d else 0
+            if d and price:
+                i.update({"product": d["name"], "product_id": pid, "image": d.get("image"), "price": round(price, 2),
+                          "alternative": True, "chosen": True})
+    return _finish_compare(out)
+
+
+class CompareSwap(BaseModel):
+    store: str
+    name: str
+    product_id: Optional[str] = None  # leeg = terug naar de keuze van de app
+
+
+@api_router.get("/compare/options")
+async def compare_options(store: str, name: str, product_id: str = "", user: dict = Depends(get_current_user)):
+    # Andere producten in deze winkel om uit te kiezen
+    docs = await _global_products()
+    base = (_product_cache.get("by_pid") or {}).get(product_id) if product_id else None
+
+    def work():
+        pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
+        terms = _alt_terms(name, base) or name
+        hits = _best_matches(pool, terms, 12)
+        if len(hits) < 6:
+            hits += [d for d in _search_products(pool, terms)[:12] if d not in hits]
+        out = []
+        for d in hits[:12]:
+            price = resolve_price(d.get("prices") or {}, store, d.get("unavailable") or [])
+            if price:
+                out.append({"product_id": d["product_id"], "name": d["name"], "unit": d.get("unit") or "", "image": d.get("image"), "price": round(price, 2)})
+        return out
+    return {"options": await asyncio.to_thread(work)}
+
+
+@api_router.post("/camps/{camp_id}/compare-swap")
+async def camp_compare_swap(camp_id: str, data: CompareSwap, user: dict = Depends(get_current_user)):
+    camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "camp_id": 1})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+    field = f"compare_swaps.{_ikey(data.store)}.{_ikey(_norm_text(data.name))}"
+    if data.product_id:
+        if not await db.products.find_one({"product_id": data.product_id, "deleted_at": None}, {"_id": 1}):
+            raise HTTPException(status_code=404, detail="Product niet gevonden")
+        await db.camps.update_one({"camp_id": camp_id}, {"$set": {field: data.product_id}})
+    else:
+        await db.camps.update_one({"camp_id": camp_id}, {"$unset": {field: ""}})
+    return {"ok": True}
 
 
 def _ikey(x: str) -> str:
@@ -5647,7 +5717,7 @@ async def home(user: dict = Depends(get_current_user)):
             key = ("compare2", tuple(sorted(names))[:40])
             hit = _home_cache.get(key)
             if hit:
-                compare = hit[1]
+                compare = _apply_compare_swaps(hit[1], c.get("compare_swaps") or {}, _product_cache.get("by_pid") or {})
             if not hit or time.time() - hit[0] > 1800:
                 # Alternatieven zoeken in elke winkel duurt even: op de achtergrond, de app vraagt het zo opnieuw
                 if key not in _compare_running:

@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Image, Modal, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Icon } from "@/src/components/ui";
 import { niceDate } from "@/src/DateField";
@@ -46,6 +46,8 @@ type Home = {
   own_dishes: number;
 };
 
+type CompareItem = NonNullable<CompareStore["items"]>[number];
+
 type CompareStore = {
   store: string;
   total: number;
@@ -53,7 +55,7 @@ type CompareStore = {
   estimated?: number;
   found: number;
   count: number;
-  items?: { name: string; product: string | null; product_id: string | null; image?: string | null; price: number | null; alternative: boolean; estimate?: number }[];
+  items?: { name: string; product: string | null; product_id: string | null; image?: string | null; price: number | null; alternative: boolean; estimate?: number; chosen?: boolean }[];
 };
 
 const SHORT: Record<string, string> = { "Albert Heijn": "AH", Jumbo: "Jumbo", Dirk: "Dirk" };
@@ -110,6 +112,7 @@ export default function HomeScreen() {
     refetchInterval: (q) => (q.state.data?.compare_pending ? 4000 : false),
   });
   const [openStore, setOpenStore] = useState<string | null>(null);
+  const [swap, setSwap] = useState<{ store: string; item: CompareItem } | null>(null);
 
   const premium = usePremium();
   const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
@@ -356,17 +359,18 @@ export default function HomeScreen() {
                   ? (c.items ?? []).map((i) => (
                       <Pressable
                         key={i.name}
-                        onPress={() => i.product_id && router.push(`/product/${i.product_id}`)}
+                        onPress={() => setSwap({ store: c.store, item: i })}
                         style={styles.cmpRow}
                       >
                         {i.image ? <Image source={{ uri: i.image }} style={styles.cmpImg} resizeMode="contain" /> : <View style={styles.cmpImg} />}
                         <View style={{ flex: 1 }}>
                           <Text style={styles.cmpName} numberOfLines={1}>{i.product ?? i.name}</Text>
                           <Text style={[styles.small, i.alternative && { color: colors.warning }]} numberOfLines={1}>
-                            {!i.product ? (i.estimate ? `Niet gevonden, gerekend met ${euro(i.estimate)} (andere winkels)` : "Niet gevonden in deze winkel") : i.alternative ? `In plaats van ${i.name}` : "Zelfde product"}
+                            {i.chosen ? "Zelf gekozen" : !i.product ? (i.estimate ? `Niet gevonden, gerekend met ${euro(i.estimate)} (andere winkels)` : "Niet gevonden in deze winkel") : i.alternative ? `In plaats van ${i.name}` : "Zelfde product"}
                           </Text>
                         </View>
                         <Text style={styles.cmpPrice}>{i.price != null ? euro(i.price) : "—"}</Text>
+                        <Icon name="swap-horizontal" size={16} color={colors.muted} />
                       </Pressable>
                     ))
                   : null}
@@ -414,7 +418,93 @@ export default function HomeScreen() {
         </View>
       ) : null}
       <AdSlot place="home" />
+      {swap && data?.camp ? <SwapSheet campId={data.camp.id} store={swap.store} item={swap.item} onClose={() => setSwap(null)} /> : null}
     </ScrollView>
+  );
+}
+
+type SwapOption = { product_id: string; name: string; unit?: string | null; image?: string | null; price?: number | null };
+
+// Per product in de vergelijking zelf een ander product kiezen (bijv. als de app iets verkeerds vond)
+function SwapSheet({ campId, store, item, onClose }: { campId: string; store: string; item: CompareItem; onClose: () => void }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const qc = useQueryClient();
+  const q = new URLSearchParams({ store, name: item.name, ...(item.product_id ? { product_id: item.product_id } : {}) });
+  const { data, isLoading } = useQuery({
+    queryKey: ["compare-options", store, item.name],
+    queryFn: () => api<{ options: SwapOption[] }>(`/compare/options?${q.toString()}`),
+  });
+  const pick = useMutation({
+    mutationFn: (product_id: string | null) =>
+      api(`/camps/${campId}/compare-swap`, { method: "POST", body: { store, name: item.name, product_id } }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["home"] });
+      onClose();
+    },
+  });
+  const options = (data?.options ?? []).filter((o) => o.product_id !== item.product_id);
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={styles.backdrop} onPress={onClose}>
+        <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={2}>
+              {item.name} bij {store}
+            </Text>
+            <Pressable onPress={onClose} hitSlop={10}>
+              <Icon name="close" size={22} color={colors.muted} />
+            </Pressable>
+          </View>
+          {item.product ? (
+            <View style={styles.cmpRow}>
+              {item.image ? <Image source={{ uri: item.image }} style={styles.cmpImg} resizeMode="contain" /> : <View style={styles.cmpImg} />}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cmpName} numberOfLines={2}>{item.product}</Text>
+                <Text style={styles.small}>Nu gekozen{item.price != null ? ` · ${euro(item.price)}` : ""}</Text>
+              </View>
+              {item.product_id ? (
+                <Pressable
+                  onPress={() => {
+                    onClose();
+                    router.push(`/product/${item.product_id}`);
+                  }}
+                  hitSlop={8}
+                >
+                  <Text style={styles.link}>Bekijken</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : (
+            <Text style={styles.small}>Hier is nog niets voor gevonden. Kies hieronder zelf een product.</Text>
+          )}
+          <Text style={[styles.body, { fontFamily: fonts.semibold }]}>Kies een ander product</Text>
+          <ScrollView style={{ maxHeight: 360 }}>
+            {isLoading ? <ActivityIndicator color={colors.brandPrimary} style={{ marginVertical: 16 }} /> : null}
+            {!isLoading && !options.length ? <Text style={styles.small}>Geen andere producten gevonden.</Text> : null}
+            {options.map((o) => (
+              <Pressable key={o.product_id} disabled={pick.isPending} onPress={() => pick.mutate(o.product_id)} style={styles.cmpRow}>
+                {o.image ? <Image source={{ uri: o.image }} style={styles.cmpImg} resizeMode="contain" /> : <View style={styles.cmpImg} />}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cmpName} numberOfLines={2}>{o.name}</Text>
+                  {o.unit ? <Text style={styles.small}>{o.unit}</Text> : null}
+                </View>
+                <Text style={styles.cmpPrice}>{o.price != null ? euro(o.price) : "—"}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+          {item.chosen ? (
+            <Pressable disabled={pick.isPending} onPress={() => pick.mutate(null)} style={{ paddingVertical: 8 }}>
+              <Text style={styles.link}>Terug naar de keuze van de app</Text>
+            </Pressable>
+          ) : null}
+          {pick.isPending ? <ActivityIndicator color={colors.brandPrimary} /> : null}
+          {pick.isError ? <Text style={[styles.small, { color: colors.error }]}>Dat lukte niet, probeer het nog eens.</Text> : null}
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -500,4 +590,6 @@ const useStyles = makeStyles((colors) => ({
   compareCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 14 },
   barTrack: { height: 8, borderRadius: 4, backgroundColor: colors.surfaceTertiary, overflow: "hidden" },
   bar: { height: 8, borderRadius: 4, backgroundColor: colors.brandPrimary },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "flex-end" },
+  sheet: { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 16, gap: 10, width: "100%", maxWidth: 640, alignSelf: "center" },
 }));
