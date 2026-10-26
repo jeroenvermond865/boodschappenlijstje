@@ -305,38 +305,87 @@ export default function ShoppingScreen() {
   const canCopy = Platform.OS === "web" && !!(globalThis as any).navigator?.clipboard;
   const canNativeShare = Platform.OS !== "web" || !!(globalThis as any).navigator?.share;
 
+  // Printen of PDF: een nette lijst in de stijl van de app (groene kop, per winkel en afdeling, vakjes om af te vinken)
   const onExportPdf = async () => {
     if (totalCount === 0) return;
+    const G = "#2E5E38", AMBER = "#D99C3B", SOFT = "#E6F0E8";
     const blocks = totalBlocks
       .map((b) => {
-        const head = multi || b.label === "Algemeen" ? `<h2 style="color:#1C1B1A;font-size:17px;margin:20px 0 4px">${esc(b.label)}</h2>` : "";
-        const td = "padding:6px 0;border-bottom:1px solid #eee";
+        const head =
+          multi || b.label === "Algemeen"
+            ? `<div class="store"><span class="badge">${esc(b.label)}</span>${b.total ? `<span class="storeTotal">${euro(b.total)}</span>` : ""}</div>`
+            : "";
         const groups = b.grouped
           .map((g) => {
             const items = g.items
-              .map(
-                (i) =>
-                  `<tr><td style="${td};width:22px;font-size:16px;color:#2E5E38">${isDone(b.store, i) ? "&#9745;" : "&#9744;"}</td>` +
-                  `<td style="${td}">${esc(i.name)}${i.product ? `<br/><span style="color:#888;font-size:11px">${esc(i.packs ? `${packText(i.packs, i.pack_unit)} · ` : "")}${esc(i.product)}</span>` : ""}</td>` +
-                  `<td style="${td};text-align:right;font-weight:600;white-space:nowrap">${formatQty(i.qty)} ${esc(i.unit)}</td>` +
-                  `<td style="${td};text-align:right;color:#555;white-space:nowrap;padding-left:10px">${i.price ? euro(i.price) : ""}</td></tr>`,
-              )
+              .map((i) => {
+                const done = isDone(b.store, i);
+                const sub = [i.packs ? packText(i.packs, i.pack_unit) : "", i.product ?? ""].filter(Boolean).join(" · ");
+                return (
+                  `<tr class="${done ? "done" : ""}"><td class="box"><span>${done ? "&#10003;" : ""}</span></td>` +
+                  `<td><div class="name">${esc(i.name)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</td>` +
+                  `<td class="qty">${formatQty(i.qty)} ${esc(i.unit)}</td>` +
+                  `<td class="price">${i.price ? euro(i.price) : ""}</td></tr>`
+                );
+              })
               .join("");
-            return `<h3 style="color:#2E5E38;margin:12px 0 4px;font-size:14px">${esc(g.aisle)}</h3><table style="width:100%;border-collapse:collapse;font-size:14px">${items}</table>`;
+            return `<div class="aisle">${esc(g.aisle)}</div><table>${items}</table>`;
           })
           .join("");
-        const total = b.total ? `<p style="text-align:right;font-weight:700;margin:8px 0 0">Geschat totaal: ${euro(b.total)}</p>` : "";
-        return head + groups + total;
+        const total = b.total && !(multi || b.label === "Algemeen") ? `<div class="total">Geschat totaal <b>${euro(b.total)}</b></div>` : "";
+        return `<section>${head}${groups}${total}</section>`;
       })
       .join("");
-    const html = `<html><head><meta charset="utf-8"/></head><body style="font-family:Arial,sans-serif;color:#1C1B1A;padding:24px">
-      <h1 style="color:#2E5E38;font-size:22px;margin:0 0 4px">Boodschappenlijst</h1>
-      <p style="color:#777;margin:0 0 8px">${esc(camp?.name ?? "")}</p>${blocks}
-      ${multi && grandTotal ? `<p style="text-align:right;font-size:16px;font-weight:700;margin-top:16px">Totaal alle winkels: ${euro(grandTotal)}</p>` : ""}
-      <p style="color:#999;font-size:11px;margin-top:24px">Prijzen zijn een schatting op basis van de websites van supermarkten. Gemaakt met Slim Boodschappenlijstje.</p></body></html>`;
+    const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    const title = `Boodschappenlijst${camp?.name ? ` - ${camp.name}` : ""}`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"/><title>${esc(title)}</title><style>
+      @page { margin: 14mm; }
+      * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #1C1B1A; margin: 0; font-size: 13px; }
+      .top { background: ${G}; color: #fff; border-radius: 14px; padding: 16px 18px; display: flex; align-items: center; gap: 14px; }
+      .logo { width: 42px; height: 42px; border-radius: 12px; background: #fff; color: ${G}; font-size: 24px; display: flex; align-items: center; justify-content: center; }
+      .top h1 { margin: 0; font-size: 20px; } .top p { margin: 2px 0 0; opacity: .85; font-size: 12px; }
+      .meta { display: flex; gap: 8px; margin: 12px 0 4px; flex-wrap: wrap; }
+      .chip { background: ${SOFT}; color: ${G}; border-radius: 999px; padding: 4px 10px; font-size: 11px; font-weight: 600; }
+      section { margin-top: 14px; }
+      .store { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${G}; padding-bottom: 4px; margin-top: 8px; }
+      .badge { background: ${G}; color: #fff; border-radius: 8px; padding: 3px 10px; font-weight: 700; font-size: 14px; }
+      .storeTotal { font-weight: 700; color: ${G}; font-size: 14px; }
+      .aisle { margin: 12px 0 2px; padding-left: 8px; border-left: 4px solid ${AMBER}; font-weight: 700; color: ${G}; font-size: 13px; break-after: avoid; }
+      table { width: 100%; border-collapse: collapse; }
+      tr { break-inside: avoid; } td { padding: 6px 4px; border-bottom: 1px solid #ECEAE6; vertical-align: top; }
+      td.box { width: 26px; }
+      td.box span { display: inline-block; width: 16px; height: 16px; border: 1.5px solid ${G}; border-radius: 4px; color: ${G}; font-weight: 700; font-size: 12px; line-height: 14px; text-align: center; }
+      .name { font-weight: 600; } .sub { color: #8A8780; font-size: 11px; margin-top: 1px; }
+      .qty { text-align: right; font-weight: 600; white-space: nowrap; } .price { text-align: right; color: #55524C; white-space: nowrap; width: 64px; }
+      tr.done .name, tr.done .qty { color: #A8A59F; text-decoration: line-through; }
+      .total { text-align: right; margin-top: 8px; color: #55524C; } .total b { color: ${G}; font-size: 15px; }
+      .grand { margin-top: 16px; background: ${SOFT}; border-radius: 12px; padding: 12px 16px; display: flex; justify-content: space-between; font-weight: 700; color: ${G}; font-size: 15px; }
+      .foot { margin-top: 22px; padding-top: 8px; border-top: 1px solid #ECEAE6; color: #A8A59F; font-size: 10px; display: flex; justify-content: space-between; }
+    </style></head><body>
+      <div class="top"><div class="logo">&#128722;</div><div><h1>Boodschappenlijst</h1><p>${esc(camp?.name ?? "")}</p></div></div>
+      <div class="meta"><span class="chip">${esc(today)}</span><span class="chip">${totalCount} producten</span>${doneCount ? `<span class="chip">${doneCount} al afgevinkt</span>` : ""}</div>
+      ${blocks}
+      ${grandTotal ? `<div class="grand"><span>${multi ? "Totaal alle winkels" : "Geschat totaal"}</span><span>${euro(grandTotal)}</span></div>` : ""}
+      <div class="foot"><span>Slim Boodschappenlijstje · slimboodschappenlijstje.nl</span><span>Prijzen zijn een schatting; de prijs in de winkel is leidend.</span></div>
+    </body></html>`;
     try {
       if (Platform.OS === "web") {
-        await Print.printAsync({ html });
+        // In de browser: de lijst in een onzichtbaar venstertje zetten en dat printen (daar kies je ook "Opslaan als PDF")
+        const doc = (globalThis as any).document;
+        const f = doc.createElement("iframe");
+        Object.assign(f.style, { position: "fixed", right: "0", bottom: "0", width: "0", height: "0", border: "0" });
+        f.onload = () => {
+          try {
+            f.contentWindow.focus();
+            f.contentWindow.print();
+          } catch {
+            toast.show("Printen lukt niet in deze browser", "error");
+          }
+          setTimeout(() => f.remove(), 60000);
+        };
+        f.srcdoc = html;
+        doc.body.appendChild(f);
         return;
       }
       const { uri } = await Print.printToFileAsync({ html });
@@ -367,12 +416,6 @@ export default function ShoppingScreen() {
           ) : null}
         </View>
         <View style={styles.headerActions}>
-          <Pressable testID="reset-button" onPress={() => save(new Set())} hitSlop={10} style={styles.headerBtn}>
-            <Icon name="refresh" size={22} color={colors.brandPrimary} />
-          </Pressable>
-          <Pressable testID="pdf-button" onPress={onExportPdf} hitSlop={10} style={styles.headerBtn}>
-            <Icon name="file-pdf-box" size={23} color={colors.brandPrimary} />
-          </Pressable>
           <Pressable testID="share-button" onPress={onShare} hitSlop={10} style={styles.headerBtn}>
             <Icon name="share-variant" size={22} color={colors.brandPrimary} />
           </Pressable>

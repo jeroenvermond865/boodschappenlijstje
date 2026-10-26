@@ -5,6 +5,16 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-26-j",
+    date: "26 oktober 2026",
+    title: "Nette PDF van je boodschappenlijst",
+    changes: [
+      { kind: "opgelost", text: "Delen > Printen of PDF werkt weer, nu met een overzichtelijke lijst in de stijl van de app." },
+      { kind: "beter", text: "Verversen door omlaag te trekken gaat minder snel per ongeluk: je moet verder trekken." },
+      { kind: "beter", text: "De losse PDF- en verversknop bovenin de boodschappenlijst zijn weg (PDF staat onder Delen)." },
+    ],
+  },
+  {
     id: "2026-10-26-i",
     date: "26 oktober 2026",
     title: "Producten naast elkaar vergelijken",

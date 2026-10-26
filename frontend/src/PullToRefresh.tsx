@@ -8,8 +8,8 @@ import { Platform } from "react-native";
 import { queryClient } from "@/src/query-client";
 import { useTheme } from "@/src/theme";
 
-const LIMIT = 70; // zo ver trekken (px) en loslaten = verversen
-const MAX = 110;
+const LIMIT = 110; // zo ver trekken (px) en loslaten = verversen; bewust ver, anders ververs je per ongeluk
+const MAX = 140;
 
 function scrollParent(el: Element | null): HTMLElement | null {
   for (let n = el as HTMLElement | null; n && n !== document.body; n = n.parentElement) {
@@ -52,7 +52,7 @@ export function PullToRefresh() {
       wrap.style.transition = animate ? "transform 0.25s ease, opacity 0.25s ease" : "none";
       const top = Math.min(p, MAX) - 50;
       wrap.style.transform = `translateY(calc(env(safe-area-inset-top, 0px) + ${top}px))`;
-      wrap.style.opacity = p > 8 ? String(Math.min(1, p / LIMIT)) : "0";
+      wrap.style.opacity = p > 20 ? String(Math.min(1, p / LIMIT)) : "0";
       if (!busy) ring.style.transform = `rotate(${p * 4}deg)`;
     };
 
@@ -76,7 +76,7 @@ export function PullToRefresh() {
         if (Math.abs(dx) > 6 || dy < -6) active = false; // opzij vegen of omhoog scrollen: niet voor ons
         return;
       }
-      pull = Math.max(0, dy * 0.5);
+      pull = Math.max(0, dy * 0.42); // stug trekken: je vinger moet ± 260 px omlaag
       if (pull > 0 && e.cancelable) e.preventDefault(); // anders schiet de pagina mee
       show(pull, false);
     };
