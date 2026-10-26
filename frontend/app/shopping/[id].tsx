@@ -73,28 +73,65 @@ export default function ShoppingScreen() {
   // "Algemeen" staat ook al in de winkeltotalen; het totaal is de som van de winkels
   const grandTotal = (data?.by_store ?? []).reduce((n, b) => n + (b.total ?? 0), 0);
 
+  // Elk product staat één keer in het winkeltotaal; per dag en bij "Algemeen" zijn dat delen ervan.
+  // Afvinken houden we op alle plekken gelijk: totaal af = alle delen af, alle delen af = totaal af.
   const allItems = useMemo(() => {
     const arr: { store: string; item: Item }[] = [];
     (data?.by_store ?? []).forEach((b) => b.flat.forEach((it) => arr.push({ store: b.store, item: it })));
-    (data?.general ?? []).forEach((b) => b.flat.forEach((it) => arr.push({ store: `alg:${b.store}`, item: it })));
     return arr;
   }, [data]);
+  const parts = useMemo(() => {
+    const byTotal = new Map<string, string[]>();
+    const totalOf = new Map<string, string>();
+    const totals = new Set(allItems.map((x) => key(x.store, x.item)));
+    const link = (t: string, part: string) => {
+      if (!totals.has(t)) return;
+      byTotal.set(t, [...(byTotal.get(t) ?? []), part]);
+      totalOf.set(part, t);
+    };
+    (data?.general ?? []).forEach((b) => b.flat.forEach((it) => link(key(b.store, it), key(`alg:${b.store}`, it))));
+    (data?.per_day ?? []).forEach((d) => d.by_store.forEach((b) => b.flat.forEach((it) => link(key(b.store, it), `day${d.index}-${key(b.store, it)}`))));
+    return { byTotal, totalOf };
+  }, [data, allItems]);
+
+  // Wat je op het scherm afgevinkt ziet
+  const shown = useMemo(() => {
+    const out = new Set(checked);
+    parts.byTotal.forEach((ps, t) => {
+      if (checked.has(t)) ps.forEach((p) => out.add(p));
+      else if (ps.length && ps.every((p) => checked.has(p))) out.add(t);
+    });
+    return out;
+  }, [checked, parts]);
 
   const totalCount = allItems.length;
-  const doneCount = useMemo(() => allItems.filter((x) => checked.has(key(x.store, x.item))).length, [allItems, checked]);
+  const doneCount = useMemo(() => allItems.filter((x) => shown.has(key(x.store, x.item))).length, [allItems, shown]);
 
   const toggle = (k: string) => {
     Haptics.selectionAsync().catch(() => {});
-    setChecked((prev) => {
-      const next = new Set(prev);
-      if (next.has(k)) next.delete(k);
-      else next.add(k);
-      storage.setItem(storageKey, Array.from(next));
-      return next;
-    });
+    const on = !shown.has(k);
+    const t = parts.byTotal.has(k) ? k : parts.totalOf.get(k);
+    const ps = t ? parts.byTotal.get(t) ?? [] : [];
+    const next = new Set(checked);
+    if (!t) {
+      if (on) next.add(k);
+      else next.delete(k);
+    } else if (k === t) {
+      [t, ...ps].forEach((x) => (on ? next.add(x) : next.delete(x)));
+    } else if (on) {
+      next.add(k);
+      if (ps.every((p) => next.has(p))) next.add(t);
+    } else {
+      // Eén deel weer open: het totaal is dan ook niet meer helemaal af, de andere delen blijven zoals je ze zag
+      ps.forEach((p) => (shown.has(p) ? next.add(p) : next.delete(p)));
+      next.delete(k);
+      next.delete(t);
+    }
+    setChecked(next);
+    storage.setItem(storageKey, Array.from(next));
   };
 
-  const isDone = (store: string, i: Item) => checked.has(key(store, i));
+  const isDone = (store: string, i: Item) => shown.has(key(store, i));
 
   const shareLines = (open = false) => {
     const lines: string[] = [`🛒 Boodschappenlijst${camp?.name ? ` – ${camp.name}` : ""}`];
@@ -261,7 +298,7 @@ export default function ShoppingScreen() {
                     </View>
                   ) : null}
                   {b.grouped.map((g) => (
-                    <AisleSection key={`${b.store}-${g.aisle}`} store={b.store} aisle={g.aisle} items={g.items} checked={checked} onToggle={toggle} />
+                    <AisleSection key={`${b.store}-${g.aisle}`} store={b.store} aisle={g.aisle} items={g.items} checked={shown} onToggle={toggle} />
                   ))}
                 </View>
               ))
@@ -284,7 +321,7 @@ export default function ShoppingScreen() {
                             <ItemRow
                               key={`day${d.index}-${key(b.store, i)}`}
                               item={i}
-                              checked={checked.has(`day${d.index}-${key(b.store, i)}`)}
+                              checked={shown.has(`day${d.index}-${key(b.store, i)}`)}
                               onToggle={() => toggle(`day${d.index}-${key(b.store, i)}`)}
                               last={idx === b.flat.length - 1}
                             />
