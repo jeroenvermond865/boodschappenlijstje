@@ -1743,6 +1743,41 @@ async def camp_product_swap(camp_id: str, data: ProductSwap, user: dict = Depend
     return {"ok": True}
 
 
+# --- Samen afvinken: wat iemand in de winkel afvinkt, zien de anderen op hun lijst meteen ook ---
+class CheckedInput(BaseModel):
+    on: List[str] = []
+    off: List[str] = []
+
+
+def _check_hash(k: str) -> str:
+    import hashlib
+    return hashlib.sha1(k.encode()).hexdigest()[:16]
+
+
+@api_router.get("/camps/{camp_id}/checked")
+async def get_checked(camp_id: str, user: dict = Depends(get_current_user)):
+    camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "checked": 1, "member_ids": 1})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+    items = list((camp.get("checked") or {}).values())
+    return {"keys": [x["k"] for x in items],
+            "by": {x["k"]: x.get("by") for x in items if x.get("uid") != user["user_id"] and x.get("by")},
+            "shared": bool(camp.get("member_ids"))}
+
+
+@api_router.post("/camps/{camp_id}/checked")
+async def set_checked(camp_id: str, data: CheckedInput, user: dict = Depends(get_current_user)):
+    if not await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+    name = (user.get("name") or "").split(" ")[0] or None
+    sets = {f"checked.{_check_hash(k)}": {"k": k[:300], "uid": user["user_id"], "by": name, "at": now_utc()} for k in data.on[:500]}
+    unsets = {f"checked.{_check_hash(k)}": "" for k in data.off[:500] if k not in data.on}
+    upd = {**({"$set": sets} if sets else {}), **({"$unset": unsets} if unsets else {})}
+    if upd:
+        await db.camps.update_one({"camp_id": camp_id}, upd)
+    return {"ok": True}
+
+
 @api_router.get("/camps/{camp_id}/shopping-list")
 async def shopping_list(camp_id: str, user: dict = Depends(get_current_user)):
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})

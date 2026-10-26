@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Linking, Modal, Platform, Pressable, ScrollView, Share, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -46,13 +46,85 @@ export default function ShoppingScreen() {
 
   const storageKey = `checked_${id}`;
 
+  // Samen afvinken: wat een ander afvinkt komt elke paar seconden binnen; zonder internet onthouden we
+  // jouw vinkjes en sturen ze later alsnog
+  const queueKey = `checked_queue_${id}`;
+  const queue = useRef<{ on: string[]; off: string[] }>({ on: [], off: [] });
+  const busy = useRef(0);
+
   useEffect(() => {
     (async () => {
       const saved = await storage.getItem<string[] | null>(storageKey, null);
       if (saved && Array.isArray(saved)) setChecked(new Set(saved));
+      const q = await storage.getItem<string | null>(queueKey, null);
+      if (q) queue.current = JSON.parse(q);
       setLoaded(true);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey]);
+
+  const flush = async () => {
+    const q = queue.current;
+    if (!q.on.length && !q.off.length) return true;
+    queue.current = { on: [], off: [] };
+    busy.current++;
+    try {
+      await api(`/camps/${id}/checked`, { method: "POST", body: q });
+      if (!queue.current.on.length && !queue.current.off.length) storage.removeItem(queueKey);
+      return true;
+    } catch {
+      queue.current = { on: [...new Set([...q.on, ...queue.current.on])], off: [...new Set([...q.off, ...queue.current.off])] };
+      storage.setItem(queueKey, JSON.stringify(queue.current));
+      return false;
+    } finally {
+      busy.current--;
+    }
+  };
+  const live = useQuery({
+    queryKey: ["checked", id],
+    queryFn: async () => {
+      await flush();
+      return api<{ keys: string[]; by: Record<string, string>; shared: boolean }>(`/camps/${id}/checked`);
+    },
+    enabled: loaded,
+    refetchInterval: 5000,
+  });
+  const seeded = useRef(false);
+  const lastSave = useRef(0);
+  useEffect(() => {
+    const d = live.data;
+    // Een antwoord van vóór je laatste vinkje is al achterhaald
+    if (!d || busy.current || queue.current.on.length || queue.current.off.length || live.dataUpdatedAt < lastSave.current + 2000) return;
+    if (!seeded.current) {
+      seeded.current = true;
+      // Eerste keer: wat je hier al had afgevinkt (van voor samen afvinken) ook naar de anderen
+      const mine = [...checked].filter((k) => !d.keys.includes(k));
+      if (mine.length) {
+        queue.current = { on: mine, off: [] };
+        flush();
+        return;
+      }
+    }
+    const next = new Set(d.keys);
+    if (next.size !== checked.size || [...next].some((k) => !checked.has(k))) {
+      setChecked(next);
+      storage.setItem(storageKey, Array.from(next));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live.data]);
+  const save = (next: Set<string>) => {
+    const on = [...next].filter((k) => !checked.has(k));
+    const off = [...checked].filter((k) => !next.has(k));
+    lastSave.current = Date.now();
+    setChecked(next);
+    storage.setItem(storageKey, Array.from(next));
+    queue.current = {
+      on: [...new Set([...queue.current.on.filter((k) => !off.includes(k)), ...on])],
+      off: [...new Set([...queue.current.off.filter((k) => !on.includes(k)), ...off])],
+    };
+    storage.setItem(queueKey, JSON.stringify(queue.current));
+    flush();
+  };
 
   const { data, isLoading } = useQuery({
     queryKey: ["shopping", id],
@@ -138,8 +210,7 @@ export default function ShoppingScreen() {
       next.delete(k);
       next.delete(t);
     }
-    setChecked(next);
-    storage.setItem(storageKey, Array.from(next));
+    save(next);
   };
 
   // Voorraadkast (Premium): alles wat je al genoeg in huis hebt in één keer afvinken
@@ -150,8 +221,7 @@ export default function ShoppingScreen() {
       const t = key(x.store, x.item);
       [t, ...(parts.byTotal.get(t) ?? [])].forEach((k) => next.add(k));
     });
-    setChecked(next);
-    storage.setItem(storageKey, Array.from(next));
+    save(next);
     toast.show(`${covered.length} ${covered.length === 1 ? "product" : "producten"} afgevinkt`, "success");
   };
 
@@ -261,7 +331,7 @@ export default function ShoppingScreen() {
           ) : null}
         </View>
         <View style={styles.headerActions}>
-          <Pressable testID="reset-button" onPress={() => { setChecked(new Set()); storage.removeItem(storageKey); }} hitSlop={10} style={styles.headerBtn}>
+          <Pressable testID="reset-button" onPress={() => save(new Set())} hitSlop={10} style={styles.headerBtn}>
             <Icon name="refresh" size={22} color={colors.brandPrimary} />
           </Pressable>
           <Pressable testID="pdf-button" onPress={onExportPdf} hitSlop={10} style={styles.headerBtn}>
@@ -302,6 +372,12 @@ export default function ShoppingScreen() {
             <View style={styles.multiBanner}>
               <Icon name="wifi-off" size={16} color={colors.onBrandTertiary} />
               <Text style={styles.multiText}>{offlineText(data.offline_at)} Afvinken werkt gewoon.</Text>
+            </View>
+          ) : null}
+          {live.data?.shared ? (
+            <View style={styles.multiBanner}>
+              <Icon name="account-multiple-check-outline" size={16} color={colors.onBrandTertiary} />
+              <Text style={styles.multiText}>Samen boodschappen doen: wat de anderen afvinken, zie je hier meteen.</Text>
             </View>
           ) : null}
           {data?.promo_then ? (
@@ -378,7 +454,7 @@ export default function ShoppingScreen() {
                     </View>
                   ) : null}
                   {b.grouped.map((g) => (
-                    <AisleSection key={`${b.store}-${g.aisle}`} store={b.store} aisle={g.aisle} items={g.items} checked={shown} onToggle={toggle} />
+                    <AisleSection key={`${b.store}-${g.aisle}`} store={b.store} aisle={g.aisle} items={g.items} checked={shown} onToggle={toggle} by={live.data?.by} />
                   ))}
                 </View>
               ))
@@ -457,12 +533,14 @@ function AisleSection({
   items,
   checked,
   onToggle,
+  by,
 }: {
   store: string;
   aisle: string;
   items: Item[];
   checked: Set<string>;
   onToggle: (k: string) => void;
+  by?: Record<string, string>;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -481,6 +559,7 @@ function AisleSection({
             checked={checked.has(key(store, i))}
             onToggle={() => onToggle(key(store, i))}
             last={idx === sorted.length - 1}
+            by={checked.has(key(store, i)) ? by?.[key(store, i)] : undefined}
           />
         ))}
       </View>
@@ -488,7 +567,7 @@ function AisleSection({
   );
 }
 
-function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boolean; onToggle: () => void; last?: boolean }) {
+function ItemRow({ item, checked, onToggle, last, by }: { item: Item; checked: boolean; onToggle: () => void; last?: boolean; by?: string }) {
   const styles = useStyles();
   const { colors } = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -516,6 +595,7 @@ function ItemRow({ item, checked, onToggle, last }: { item: Item; checked: boole
             {packText(item.packs, item.pack_unit)}
           </Text>
         ) : null}
+        {by ? <Text style={styles.itemPack}>Afgevinkt door {by}</Text> : null}
         {item.promo_then ? (
           <Text style={styles.itemPromo} numberOfLines={2}>
             {item.promo_then.label}
