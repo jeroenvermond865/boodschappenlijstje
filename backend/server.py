@@ -3188,6 +3188,32 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
         it["cost"] = round_qty(it["cost"])
     per_aisle = [{"aisle": a, "cost": round_qty(aisle_cost[a])} for a in AISLES if a in aisle_cost]
     per_store = [{"store": s, "cost": round_qty(store_cost[s])} for s in sorted(store_cost.keys())]
+    # Wat de boodschappenlijst echt kost (hele verpakkingen, door de app gekozen producten, gekozen winkel of splitsing)
+    # is leidend: hierboven tellen alleen ingrediënten met een vast product mee, en dan maar een deel van een pak
+    try:
+        sl = await shopping_list(camp_id, user)
+        blocks = sl.get("by_store") or []
+        list_total = sum(float(b.get("total") or 0) for b in blocks)
+    except HTTPException:
+        blocks, list_total = [], 0.0
+    if list_total > 0:
+        f = list_total / total_cost if total_cost > 0 else 0.0
+        per_day = [{**d, "cost": round_qty(d["cost"] * f), "per_person": round_qty(d["per_person"] * f)} for d in per_day]
+        aisle_cost, store_cost, rows = {}, {}, []
+        for b in blocks:
+            st = b.get("store") or ""
+            store_cost[st] = store_cost.get(st, 0.0) + float(b.get("total") or 0)
+            for it in b.get("flat") or []:
+                c = float(it.get("price") or 0)
+                a = it.get("aisle") or "Overig"
+                aisle_cost[a] = aisle_cost.get(a, 0.0) + c
+                rows.append({"name": it.get("name") or "", "unit": it.get("unit") or "", "qty": round_qty(it.get("qty") or 0),
+                             "cost": round_qty(c), "aisle": a, "store": st})
+        items = sorted(rows, key=lambda x: (x["store"], x["aisle"], x["name"].lower()))
+        per_aisle = [{"aisle": a, "cost": round_qty(aisle_cost[a])} for a in AISLES if a in aisle_cost] + \
+                    [{"aisle": a, "cost": round_qty(v)} for a, v in aisle_cost.items() if a not in AISLES]
+        per_store = [{"store": k, "cost": round_qty(v)} for k, v in sorted(store_cost.items()) if v > 0]
+        total_cost = list_total
     has_prices = any(it["cost"] > 0 for it in items)
     target = camp.get("budget_target", 0) or 0
     total_cost = round_qty(total_cost)
