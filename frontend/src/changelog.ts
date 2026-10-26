@@ -5,11 +5,12 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
-    id: "2026-10-26-f",
+    id: "2026-10-26-g",
     date: "26 oktober 2026",
     title: "De app leert van jouw keuzes",
     changes: [
       { kind: "nieuw", text: "Kies je zelf een beter product bij een ingrediënt, dan onthoudt de app dat. Kiezen meer mensen hetzelfde, dan krijgt iedereen dat product voorgesteld." },
+      { kind: "beter", text: "Bespaaroverzicht: wat je met slim splitsen over winkels nog kunt besparen staat er nu ook bij. Zonder Premium zie je wat het je zou opleveren." },
       { kind: "opgelost", text: "Saffraan is weer gewoon saffraan (en geen saffraanrijst)." },
       { kind: "opgelost", text: "Zwarte peperkorrels worden nu gewone zwarte peper uit het kruidenrek." },
     ],

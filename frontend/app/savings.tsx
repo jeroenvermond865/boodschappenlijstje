@@ -10,7 +10,7 @@ import { GOLD } from "@/src/premium";
 import { euro } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Parts = { promo: number; smart: number; pantry: number; promo_day: number; split?: number; standard: number; premium: number; saving: number; total: number; bought?: number; pending?: number };
+type Parts = { promo: number; smart: number; pantry: number; promo_day: number; split?: number; split_can?: number; standard: number; premium: number; saving: number; total: number; bought?: number; pending?: number };
 type Month = Parts & { month: string; lists: { id: string; name: string; standard: number; premium: number; saving: number; total: number; deleted?: boolean; bought?: number; pending?: number }[] };
 type Savings = Parts & { months: Month[]; is_premium: boolean };
 
@@ -80,7 +80,14 @@ export default function SavingsScreen() {
                 <Text style={[styles.cardTitle, { color: GOLD.text }]}>{premium ? "Extra met Premium" : "Extra met Premium had je kunnen besparen"}</Text>
               </View>
               <Line label="Al in je voorraadkast" value={data!.pantry} gold />
-              <Line label="Slim splitsen over winkels" value={data!.split ?? 0} gold />
+              <Line label="Slim splitsen over winkels" value={(data!.split ?? 0) + (data!.split_can ?? 0)} gold />
+              {(data!.split_can ?? 0) > 0 ? (
+                <Text style={[styles.heroSub, { textAlign: "left", color: GOLD.text }]}>
+                  {premium
+                    ? `Waarvan ${euro(data!.split_can ?? 0)} nog niet gesplitst: kies "Gesplitst halen" bij je lijst. Wat je daarna afvinkt telt bij al bespaard.`
+                    : `Je lijst bij meerdere winkels halen scheelt nu ${euro(data!.split_can ?? 0)}. Met Premium splitst de app dat voor je.`}
+                </Text>
+              ) : null}
               <Line label="Acties op je boodschappendag" value={data!.promo_day} gold />
               <Line label="Samen" value={data!.premium} gold strong />
               {premium ? (

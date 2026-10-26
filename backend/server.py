@@ -2495,6 +2495,13 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
         own, chosen = rows.get(primary_store), rows.get(shop_store)
         if own and chosen and shop_store != primary_store:
             smart += max(0.0, float(own.get("total_fair") or own.get("total") or 0) - float(chosen.get("total_fair") or chosen.get("total") or 0))
+    # Nog niet gesplitst? Dan onthouden wat slim splitsen zou schelen (zelfde berekening als bij "Waar is je lijst het goedkoopst?"),
+    # zodat het bespaaroverzicht laat zien wat je nog kunt besparen (zonder Premium: wat Premium je zou opleveren)
+    split_can = 0.0
+    if shop_store != "split" and not _for_compare:
+        hit = next((v for k, v in _home_cache.items() if isinstance(k, tuple) and k[:2] == ("compare3", camp_id)), None)
+        # Vergelijking nog niet uitgerekend (bijv. na een herstart)? Dan het vorige bedrag houden
+        split_can = _best_split_saving(hit[1] or []) if hit else float((camp.get("savings") or {}).get("split_can") or 0)
     # Per regel (zelfde sleutel als het afvinken): zo weten we later wat al gekocht en dus echt bespaard is
     per_item = {}
     for b in by_store:
@@ -2505,7 +2512,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
                 round(float(it.get("saving") or 0), 2), round(sp, 2), round(pantry_of.get(id(it), 0.0), 2), round(float(it.get("price") or 0), 2)]
     sv = {"promo": round(sum(b.get("saving") or 0 for b in by_store), 2), "smart": round(smart, 2), "items": per_item,
           "pantry": round(pantry_value, 2), "promo_day": round(then_value, 2), "split": round(split_value, 2),
-          "total": round(sum(b.get("total") or 0 for b in by_store), 2), "premium": is_premium}
+          "split_can": round(split_can, 2), "total": round(sum(b.get("total") or 0 for b in by_store), 2), "premium": is_premium}
     old = camp.get("savings") or {}
     if not _for_compare and any(old.get(k) != v for k, v in sv.items()):
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {"savings": {**sv, "at": now_utc()}}})
@@ -2961,6 +2968,32 @@ def _deal_saving(now_p: dict, price: float, packs: int) -> float:
     return 0.0
 
 
+def _best_split_saving(rows: list) -> float:
+    # Elk product bij de goedkoopste winkel, over de beste combinatie van 2 of 3 winkels; een winkel extra moet minstens € 1 schelen
+    rows = [r for r in rows if r.get("items")]
+    if len(rows) < 2:
+        return 0.0
+    best_single = min(float(r.get("total_fair") or r.get("total") or 0) for r in rows)
+    top = None
+    for mask in range(1 << len(rows)):
+        per = [r for i, r in enumerate(rows) if mask & (1 << i)]
+        if len(per) < 2:
+            continue
+        total, used = 0.0, set()
+        for k, first in enumerate(per[0]["items"]):
+            opts = sorted(((r["items"][k]["price"], r["store"]) for r in per if k < len(r["items"]) and r["items"][k].get("price") is not None))
+            if not opts:
+                total += float(first.get("estimate") or 0)
+                continue
+            total += opts[0][0]
+            used.add(opts[0][1])
+        if len(used) < len(per) or best_single - total < 1:
+            continue
+        if top is None or total < top[0] - (1 if len(per) > top[1] else 0):
+            top = (total, len(per))
+    return max(0.0, best_single - top[0]) if top else 0.0
+
+
 @api_router.get("/savings")
 async def savings_overview(user: dict = Depends(get_current_user)):
     # Voor iedereen: wat de app je scheelt. Premium-delen (voorraadkast, acties op je boodschappendag) tellen alleen mee met Premium;
@@ -2971,7 +3004,7 @@ async def savings_overview(user: dict = Depends(get_current_user)):
     camps = await db.camps.find({"$and": [{"$or": [{"owner_id": uid}, {"member_ids": uid}]},
                                           {"$or": [{"deleted_at": None}, {"savings_keep": {"$ne": False}}]}]},
                                 {"_id": 0, "camp_id": 1, "name": 1, "start_date": 1, "created_at": 1, "savings": 1, "checked": 1, "deleted_at": 1}).to_list(1000)
-    keys = ("promo", "smart", "pantry", "promo_day", "split", "total")
+    keys = ("promo", "smart", "pantry", "promo_day", "split", "split_can", "total")
     months: Dict[str, dict] = {}
     for c in camps:
         sv = dict(c.get("savings") or {})
@@ -2991,6 +3024,8 @@ async def savings_overview(user: dict = Depends(get_current_user)):
             # Van een verwijderd lijstje telt alleen wat gekocht is
             sv = {"promo": got[0], "smart": float(sv.get("smart") or 0) * f, "pantry": got[2], "split": got[1],
                   "promo_day": float(sv.get("promo_day") or 0) * f, "total": got[3]}
+        elif got[3] >= float(sv["total"]) - 0.01:
+            sv["split_can"] = 0  # alles al gekocht: splitsen kan niet meer
         when = c.get("start_date") or (c.get("created_at").isoformat() if isinstance(c.get("created_at"), datetime) else str(c.get("created_at") or ""))
         m = (when or "")[:7]
         if not m:
@@ -2999,7 +3034,8 @@ async def savings_overview(user: dict = Depends(get_current_user)):
         for k in keys:
             row[k] += float(sv.get(k) or 0)
         std = float(sv.get("promo") or 0) + float(sv.get("smart") or 0)
-        prem = float(sv.get("pantry") or 0) + float(sv.get("promo_day") or 0) + float(sv.get("split") or 0)
+        # Slim splitsen telt als wat je (met Premium) nog kunt besparen tot je het echt gesplitst en afgevinkt hebt
+        prem = float(sv.get("pantry") or 0) + float(sv.get("promo_day") or 0) + float(sv.get("split") or 0) + float(sv.get("split_can") or 0)
         bought = b_std + (b_prem if is_premium else 0)
         saving = std + (prem if is_premium else 0)
         row["bought"] = row.get("bought", 0.0) + bought
@@ -3012,7 +3048,7 @@ async def savings_overview(user: dict = Depends(get_current_user)):
         for k in keys:
             r[k] = round(r[k], 2)
         r["standard"] = round(r["promo"] + r["smart"], 2)
-        r["premium"] = round(r["pantry"] + r["promo_day"] + r["split"], 2)
+        r["premium"] = round(r["pantry"] + r["promo_day"] + r["split"] + r["split_can"], 2)
         r["saving"] = round(r["standard"] + (r["premium"] if is_premium else 0), 2)
         r["bought"] = round(r.get("bought", 0.0), 2)
         r["pending"] = round(r.get("pending", 0.0), 2)
