@@ -177,6 +177,15 @@ export function CompareCard({
                 ) : null}
               </Pressable>
             ))}
+            {best && !shopStore && openStore !== best.store ? (
+              <Button
+                label={`Alles bij ${best.store} halen`}
+                icon="cart-arrow-right"
+                loading={setStore.isPending && setStore.variables === best.store}
+                onPress={() => setStore.mutate(best.store)}
+                testID="compare-shop-best"
+              />
+            ) : null}
             {shopStore ? (
               <Pressable onPress={() => setStore.mutate(null)} disabled={setStore.isPending} hitSlop={6}>
                 <Text style={styles.link}>Terug naar je eigen winkels per product</Text>

@@ -138,7 +138,7 @@ export default function ShoppingScreen() {
   });
 
   // Waar is deze lijst het goedkoopst? Wordt op de achtergrond uitgerekend, dus even later nog eens vragen
-  const [showCompare, setShowCompare] = useState(false);
+  const [showCompare, setShowCompare] = useState(true);
   const cmp = useQuery({
     queryKey: ["compare", id],
     queryFn: () => api<{ compare: CompareStore[] | null; compare_pending?: boolean; shop_store?: string | null }>(`/camps/${id}/compare`),
