@@ -18,6 +18,7 @@ import random
 import re
 import secrets
 import base64
+import hashlib
 import ipaddress
 import unicodedata
 from email.message import EmailMessage
@@ -1121,9 +1122,8 @@ async def list_dishes(user: dict = Depends(get_current_user)):
     return {"dishes": [dish_public(d) for d in docs]}
 
 
-@api_router.get("/dishes/{dish_id}")
-async def get_dish(dish_id: str, user: dict = Depends(get_current_user)):
-    # Eén gerecht (bijv. vanuit "Op het menu" op Home): standaard, van jezelf, of in een lijstje waar je bij hoort
+async def _dish_for_user(dish_id: str, user: dict) -> dict:
+    # Standaard, van jezelf, of in een lijstje waar je bij hoort
     doc = await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Gerecht niet gevonden")
@@ -1131,7 +1131,148 @@ async def get_dish(dish_id: str, user: dict = Depends(get_current_user)):
         used = await db.camps.find_one({"$and": [camp_access_filter(user["user_id"]), {"$or": [{f"days.meals.{c}": dish_id} for c in MEAL_CATEGORIES]}]}, {"_id": 1})
         if not used:
             raise HTTPException(status_code=404, detail="Gerecht niet gevonden")
-    return dish_public(doc)
+    return doc
+
+
+@api_router.get("/dishes/{dish_id}")
+async def get_dish(dish_id: str, user: dict = Depends(get_current_user)):
+    # Eén gerecht (bijv. vanuit "Op het menu" op Home)
+    return dish_public(await _dish_for_user(dish_id, user))
+
+
+# Bereiding bij een gerecht: van het recept op de site, aangepast als je andere producten gebruikt,
+# of een voorstel als er geen bereiding is (app-gerechten). Met AI (en zoeken op internet) als die er is,
+# anders uit de bereidingstekst die de winkel bij het product zet.
+PREP_V = 1
+
+
+async def _product_usage(p: dict) -> Optional[str]:
+    hit = _detail_cache.get(p["product_id"])
+    if hit:
+        return hit[1].get("usage")
+    fn = {"Dirk": _dirk_details, "Albert Heijn": _ah_details, "Jumbo": _jumbo_details}.get(product_source(p) or p.get("_src") or "")
+    if not fn:
+        return None
+    try:
+        d = await asyncio.wait_for(fn(p), 10)
+    except Exception as e:
+        logger.info("Bereiding %s: productinfo %r", p.get("name"), e)
+        return None
+    _detail_cache[p["product_id"]] = (datetime.now(timezone.utc), d)
+    return d.get("usage")
+
+
+def _ing_changed(i: dict, prod: Optional[dict]) -> bool:
+    # Ander product dan in het recept: "350 g vega gyros" met gewone gyros, of iets dat je zelf hebt toegevoegd
+    if not i.get("recipe_text"):
+        return True
+    if not prod:
+        return False
+    want = _norm_text(_parse_amount(i["recipe_text"])[2] or "")
+    have = _norm_text(prod.get("name") or "")
+    if bool(_VEGA_WORD_RE.search(want)) != bool(_VEGA_RE.search(have)):
+        return True
+    ww = [w for w in want.split() if len(w) > 3]
+    return bool(ww) and not any(w in have or (len(w) > 5 and w[:-1] in have) for w in ww)
+
+
+def _prep_basic(base: List[str], items: list) -> List[str]:
+    # Zonder AI: de stappen van het recept met de nieuwe producten erin, plus wat er op de verpakking staat
+    steps = list(base)
+    for it in items:
+        if not it["changed"] or not it.get("was"):
+            continue
+        new = re.sub(r"^(dirk|ah|jumbo|1 de beste|g'woon)\s+", "", it["name"], flags=re.I)
+        steps = [re.sub(re.escape(it["was"]), new, st, flags=re.I) for st in steps]
+    tips = [f"{it['name']}: {it['usage'].strip()}" for it in items if it.get("usage") and (it["changed"] or not base)]
+    if not base:
+        if not items:
+            return []
+        steps = [f"Zet alles klaar: {', '.join(it['name'] for it in items)}."]
+        steps += tips
+        rest = [it["name"] for it in items if not it.get("usage")]
+        if rest:
+            steps.append(f"Maak {', '.join(rest)} klaar zoals je gewend bent.")
+        steps.append("Verdeel alles over de borden en eet smakelijk.")
+        return [t[:500] for t in steps]
+    return steps + [t[:500] for t in tips]
+
+
+async def _prep_ai(name: str, base: List[str], items: list) -> Optional[List[str]]:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    from anthropic import AsyncAnthropic
+    lines = []
+    for it in items:
+        t = f"- {it['name']}" + (f" ({it['qty']})" if it.get("qty") else "")
+        if it.get("was") and it["changed"]:
+            t += f" — in het recept stond: {it['was']}"
+        if it.get("usage"):
+            t += f"\n  Op de verpakking: {it['usage'][:400]}"
+        lines.append(t)
+    ask = (f"Gerecht: {name}\n\nIngrediënten (per volwassene):\n" + "\n".join(lines) + "\n\n" +
+           (("Bereiding van het oorspronkelijke recept:\n" + "\n".join(f"{k + 1}. {st}" for k, st in enumerate(base)) +
+             "\n\nPas deze bereiding aan aan de producten hierboven (sommige zijn vervangen of toegevoegd). Houd wat klopt, verander wat moet.")
+            if base else "Er is nog geen bereiding. Bedenk een goede, eenvoudige bereiding met deze producten.") +
+           "\nGebruik de tekst op de verpakking. Twijfel je hoe je iets het beste klaarmaakt, zoek het dan even op internet."
+           "\nSchrijf in eenvoudig Nederlands, kort, als genummerde stappen (1. 2. 3.), maximaal 10 stappen, en verder niets.")
+    try:
+        msg = await AsyncAnthropic().beta.messages.create(
+            model=DIRK_AI_MODEL, max_tokens=4000, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"effort": "low"},
+            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+            messages=[{"role": "user", "content": ask}])
+    except Exception as e:
+        logger.warning("Bereiding %s met AI: %r", name, e)
+        return None
+    if msg.stop_reason in ("refusal",):
+        return None
+    text = "\n".join(b.text for b in msg.content if b.type == "text")
+    steps = [m.group(1).strip() for m in re.finditer(r"^\s*\d+[.)]\s+(.+)$", text, re.M)]
+    return steps[:12] or None
+
+
+@api_router.get("/dishes/{dish_id}/preparation")
+async def dish_preparation(dish_id: str, camp_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    doc = await _dish_for_user(dish_id, user)
+    swaps: Dict[str, str] = {}
+    if camp_id:
+        camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "product_swaps": 1})
+        swaps = (camp or {}).get("product_swaps") or {}
+    await _global_products()
+    by_pid = _product_cache.get("by_pid") or {}
+    base: List[str] = []
+    rid = (doc.get("source") or {}).get("recipe_id")
+    if rid:
+        try:
+            base = (await _recipe_detail(rid.replace(":", "-"))).get("steps") or []
+        except Exception as e:
+            logger.info("Bereiding %s: recept %r", dish_id, e)
+    items = []
+    for i in doc.get("ingredients") or []:
+        pid = swaps.get(i.get("product_id") or "") or i.get("product_id")
+        prod = by_pid.get(pid or "")
+        q = f"{_fmt_qty(i.get('qty_adult'))} {i.get('unit') or ''}".strip() if i.get("qty_adult") else ""
+        items.append({"name": (prod or {}).get("name") or i.get("name") or "", "pid": pid, "qty": q, "prod": prod,
+                      "was": _parse_amount(i["recipe_text"])[2] if i.get("recipe_text") else None,
+                      "changed": bool(rid) and (_ing_changed(i, prod) or pid != i.get("product_id"))})
+    changed = [it for it in items if it["changed"]]
+    if base and not changed:
+        return {"steps": base, "kind": "recept"}
+    sig = hashlib.sha1(json.dumps([PREP_V, doc.get("name"), base, [(it["name"], it["qty"]) for it in items]], ensure_ascii=False).encode()).hexdigest()
+    hit = await db.dish_preps.find_one({"sig": sig}, {"_id": 0})
+    if hit and (hit.get("kind") == "ai" or not os.environ.get("ANTHROPIC_API_KEY")):
+        return {"steps": hit["steps"], "kind": hit["kind"]}
+    # Wat de winkel bij de producten zet over klaarmaken (alleen bij wat nieuw is, of alles als er geen recept is)
+    need = [it for it in items if it["prod"] and (it["changed"] or not base)][:12]
+    for it, u in zip(need, await asyncio.gather(*(_product_usage(it["prod"]) for it in need))):
+        it["usage"] = u
+    steps = await _prep_ai(doc.get("name") or "", base, items)
+    kind = "ai" if steps else "basis"
+    steps = steps or _prep_basic(base, items)
+    if steps:
+        await db.dish_preps.update_one({"sig": sig}, {"$set": {"sig": sig, "steps": steps, "kind": kind, "at": now_utc()}}, upsert=True)
+    return {"steps": steps, "kind": kind}
 
 
 @api_router.post("/dishes")
@@ -2585,6 +2726,44 @@ async def _pantry_freeze_rate() -> None:
             await db.pantry.update_one({"item_id": p["item_id"]}, {"$set": {"qty": round(_pantry_now(p, rates[uid]), 2), "updated_at": now_utc()}})
     await db.meta.insert_one({"key": "pantry_rate_off", "at": now_utc(), "users": len(rates)})
     logger.info("Voorraadkast: standaardverbruik uitgezet, %d gebruikers vastgelegd", len(rates))
+
+
+async def _fix_dish_picks() -> None:
+    # Eenmalig: gerechten die eerder van een recept zijn overgenomen kregen soms een kruidenmix ("mix voor gyros" bij vega gyros)
+    # of vlees bij een vega-ingrediënt. Die opnieuw kiezen met de betere zoekregels.
+    if await db.meta.find_one({"key": "dish_picks_fix_1"}):
+        return
+    await _global_products()
+    by_pid = _product_cache.get("by_pid") or {}
+    docs = _product_cache.get("docs") or []
+    fixed = 0
+    async for d in db.dishes.find({"deleted_at": None, "ingredients.recipe_text": {"$nin": [None, ""]}}, {"_id": 0, "dish_id": 1, "ingredients": 1}):
+        ings, changed = d.get("ingredients") or [], False
+        for i in ings:
+            p = by_pid.get(i.get("product_id") or "")
+            want = _norm_text(i.get("recipe_text") or "")
+            if not p or not want:
+                continue
+            pn = p.get("_norm") or ""
+            mix = re.search(r"\bmix voor\b|\bkruidenmix|\bkruiden voor\b|\bspecerijen voor\b", pn) and not re.search(r"mix|kruid|specerij", want)
+            meat = _VEGA_WORD_RE.search(want) and _MEAT_RE.search(pn) and not _VEGA_RE.search(pn)
+            if not (mix or meat):
+                continue
+            store = p.get("_src")
+            name = _parse_amount(i["recipe_text"])[2] or i["recipe_text"]
+            new = _cheapest_good([x for x in docs if x.get("_src") == store and x.get("is_global")], name, store)
+            if new and new["product_id"] == p["product_id"]:
+                continue
+            pub = product_public(_clean(new), store, "") if new else None
+            i.update({"product_id": pub["id"] if pub else None, "name": pub["name"] if pub else name,
+                      "aisle": pub["aisle"] if pub else i.get("aisle"), "price": pub.get("price") or 0 if pub else 0})
+            changed = True
+            logger.info("Gerecht %s: %s -> %s", d["dish_id"], p.get("name"), pub["name"] if pub else "(geen)")
+        if changed:
+            fixed += 1
+            await db.dishes.update_one({"dish_id": d["dish_id"]}, {"$set": {"ingredients": ings}})
+    await db.meta.insert_one({"key": "dish_picks_fix_1", "at": now_utc(), "dishes": fixed})
+    logger.info("Gerechten nagekeken: %d aangepast", fixed)
 
 
 def _weeks_since(at) -> float:
@@ -6753,7 +6932,9 @@ async def _recipe_detail(rid: str) -> dict:
                "image": (DIRK_IMAGE_BASE + img.lstrip("/")) if img else None, "time": _iso_minutes(r.get("preparationTime")),
                "servings": r.get("persons"), "tags": names("courses") + names("kitchens") + names("tags") + (["Vegetarisch"] if r.get("vegetarian") else []),
                "kcal": None, "ingredients": ings, "steps": [s for s in steps if s], "tip": r.get("tip"), "in_stock": in_stock,
-               "url": f"https://www.dirk.nl/meer/recepten/recept/{key}"}
+               "url": f"https://www.dirk.nl/meer/recepten/recept/{key}",
+               # "Liever vlees? ..." staat bij Dirk soms in een apart veld: alle teksten met zo'n tip meenemen
+               "alt_text": " ".join(dict.fromkeys(_swap_texts(r)))[:2000]}
     else:
         raise HTTPException(status_code=404, detail="Recept niet gevonden")
     return _rc_set(("detail", rid), out)
@@ -7346,22 +7527,48 @@ def _recipe_with_products(rec: dict, user: dict, matches: Optional[dict] = None)
 _SWAP_TIP_RE = re.compile(
     r"(?:liever\s+(?P<why>vlees|vis|vega\w*|vegetarisch\w*|vegan\w*|kip|zonder\s+\w+)[^.?!]*[?!.:]\s*)?"
     r"(?:(?:vervang|ruil)\s+(?:de|het|een)?\s*(?P<a>[^.?!;]+?)\s+(?:door|voor)\s+(?:de|het|een)?\s*(?P<b>[^.?!;(]+)"
-    r"|(?:gebruik|neem)\s+(?:de|het|een)?\s*(?P<b2>[^.?!;(]+?)\s+in\s+plaats\s+van\s+(?:de|het|een)?\s*(?P<a2>[^.?!;(]+))", re.I)
+    r"|(?:gebruik|neem)\s+(?:dan\s+)?(?:de|het|een)?\s*(?P<b2>[^.?!;(]+?)\s+in\s+plaats\s+van\s+(?:de|het|een)?\s*(?P<a2>[^.?!;(]+))", re.I)
+
+
+# "Liever vlees? Gebruik dan 350 g gyros." zonder te zeggen wat eruit gaat: dat zoeken we zelf bij de ingrediënten
+_SWAP_USE_RE = re.compile(
+    r"liever\s+(?P<why>vlees|vis|vega\w*|vegetarisch\w*|vegan\w*|kip)\b[^.?!]*[?!.:]\s*"
+    r"(?:(?:dan\s+)?(?:gebruik|neem|kies|koop|bak)\s+(?:je\s+)?(?:dan\s+)?|(?:dan\s+)?(?:is|zijn|past|passen)\s+)"
+    r"(?:de|het|een)?\s*(?P<b>[^.?!;(]+?)(?:\s+(?:ook\s+)?(?:heel\s+)?(?:lekker|geschikt|erg lekker|een goede keuze))?\s*[.!;(]", re.I)
+
+
+def _swap_texts(node, depth: int = 0) -> list:
+    # Alle teksten in een recept (van de site) waar een wisseltip in staat
+    if depth > 6:
+        return []
+    if isinstance(node, str):
+        return [node.strip()] if re.search(r"\bliever\b|\bvervang|in plaats van", node, re.I) and len(node) < 600 else []
+    items = node.values() if isinstance(node, dict) else node if isinstance(node, list) else []
+    return [t for v in items for t in _swap_texts(v, depth + 1)]
 
 
 def _recipe_alt_swaps(rec: dict, user: dict) -> list:
-    text = " ".join(x for x in (rec.get("tip"), rec.get("description")) if x)
+    text = " ".join(dict.fromkeys(x for x in (rec.get("tip"), rec.get("description"), rec.get("alt_text"), *(rec.get("steps") or [])) if x))
     if not text:
         return []
     docs = _product_cache.get("docs") or []
     favs = set(user.get("favorite_products") or [])
     out = []
-    for m in _SWAP_TIP_RE.finditer(text):
-        a, b = (m.group("a") or m.group("a2") or "").strip(), (m.group("b") or m.group("b2") or "").strip()
+    found = [(m, (m.group("a") or m.group("a2") or "").strip(), (m.group("b") or m.group("b2") or "").strip()) for m in _SWAP_TIP_RE.finditer(text)]
+    if not any(a for _, a, _ in found):
+        found += [(m, "", m.group("b").strip()) for m in _SWAP_USE_RE.finditer(text)]
+    for m, a, b in found:
         # Hoeveelheden eraf: "350 g gyros" -> gyros
         b_name = re.sub(r"^\s*[\d.,½¼]+\s*(g|gr|gram|kg|ml|l|liter|stuks?|st)?\.?\s+", "", b, flags=re.I).strip()
-        if not a or not b_name or len(b_name) > 60:
+        if not b_name or len(b_name) > 60:
             continue
+        if not a:
+            # Wat eruit gaat: het vega-ingrediënt van dezelfde soort ("vega gyros" bij "gyros")
+            bw = set(_norm_text(b_name).split())
+            a = next((i.get("name") or "" for i in rec.get("ingredients") or []
+                      if bw & set(_norm_text(i.get("name") or "").split()) and _VEGA_WORD_RE.search(_norm_text(i.get("text") or i.get("name") or ""))), "")
+            if not a:
+                continue
         aw = set(_norm_text(a).split())
         # Welk ingrediënt bedoelt de tip: de meeste woorden gelijk ("vega gyros" bij "350 g vegetarische gyros")
         best, score = None, 0
@@ -7381,6 +7588,8 @@ def _recipe_alt_swaps(rec: dict, user: dict) -> list:
         why = (m.group("why") or "").lower()
         out.append({"index": best, "label": f"Liever {why}" if why else "Wisselen", "from": a, "to": b_name,
                     "text": m.group(0).strip(), "product": product_public(_clean(d), d["_src"], user["user_id"], favs)})
+    if not out and re.search(r"\bliever\b", text, re.I):
+        logger.info("Recept %s: wisseltip niet begrepen: %s", rec.get("id"), text[:400])
     return out[:4]
 
 
@@ -10879,6 +11088,7 @@ async def startup():
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.dishes.create_index("dish_id", unique=True)
+    await db.dish_preps.create_index("sig", unique=True)
     await db.camps.create_index("camp_id", unique=True)
     await db.invitations.create_index([("email", 1), ("camp_id", 1)], unique=True)
     await db.google_logins.create_index("expires_at", expireAfterSeconds=0)
@@ -10887,6 +11097,13 @@ async def startup():
         await _pantry_freeze_rate()
     except Exception as e:
         logger.warning("Voorraadkast vastleggen mislukt: %r", e)
+
+    async def _fix_picks_later():
+        try:
+            await _fix_dish_picks()
+        except Exception as e:
+            logger.warning("Gerechten nakijken mislukt: %r", e)
+    asyncio.create_task(_fix_picks_later())
     # Accounts van voor het bijhouden van "laatst gezien": de twee jaar tellen vanaf nu
     await db.users.update_many({"last_seen_at": {"$exists": False}}, {"$set": {"last_seen_at": now_utc()}})
 

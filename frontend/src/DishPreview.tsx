@@ -66,6 +66,47 @@ export function AltSwapList({ swaps, done, onSwap }: { swaps: AltSwap[]; done: (
   );
 }
 
+// Bereiding van een gerecht: van het recept, aangepast aan andere producten, of een voorstel als er geen is
+export function PrepSteps({ dishId, campId }: { dishId: string; campId?: string }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const q = useQuery({
+    queryKey: ["dish-prep", dishId, campId ?? ""],
+    queryFn: () => api<{ steps: string[]; kind: "recept" | "ai" | "basis" }>(`/dishes/${dishId}/preparation${campId ? `?camp_id=${campId}` : ""}`),
+    staleTime: 30 * 60 * 1000,
+    retry: 1,
+  });
+  return (
+    <View style={{ gap: 6 }}>
+      <Text style={styles.sub}>{q.data && q.data.kind !== "recept" ? "Bereidingsvoorstel" : "Bereiding"}</Text>
+      {q.isLoading ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <ActivityIndicator color={colors.brandPrimary} />
+          <Text style={styles.meta}>Bereiding klaarzetten…</Text>
+        </View>
+      ) : q.data?.steps.length ? (
+        <>
+          {q.data.kind !== "recept" ? (
+            <Text style={styles.meta}>
+              {q.data.kind === "ai"
+                ? "Bedacht bij jouw producten, met wat er op de verpakking staat."
+                : "Op basis van het recept en wat er op de verpakking van je producten staat."}
+            </Text>
+          ) : null}
+          {q.data.steps.map((st, k) => (
+            <View key={k} style={{ flexDirection: "row", gap: 8 }}>
+              <Text style={styles.stepNo}>{k + 1}</Text>
+              <Text style={[styles.line, { flex: 1 }]}>{st}</Text>
+            </View>
+          ))}
+        </>
+      ) : (
+        <Text style={styles.meta}>Bij dit gerecht staat geen bereiding.</Text>
+      )}
+    </View>
+  );
+}
+
 // Het volledige scherm van een gerecht, zoals bij Gerechten: online recepten openen als recept, de rest als gerecht
 export function fullDishRoute(d: Pick<Dish, "id" | "source">) {
   const rid = d.source?.recipe_id;
@@ -78,12 +119,14 @@ export function DishPreview({
   actions,
   swapDone,
   onAltSwap,
+  campId,
 }: {
   target: PreviewTarget | null;
   onClose: () => void;
   actions: PreviewAction[];
   swapDone?: (s: AltSwap) => boolean;
   onAltSwap?: (s: AltSwap) => void;
+  campId?: string;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -148,8 +191,14 @@ export function DishPreview({
               <Text style={styles.meta}>Waarschijnlijk al in huis: {dish.pantry.map((p) => p.name).join(", ")}</Text>
             ) : null}
 
-            <Text style={[styles.sub, { marginTop: 4 }]}>Bereiding</Text>
-            {rid && rec.isLoading ? (
+            {dish ? (
+              <View style={{ marginTop: 4 }}>
+                <PrepSteps dishId={dish.id} campId={campId} />
+              </View>
+            ) : (
+              <Text style={[styles.sub, { marginTop: 4 }]}>Bereiding</Text>
+            )}
+            {dish ? null : rid && rec.isLoading ? (
               <ActivityIndicator color={colors.brandPrimary} />
             ) : steps.length ? (
               steps.map((st, k) => (

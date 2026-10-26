@@ -3,6 +3,7 @@ import { FlatList, Image, Pressable, ScrollView, Share, Text, TextInput, View } 
 import Modal from "@/src/components/Modal";
 import { norm } from "@/src/smartSearch";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import { PrepSteps } from "@/src/DishPreview";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as Linking from "expo-linking";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -228,6 +229,9 @@ export default function DishEditScreen() {
     onSuccess: () => {
       invalidate();
       if (campId) qc.invalidateQueries({ queryKey: ["camp", campId] });
+      // Andere producten: de bereiding opnieuw laten maken
+      qc.invalidateQueries({ queryKey: ["dish-prep"] });
+      qc.invalidateQueries({ queryKey: ["dish"] });
       toast.show(campId ? (alsoOwn ? `Opgeslagen voor ${T.deze} ${T.one} en bij je eigen gerechten` : `Opgeslagen voor ${T.deze} ${T.one}`) : "Gerecht opgeslagen", "success");
       router.back();
     },
@@ -654,6 +658,11 @@ export default function DishEditScreen() {
             <Icon name="send-circle-outline" size={20} color={colors.brandSecondary} />
             <Text style={styles.submitText}>Aanmelden als standaardgerecht</Text>
           </Pressable>
+        ) : null}
+        {params.id ? (
+          <View style={{ marginTop: 8 }}>
+            <PrepSteps dishId={params.id} campId={campId ?? undefined} />
+          </View>
         ) : null}
       </KeyboardAwareScrollView>
 

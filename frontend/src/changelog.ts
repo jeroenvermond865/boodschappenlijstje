@@ -5,6 +5,19 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-26-v",
+    date: "26 oktober 2026",
+    title: "Bereiding die past bij jouw producten",
+    changes: [
+      { kind: "nieuw", text: "Gerechten zonder bereiding (bijv. zelf gemaakt in de app) krijgen een bereidingsvoorstel, op basis van je producten en wat er op de verpakking staat." },
+      { kind: "nieuw", text: "Gebruik je andere producten dan in het recept (bijv. gewone gyros in plaats van vega), dan past de bereiding zich daarop aan." },
+      { kind: "opgelost", text: "'Liever vlees? ...' bij een recept wordt nu ook gevonden als het in de stappen of op een andere plek staat." },
+      { kind: "opgelost", text: "Gerechten die je eerder overnam en een kruidenmix (zoals 'mix voor gyros') of vlees bij een vega-ingrediënt kregen, zijn opnieuw gekozen." },
+      { kind: "beter", text: "Gerecht kiezen voor een maaltijd: na Toevoegen ga je meteen terug naar je lijstje." },
+      { kind: "opgelost", text: "Gerecht kiezen bij Online: het venster schuift niet meer half mee als je scrolt." },
+    ],
+  },
+  {
     id: "2026-10-26-u",
     date: "26 oktober 2026",
     title: "Gerechten eerst bekijken, dan kiezen",

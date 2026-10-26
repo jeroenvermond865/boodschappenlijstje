@@ -222,6 +222,7 @@ export default function CampDetailScreen() {
     try {
       await api(`/camps/${id}/product-swap`, { method: "POST", body: { from_id: from, to_id: sw.product.id } });
       await Promise.all(["camp", "shopping", "budget"].map((k) => qc.invalidateQueries({ queryKey: [k, id] })));
+      qc.invalidateQueries({ queryKey: ["dish-prep"] });
       toast.show(`${sw.from} vervangen door ${sw.product.name}`, "success");
     } catch (e: any) {
       toast.show(e?.message ?? "Wisselen mislukt", "error");
@@ -633,6 +634,7 @@ export default function CampDetailScreen() {
 
       <VegaPicker dish={vegaDish} onClose={() => setVegaDish(null)} />
       <DishPreview
+        campId={id}
         target={dishView ? { dish: dishView } : null}
         onClose={() => setDishView(null)}
         swapDone={(sw) => {
@@ -1183,10 +1185,13 @@ function DishPickerModal({
     .filter((d) => selectedIds.includes(d.id) && d.source?.recipe_id)
     .map((d) => d.source!.recipe_id.replace(":", "-"));
 
-  const pickOnline = async (r: RecipeTile, swaps: Record<string, string> = {}) => {
-    if (!category || busyId) return;
+  const pickOnline = async (r: RecipeTile, swaps: Record<string, string> = {}): Promise<boolean> => {
+    if (!category || busyId) return false;
     const existing = dishes.find((d) => d.source?.recipe_id?.replace(":", "-") === r.id);
-    if (existing && !Object.keys(swaps).length) return onToggle(existing.id);
+    if (existing && !Object.keys(swaps).length) {
+      onToggle(existing.id);
+      return true;
+    }
     setBusyId(r.id);
     try {
       const dish = await api<Dish>("/recipes/import", { method: "POST", body: { id: r.id, category, reuse: true, swaps } });
@@ -1194,8 +1199,10 @@ function DishPickerModal({
       await qc.invalidateQueries({ queryKey: ["dishes"] });
       onToggle(dish.id);
       toast.show(`${r.title} toegevoegd`, "success");
+      return true;
     } catch (e: any) {
       toast.show(e?.message ?? "Toevoegen mislukt", "error");
+      return false;
     } finally {
       setBusyId(null);
     }
@@ -1343,7 +1350,11 @@ function DishPickerModal({
                 onPress: () => {
                   onToggle(preview.dish.id);
                   setPreview(null);
-                  if (!on) toast.show(`${preview.dish.name} toegevoegd`, "success");
+                  if (!on) {
+                    toast.show(`${preview.dish.name} toegevoegd`, "success");
+                    // Toegevoegd: terug naar je lijstje
+                    onClose();
+                  }
                 },
               },
             ];
@@ -1357,9 +1368,10 @@ function DishPickerModal({
               primary: !on,
               testID: "preview-add",
               onPress: async () => {
-                await pickOnline(r, on ? {} : recSwaps);
+                const ok = await pickOnline(r, on ? {} : recSwaps);
                 setPreview(null);
                 setRecSwaps({});
+                if (ok && !on) onClose();
               },
             },
           ];

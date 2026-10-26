@@ -146,10 +146,15 @@ export function OnlineRecipes({
     });
 
   const hide = useHideOnScroll(0, outer);
+  // In een kies-venster blijft de zoekbalk gewoon staan: meeschuiven maakt het venster daar onrustig
+  const hideOn = !onPick;
+  const padTop = hideOn ? hide.padTop : 0;
 
   return (
     <View style={{ flex: 1 }}>
-      <Animated.View {...hide.blockProps} style={[styles.header, { backgroundColor: colors.surface }, hide.blockProps.style]}>
+      <Animated.View
+        onLayout={hideOn ? hide.blockProps.onLayout : undefined}
+        style={[styles.header, { backgroundColor: colors.surface }, hideOn ? hide.blockProps.style : null]}>
         <View style={styles.searchBox}>
           <Icon name="magnify" size={20} color={colors.muted} />
           <TextInput
@@ -204,20 +209,20 @@ export function OnlineRecipes({
       </Animated.View>
 
       {query.isLoading ? (
-        <View style={[styles.center, { paddingTop: hide.padTop }]}>
+        <View style={[styles.center, { paddingTop: padTop }]}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
       ) : (
         <FlatList
           scrollEventThrottle={16}
-          onScroll={hide.scrollProps.onScroll}
+          onScroll={hideOn ? hide.scrollProps.onScroll : undefined}
           refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={() => query.refetch()} tintColor={colors.brandPrimary} />}
           data={recipes}
           keyExtractor={(r) => r.id}
           key={`recipes-${grid.cols}`}
           numColumns={grid.cols}
           columnWrapperStyle={{ gap: 10 }}
-          contentContainerStyle={{ padding: 16, paddingTop: 8 + hide.padTop, paddingBottom: bottomPadding, gap: 10 }}
+          contentContainerStyle={{ padding: 16, paddingTop: 8 + padTop, paddingBottom: bottomPadding, gap: 10 }}
           onEndReachedThreshold={0.6}
           onEndReached={() => query.hasNextPage && !query.isFetchingNextPage && query.fetchNextPage()}
           renderItem={({ item }) => (

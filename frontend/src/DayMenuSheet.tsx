@@ -6,7 +6,7 @@ import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AltSwapList, dishProductFor, fullDishRoute, type AltSwap } from "@/src/DishPreview";
+import { AltSwapList, PrepSteps, dishProductFor, fullDishRoute, type AltSwap } from "@/src/DishPreview";
 import { useToast } from "@/src/toast";
 
 import { Icon } from "@/src/components/ui";
@@ -151,7 +151,6 @@ function DishDetail({ dishId, campId, onOpen }: { dishId: string; campId: string
   });
   if (dish.isLoading) return <ActivityIndicator color={colors.brandPrimary} style={{ margin: 10 }} />;
   if (!dish.data) return <Text style={[styles.meta, { padding: 10 }]}>Dit gerecht kon niet geladen worden.</Text>;
-  const steps = rec.data?.steps ?? [];
   // "Liever vlees? Vervang ...": voor dit hele lijstje wisselen
   const swap = async (sw: AltSwap) => {
     const from = dish.data ? dishProductFor(dish.data as any, sw) : null;
@@ -159,6 +158,7 @@ function DishDetail({ dishId, campId, onOpen }: { dishId: string; campId: string
     try {
       await api(`/camps/${campId}/product-swap`, { method: "POST", body: { from_id: from, to_id: sw.product.id } });
       await Promise.all(["camp", "shopping", "budget"].map((k) => qc.invalidateQueries({ queryKey: [k, campId] })));
+      qc.invalidateQueries({ queryKey: ["dish-prep"] });
       toast.show(`${sw.from} vervangen door ${sw.product.name}`, "success");
     } catch (e: any) {
       toast.show(e?.message ?? "Wisselen mislukt", "error");
@@ -181,19 +181,9 @@ function DishDetail({ dishId, campId, onOpen }: { dishId: string; campId: string
         }}
         onSwap={swap}
       />
-      <Text style={[styles.sub, { marginTop: 6 }]}>Bereiding</Text>
-      {rid && rec.isLoading ? (
-        <ActivityIndicator color={colors.brandPrimary} />
-      ) : steps.length ? (
-        steps.map((st, k) => (
-          <View key={k} style={{ flexDirection: "row", gap: 8 }}>
-            <Text style={styles.stepNo}>{k + 1}</Text>
-            <Text style={[styles.line, { flex: 1 }]}>{st}</Text>
-          </View>
-        ))
-      ) : (
-        <Text style={styles.meta}>Bij dit gerecht staat geen bereiding.</Text>
-      )}
+      <View style={{ marginTop: 6 }}>
+        <PrepSteps dishId={dishId} campId={campId} />
+      </View>
       <Pressable onPress={() => onOpen(dish.data!)} style={styles.link} testID="day-menu-open-dish">
         <Text style={styles.linkText}>Hele gerecht openen</Text>
         <Icon name="chevron-right" size={18} color={colors.brandPrimary} />
