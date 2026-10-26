@@ -40,7 +40,7 @@ type Home = {
     end?: string | null;
   }[];
   recipes: RecipeTile[];
-  todo: { dishes?: number; products?: number; stores?: number };
+  todo: { dishes?: number; products?: number; stores?: number; premium?: number };
   own_dishes: number;
 };
 
@@ -128,6 +128,7 @@ export default function HomeScreen() {
     todo.dishes ? { n: todo.dishes, label: "gerechten wachten op goedkeuring", to: "/admin/submissions" } : null,
     todo.products ? { n: todo.products, label: "productvoorstellen wachten op goedkeuring", to: "/admin/submissions" } : null,
     todo.stores ? { n: todo.stores, label: "winkelaanvragen", to: "/admin/store-requests" } : null,
+    todo.premium ? { n: todo.premium, label: todo.premium === 1 ? "premium-aanvraag" : "premium-aanvragen", to: "/admin/premium-requests" } : null,
   ].filter(Boolean) as { n: number; label: string; to: string }[];
 
   return (

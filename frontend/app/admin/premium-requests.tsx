@@ -1,0 +1,119 @@
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { EmptyState, Icon } from "@/src/components/ui";
+import { api } from "@/src/api";
+import { goBack } from "@/src/nav";
+import { useToast } from "@/src/toast";
+import { fonts, makeStyles, useTheme } from "@/src/theme";
+
+type PReq = { req_id: string; org_name: string; message?: string | null; user_name?: string; user_email?: string; created_at?: string };
+
+export default function PremiumRequestsScreen() {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const toast = useToast();
+  const qc = useQueryClient();
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["premium-requests"],
+    queryFn: () => api<{ requests: PReq[] }>("/admin/premium-requests"),
+  });
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["premium-requests"] });
+    qc.invalidateQueries({ queryKey: ["admin-users"] });
+    qc.invalidateQueries({ queryKey: ["home"] });
+  };
+
+  const approve = useMutation({
+    mutationFn: (id: string) => api(`/admin/premium-requests/${id}/approve`, { method: "POST" }),
+    onSuccess: () => {
+      invalidate();
+      toast.show("Premium staat aan", "success");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
+  });
+  const reject = useMutation({
+    mutationFn: (id: string) => api(`/admin/premium-requests/${id}/reject`, { method: "POST" }),
+    onSuccess: () => {
+      invalidate();
+      toast.show("Aanvraag geweigerd", "info");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
+  });
+
+  return (
+    <View style={styles.root}>
+      <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
+        <Pressable testID="back-button" onPress={() => goBack("/")} hitSlop={10} style={styles.headerBtn}>
+          <Icon name="chevron-left" size={28} color={colors.onSurface} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Premium-aanvragen</Text>
+        <View style={styles.headerBtn} />
+      </View>
+
+      {isLoading ? (
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color={colors.brandPrimary} />
+        </View>
+      ) : (
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 24, gap: 14 }}>
+          {(data?.requests ?? []).length === 0 ? (
+            <View style={styles.center}>
+              <EmptyState icon="star-outline" title="Geen aanvragen" subtitle="Verenigingen die gratis Premium aanvragen, verschijnen hier." />
+            </View>
+          ) : (
+            (data?.requests ?? []).map((r) => (
+              <View key={r.req_id} style={styles.card} testID={`preq-${r.req_id}`}>
+                <Text style={styles.name}>{r.org_name}</Text>
+                <Text style={styles.meta}>
+                  Aangevraagd door {r.user_name || "?"}{r.user_email ? ` (${r.user_email})` : ""}
+                  {r.created_at ? ` op ${new Date(r.created_at).toLocaleDateString("nl-NL")}` : ""}
+                </Text>
+                {r.message ? <Text style={styles.msg}>{r.message}</Text> : null}
+                <View style={styles.actions}>
+                  <Pressable testID={`preq-reject-${r.req_id}`} onPress={() => reject.mutate(r.req_id)} style={[styles.actionBtn, styles.rejectBtn]}>
+                    <Icon name="close" size={18} color={colors.error} />
+                    <Text style={[styles.actionText, { color: colors.error }]}>Weigeren</Text>
+                  </Pressable>
+                  <Pressable testID={`preq-approve-${r.req_id}`} onPress={() => approve.mutate(r.req_id)} style={[styles.actionBtn, styles.approveBtn]}>
+                    <Icon name="check" size={18} color={colors.onBrandPrimary} />
+                    <Text style={[styles.actionText, { color: colors.onBrandPrimary }]}>Premium aanzetten</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))
+          )}
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+
+const useStyles = makeStyles((colors) => ({
+  root: { flex: 1, backgroundColor: colors.surface },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 10,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+  },
+  headerBtn: { width: 44, height: 40, alignItems: "center", justifyContent: "center" },
+  headerTitle: { flex: 1, textAlign: "center", fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", paddingTop: 40 },
+  card: { backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 16, gap: 6 },
+  name: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },
+  msg: { fontSize: 14, lineHeight: 20, fontFamily: fonts.regular, color: colors.onSurfaceSecondary, marginTop: 4 },
+  meta: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
+  actions: { flexDirection: "row", gap: 10, marginTop: 10 },
+  actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 12 },
+  rejectBtn: { borderWidth: 1.5, borderColor: colors.error },
+  approveBtn: { backgroundColor: colors.brandPrimary },
+  actionText: { fontSize: 14, fontFamily: fonts.semibold },
+}));

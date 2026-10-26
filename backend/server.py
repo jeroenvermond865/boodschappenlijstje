@@ -219,6 +219,7 @@ def public_user(doc: dict) -> dict:
         "no_personal": doc.get("no_personal", False),
         "premium": bool(doc.get("premium")),
         "premium_welcome": bool(doc.get("premium") and doc.get("premium_welcome")),
+        "premium_org": doc.get("premium_org") if doc.get("premium") else None,
     }
 
 
@@ -848,6 +849,7 @@ async def _erase_user(user: dict) -> None:
     await db.user_interest.delete_many({"user_id": uid})
     await db.feedback.delete_many({"user_id": uid})
     await db.store_requests.delete_many({"requested_by": uid})
+    await db.premium_requests.delete_many({"user_id": uid})
     if user.get("email"):
         for coll in (db.email_prefs, db.password_resets, db.invitations):
             await coll.delete_many({"email": user["email"]})
@@ -1942,12 +1944,22 @@ async def admin_set_premium(target_id: str, data: PremiumInput, user: dict = Dep
     target = await db.users.find_one({"user_id": target_id, "deleted_at": None})
     if not target:
         raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
-    newly = data.premium and not target.get("premium")
+    await _set_premium(target, data.premium, user["user_id"])
+    return {"ok": True, "premium": data.premium}
+
+
+async def _set_premium(target: dict, premium: bool, by_user_id: str, org: Optional[str] = None):
+    newly = premium and not target.get("premium")
     # Net premium geworden: bij de volgende keer openen een felicitatie in de app, en een mail
-    await db.users.update_one({"user_id": target_id}, {"$set": {
-        "premium": data.premium, "premium_by": user["user_id"], "premium_at": now_utc(),
-        "premium_welcome": bool(newly) or (target.get("premium_welcome", False) and data.premium),
-    }})
+    update = {
+        "premium": premium, "premium_by": by_user_id, "premium_at": now_utc(),
+        "premium_welcome": bool(newly) or (target.get("premium_welcome", False) and premium),
+    }
+    if org:
+        update["premium_org"] = org
+    await db.users.update_one({"user_id": target["user_id"]}, {"$set": update})
+    if not premium:
+        await db.premium_requests.update_many({"user_id": target["user_id"], "status": "approved"}, {"$set": {"status": "ended"}})
     if newly and target.get("email"):
         base = (FRONTEND_URL or "").rstrip("/")
         html = (
@@ -1961,7 +1973,81 @@ async def admin_set_premium(target_id: str, data: PremiumInput, user: dict = Dep
             '</td></tr></table>'
         )
         asyncio.create_task(send_email(target["email"], "Je bent nu Premium bij Slim Boodschappenlijstje", html, allow_unsubscribe=False))
-    return {"ok": True, "premium": data.premium}
+
+
+class PremiumRequestInput(BaseModel):
+    org_name: str
+    message: Optional[str] = None
+
+
+def _premium_request_public(r: Optional[dict]) -> Optional[dict]:
+    if not r:
+        return None
+    return {k: r.get(k) for k in ("req_id", "org_name", "message", "status", "created_at", "reviewed_at", "user_name", "user_email")}
+
+
+# Verenigingen (scouting, sportclubs, ...) kunnen gratis Premium aanvragen; beheer keurt goed
+@api_router.get("/premium/request")
+async def my_premium_request(user: dict = Depends(get_current_user)):
+    r = await db.premium_requests.find_one({"user_id": user["user_id"]}, {"_id": 0}, sort=[("created_at", -1)])
+    return {"request": _premium_request_public(r)}
+
+
+@api_router.post("/premium/request")
+async def request_premium(data: PremiumRequestInput, user: dict = Depends(get_current_user)):
+    org = (data.org_name or "").strip()[:100]
+    msg = (data.message or "").strip()[:1000] or None
+    if len(org) < 2:
+        raise HTTPException(status_code=400, detail="Vul de naam van je vereniging in")
+    if user.get("premium"):
+        raise HTTPException(status_code=400, detail="Je bent al Premium")
+    if await db.premium_requests.find_one({"user_id": user["user_id"], "status": "pending"}):
+        raise HTTPException(status_code=400, detail="Je hebt al een aanvraag lopen")
+    recent = await db.premium_requests.count_documents({"user_id": user["user_id"], "created_at": {"$gte": now_utc() - timedelta(days=1)}})
+    if recent >= 3:
+        raise HTTPException(status_code=429, detail="Probeer het morgen nog eens")
+    doc = {
+        "req_id": f"preq_{uuid.uuid4().hex[:12]}", "user_id": user["user_id"],
+        "user_name": user.get("name"), "user_email": user.get("email"),
+        "org_name": org, "message": msg, "status": "pending", "created_at": now_utc(),
+    }
+    await db.premium_requests.insert_one(doc)
+    # Beheerders krijgen een seintje, zodat een aanvraag niet blijft liggen
+    base = (FRONTEND_URL or "").rstrip("/")
+    html = (
+        '<div style="font-family:Arial,sans-serif;color:#1C1B1A">'
+        f'<p>Nieuwe aanvraag voor gratis Premium van <b>{escape(org)}</b>.</p>'
+        f'<p>Aangevraagd door {escape(user.get("name") or "")} ({escape(user.get("email") or "")}).</p>'
+        + (f'<p>{escape(msg)}</p>' if msg else "")
+        + (f'<p><a href="{escape(base)}/admin/premium-requests">Bekijk de aanvragen</a></p>' if base else "")
+        + '</div>'
+    )
+    async for admin in db.users.find({"role": "beheerder", "deleted_at": None, "email": {"$ne": None}}, {"email": 1}):
+        asyncio.create_task(send_email(admin["email"], f"Premium-aanvraag: {org}", html, allow_unsubscribe=False))
+    return {"request": _premium_request_public(doc)}
+
+
+@api_router.get("/admin/premium-requests")
+async def list_premium_requests(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    reqs = await db.premium_requests.find({"status": "pending"}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    return {"requests": [_premium_request_public(r) for r in reqs]}
+
+
+@api_router.post("/admin/premium-requests/{req_id}/{action}")
+async def review_premium_request(req_id: str, action: str, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=404, detail="Onbekende actie")
+    req = await db.premium_requests.find_one({"req_id": req_id, "status": "pending"})
+    if not req:
+        raise HTTPException(status_code=404, detail="Aanvraag niet gevonden")
+    target = await db.users.find_one({"user_id": req["user_id"], "deleted_at": None})
+    status = "approved" if action == "approve" and target else "rejected"
+    await db.premium_requests.update_one({"req_id": req_id}, {"$set": {"status": status, "reviewed_at": now_utc(), "reviewed_by": user["user_id"]}})
+    if status == "approved":
+        await _set_premium(target, True, user["user_id"], org=req.get("org_name"))
+    return {"ok": True, "status": status}
 
 
 @api_router.post("/auth/premium-seen")
@@ -5349,6 +5435,8 @@ async def home(user: dict = Depends(get_current_user)):
         todo["products"] = len(await _pending_product_subs())
     if "manage_settings" in perms:
         todo["stores"] = await db.store_requests.count_documents({"status": "pending"})
+    if "manage_users" in perms:
+        todo["premium"] = await db.premium_requests.count_documents({"status": "pending"})
     own_dishes = await db.dishes.count_documents({"owner_id": user["user_id"], "deleted_at": None})
     try:
         interest = {} if user.get("no_personal") else await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0}) or {}
@@ -7299,6 +7387,8 @@ async def startup():
 
     # Seed dynamic stores collection (incl. Dirk) + backfill any missing prices
     await db.store_requests.create_index("req_id", unique=True)
+    await db.premium_requests.create_index("req_id", unique=True)
+    await db.premium_requests.create_index([("user_id", 1), ("created_at", -1)])
     for i, s in enumerate(STORES):
         await db.stores.update_one(
             {"name": s},

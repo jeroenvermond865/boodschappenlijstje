@@ -63,6 +63,8 @@ function Gate() {
       <Stack.Screen name="dish/shared/[token]" />
       <Stack.Screen name="admin/submissions" />
       <Stack.Screen name="admin/store-requests" />
+      <Stack.Screen name="admin/premium-requests" />
+      <Stack.Screen name="premium" />
       <Stack.Screen name="store-request" options={{ presentation: "modal" }} />
       <Stack.Screen name="product/[id]" />
       <Stack.Screen name="folders" />

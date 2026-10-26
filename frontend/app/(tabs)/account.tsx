@@ -43,6 +43,14 @@ export default function AccountScreen() {
   });
   const pendingStores = scounts?.count ?? 0;
 
+  const { data: preqs } = useQuery({
+    queryKey: ["premium-requests"],
+    queryFn: () => api<{ requests: unknown[] }>("/admin/premium-requests"),
+    enabled: canUsers,
+    refetchInterval: 30000,
+  });
+  const premiumReqs = preqs?.requests.length ?? 0;
+
   const { data: fcounts } = useQuery({
     queryKey: ["feedback-count"],
     queryFn: () => api<{ count: number }>("/admin/feedback/count"),
@@ -97,16 +105,30 @@ export default function AccountScreen() {
         </Card>
 
         {user?.premium ? (
-          <View style={styles.premiumCard} testID="premium-card">
+          <Pressable style={styles.premiumCard} testID="premium-card" onPress={() => router.push("/premium")}>
             <View style={styles.premiumIcon}>
               <Icon name="star" size={26} color={colors.onBrandSecondary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.premiumTitle}>Premium</Text>
-              <Text style={styles.premiumText}>Bedankt voor je steun! Je account is Premium.</Text>
+              <Text style={styles.premiumText}>
+                {user.premium_org ? `Via ${user.premium_org}. ` : "Bedankt voor je steun! "}Bekijk wat je allemaal extra hebt.
+              </Text>
             </View>
-          </View>
-        ) : null}
+            <Icon name="chevron-right" size={22} color="#7A5212" />
+          </Pressable>
+        ) : (
+          <Pressable style={[styles.premiumCard, { borderStyle: "dashed" }]} testID="premium-info-card" onPress={() => router.push("/premium")}>
+            <View style={styles.premiumIcon}>
+              <Icon name="star-outline" size={26} color={colors.onBrandSecondary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.premiumTitle}>Premium</Text>
+              <Text style={styles.premiumText}>Gratis voor verenigingen. Bekijk wat je krijgt en vraag het aan.</Text>
+            </View>
+            <Icon name="chevron-right" size={22} color="#7A5212" />
+          </Pressable>
+        )}
 
         <AdminRow
           testID="profile-link"
@@ -177,6 +199,15 @@ export default function AccountScreen() {
                 icon="account-group-outline"
                 label="Gebruikers & rollen"
                 onPress={() => router.push("/admin/users")}
+              />
+            ) : null}
+            {canUsers ? (
+              <AdminRow
+                testID="admin-premium-link"
+                icon="star-check-outline"
+                label="Premium-aanvragen"
+                badge={premiumReqs}
+                onPress={() => router.push("/admin/premium-requests")}
               />
             ) : null}
             {canRoles ? (
