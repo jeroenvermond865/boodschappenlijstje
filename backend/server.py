@@ -6214,7 +6214,7 @@ async def home(user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.warning("Persoonlijke acties: %r", e)
         promos = [{k: v for k, v in c.items() if not k.startswith("_")} for c in promos[:24]]
-    return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "compare_pending": compare_pending, "promos": promos,
+    return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "compare_pending": compare_pending, "shop_store": (c or {}).get("shop_store") if camp else None, "promos": promos,
             "recipes": await _with_costs(recipes), "todo": todo, "own_dishes": own_dishes, "alerts_hit": alerts_hit}
 
 

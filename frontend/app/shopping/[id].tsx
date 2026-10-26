@@ -16,6 +16,7 @@ import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { usePremium } from "@/src/premium";
 import { RouteSheet, useRoute } from "@/src/route";
+import { CompareCard, type CompareStore } from "@/src/CompareCard";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -25,7 +26,7 @@ type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: num
 
 const euro = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
 type PerDay = { index: number; adults: number; children: number; by_store: StoreBlock[] };
-type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean; shop_day?: string | null; promo_then?: number };
+type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean; shop_day?: string | null; promo_then?: number; shop_store?: string | null };
 
 const key = (store: string, i: Item) => `${store}|${i.name.toLowerCase()}|${i.unit}`;
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -35,6 +36,7 @@ export default function ShoppingScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const toast = useToast();
+  const qc = useQueryClient();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
 
@@ -134,6 +136,26 @@ export default function ShoppingScreen() {
     queryKey: ["camp", id],
     queryFn: () => cachedApi<{ name: string }>(`/camps/${id}`),
   });
+
+  // Waar is deze lijst het goedkoopst? Wordt op de achtergrond uitgerekend, dus even later nog eens vragen
+  const [showCompare, setShowCompare] = useState(false);
+  const cmp = useQuery({
+    queryKey: ["compare", id],
+    queryFn: () => api<{ compare: CompareStore[] | null; compare_pending?: boolean; shop_store?: string | null }>(`/camps/${id}/compare`),
+    enabled: !!data && !data.offline_at,
+    staleTime: 60 * 1000,
+    refetchInterval: (q) => (q.state.data?.compare_pending ? 4000 : false),
+  });
+  const cmpFound = (cmp.data?.compare ?? []).filter((c) => c.found > 0);
+  const cmpBest = cmpFound.length > 1 ? cmpFound.reduce((a, b) => ((b.total_fair ?? b.total) < (a.total_fair ?? a.total) ? b : a)) : null;
+  const backToOwn = async () => {
+    try {
+      await api(`/camps/${id}/shop-store`, { method: "POST", body: { store: null } });
+      await Promise.all(["shopping", "compare", "home", "budget"].map((k) => qc.invalidateQueries({ queryKey: k === "home" ? [k] : [k, id] })));
+    } catch (e: any) {
+      toast.show(e?.message ?? "Dat lukte niet", "error");
+    }
+  };
 
   const multi = data?.multi_store ?? false;
   const premium = usePremium();
@@ -378,6 +400,38 @@ export default function ShoppingScreen() {
             <View style={styles.multiBanner}>
               <Icon name="account-multiple-check-outline" size={16} color={colors.onBrandTertiary} />
               <Text style={styles.multiText}>Samen boodschappen doen: wat de anderen afvinken, zie je hier meteen.</Text>
+            </View>
+          ) : null}
+          {data?.shop_store ? (
+            <View style={styles.multiBanner}>
+              <Icon name="cart-check" size={16} color={colors.onBrandTertiary} />
+              <Text style={styles.multiText}>
+                Je haalt alles bij {data.shop_store}, met de producten uit de vergelijking.{" "}
+                <Text onPress={backToOwn} style={{ fontFamily: fonts.bold, textDecorationLine: "underline" }}>
+                  Terug naar je eigen winkels
+                </Text>
+              </Text>
+            </View>
+          ) : null}
+          {cmp.data && (cmp.data.compare_pending || cmpFound.length > 1) ? (
+            <View style={{ gap: 10 }}>
+              <Pressable testID="shopping-compare-toggle" onPress={() => setShowCompare((v) => !v)} style={styles.pantryLink}>
+                <Icon name="scale-balance" size={16} color={colors.brandPrimary} />
+                <Text style={[styles.pantryLinkText, { flex: 1 }]}>
+                  {cmpBest ? `Waar is je lijst het goedkoopst? ${cmpBest.store}` : "Waar is je lijst het goedkoopst?"}
+                </Text>
+                <Icon name={showCompare ? "chevron-up" : "chevron-down"} size={18} color={colors.brandPrimary} />
+              </Pressable>
+              {showCompare ? (
+                <CompareCard
+                  campId={id}
+                  campName={camp?.name ?? "je lijst"}
+                  compare={cmp.data.compare}
+                  pending={cmp.data.compare_pending}
+                  shopStore={data?.shop_store}
+                  noTitle
+                />
+              ) : null}
             </View>
           ) : null}
           {data?.promo_then ? (
