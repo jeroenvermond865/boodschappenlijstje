@@ -5,10 +5,11 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
-    id: "2026-10-26-h",
+    id: "2026-10-26-i",
     date: "26 oktober 2026",
     title: "Producten naast elkaar vergelijken",
     changes: [
+      { kind: "beter", text: "Afvinken wat al in je voorraadkast staat: je ziet eerst welke producten het zijn en zet uit wat je toch wilt kopen." },
       { kind: "nieuw", text: "Tik op 'Bij Dirk € …, hier € …' onder een product: je ziet beide producten naast elkaar, andere keuzes bij je winkel (ook grotere verpakkingen die per kilo goedkoper zijn) en wat de andere winkels hebben." },
     ],
   },

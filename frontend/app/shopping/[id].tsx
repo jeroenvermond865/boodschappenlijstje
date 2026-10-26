@@ -243,14 +243,20 @@ export default function ShoppingScreen() {
 
   // Voorraadkast (Premium): alles wat je al genoeg in huis hebt in één keer afvinken
   const covered = allItems.filter((x) => (x.item.in_pantry ?? 0) >= x.item.qty && !shown.has(key(x.store, x.item)));
+  // Eerst laten zien om welke producten het gaat; je kunt er een paar uitzetten voordat je afvinkt
+  const [pantryPick, setPantryPick] = useState<Set<string> | null>(null);
   const checkPantry = () => {
+    const pick = pantryPick ?? new Set(covered.map((x) => key(x.store, x.item)));
+    const todo = covered.filter((x) => pick.has(key(x.store, x.item)));
+    setPantryPick(null);
+    if (!todo.length) return;
     const next = new Set(checked);
-    covered.forEach((x) => {
+    todo.forEach((x) => {
       const t = key(x.store, x.item);
       [t, ...(parts.byTotal.get(t) ?? [])].forEach((k) => next.add(k));
     });
     save(next);
-    toast.show(`${covered.length} ${covered.length === 1 ? "product" : "producten"} afgevinkt`, "success");
+    toast.show(`${todo.length} ${todo.length === 1 ? "product" : "producten"} afgevinkt`, "success");
   };
 
   const isDone = (store: string, i: Item) => shown.has(key(store, i));
@@ -472,7 +478,7 @@ export default function ShoppingScreen() {
             </Pressable>
           ) : null}
           {data?.has_pantry && covered.length ? (
-            <Pressable style={styles.multiBanner} onPress={checkPantry} testID="pantry-check">
+            <Pressable style={styles.multiBanner} onPress={() => setPantryPick(new Set(covered.map((x) => key(x.store, x.item))))} testID="pantry-check">
               <Icon name="fridge-outline" size={18} color={colors.onBrandTertiary} />
               <Text style={styles.multiText}>
                 {covered.length} {covered.length === 1 ? "product heb" : "producten heb"} je al genoeg in huis. Tik om af te vinken.
@@ -566,6 +572,56 @@ export default function ShoppingScreen() {
         <RouteSheet store={routeEdit} order={route.order(routeEdit)} onChange={(o) => route.setOrder(routeEdit, o)} onClose={() => setRouteEdit(null)} />
       ) : null}
 
+      <Modal visible={!!pantryPick} transparent animationType="fade" onRequestClose={() => setPantryPick(null)}>
+        <Pressable style={styles.modalBackdrop} onPress={() => setPantryPick(null)}>
+          <Pressable style={[styles.modalCard, { maxHeight: "85%" }]} onPress={() => {}}>
+            <Text style={styles.modalTitle}>Al in je voorraadkast</Text>
+            <Text style={styles.pantryNote}>Dit heb je volgens je voorraadkast al genoeg in huis. Zet uit wat je toch wilt kopen.</Text>
+            <ScrollView style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 2 }}>
+              {covered.map((x) => {
+                const k = key(x.store, x.item);
+                const on = !!pantryPick?.has(k);
+                return (
+                  <Pressable
+                    key={k}
+                    testID={`pantry-pick-${x.item.name.toLowerCase()}`}
+                    onPress={() =>
+                      setPantryPick((cur) => {
+                        const n = new Set(cur ?? []);
+                        if (n.has(k)) n.delete(k);
+                        else n.add(k);
+                        return n;
+                      })
+                    }
+                    style={styles.shareToggle}
+                  >
+                    <Icon name={on ? "checkbox-marked" : "checkbox-blank-outline"} size={22} color={colors.brandPrimary} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.shareToggleText}>{x.item.name}</Text>
+                      <Text style={styles.pantryNote}>
+                        Nodig {formatQty(x.item.qty)} {x.item.unit} · in huis {formatQty(x.item.in_pantry ?? 0)} {x.item.unit}
+                      </Text>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
+              <Pressable onPress={() => setPantryPick(null)} style={[styles.pantryBtn, { backgroundColor: colors.surfaceSecondary }]} testID="pantry-cancel">
+                <Text style={[styles.pantryBtnText, { color: colors.onSurface }]}>Annuleren</Text>
+              </Pressable>
+              <Pressable
+                onPress={checkPantry}
+                disabled={!pantryPick?.size}
+                style={[styles.pantryBtn, { backgroundColor: colors.brandPrimary, opacity: pantryPick?.size ? 1 : 0.5 }]}
+                testID="pantry-confirm"
+              >
+                <Text style={[styles.pantryBtnText, { color: colors.onBrandPrimary }]}>Afvinken ({pantryPick?.size ?? 0})</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
       <Modal visible={shareOpen} transparent animationType="fade" onRequestClose={() => setShareOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setShareOpen(false)}>
           <Pressable style={styles.modalCard} onPress={() => {}}>
@@ -807,6 +863,9 @@ const useStyles = makeStyles((colors) => ({
   dayStore: { fontSize: 13, fontFamily: fonts.bold, color: colors.brandPrimary, paddingHorizontal: 4 },
   modalBackdrop: { flex: 1, backgroundColor: "rgba(28,27,26,0.5)", justifyContent: "center", padding: 20 },
   modalCard: { backgroundColor: colors.surface, borderRadius: 20, padding: 20, gap: 4, width: "100%", maxWidth: 420, alignSelf: "center" },
+  pantryNote: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
+  pantryBtn: { flex: 1, borderRadius: 12, paddingVertical: 12, alignItems: "center" },
+  pantryBtnText: { fontSize: 15, fontFamily: fonts.bold },
   modalTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface, marginBottom: 8 },
   shareToggle: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, marginBottom: 4 },
   shareToggleText: { fontSize: 14, fontFamily: fonts.medium, color: colors.onSurfaceSecondary },
