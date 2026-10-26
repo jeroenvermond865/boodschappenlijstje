@@ -6506,10 +6506,13 @@ def _compare_hit(st: str, cands: list, by_ean: dict, name: str, base: Optional[d
             return d, False
     terms = _alt_terms(name, base) or name
     hits = _best_matches(cands, terms, 3)
+    other_aisle = []
     if base:
         # liever iets van dezelfde soort, en geen ander soort product (chocolademelk voor melk)
         good = [d for d in hits if _same_kind(base, d, strict=False)]
         same_aisle = [d for d in good if d.get("aisle") == base.get("aisle")]
+        if not same_aisle and base.get("aisle"):
+            other_aisle, good = good, []  # uit een andere afdeling: pas als laatste (sinaasappels zijn geen pepermunt)
         hits = same_aisle or good
     if hits:
         return hits[0], True
@@ -6520,6 +6523,8 @@ def _compare_hit(st: str, cands: list, by_ean: dict, name: str, base: Optional[d
         hits = [d for d in _best_matches(pool, w, 3) if not base or _same_kind(base, d, strict=False)]
         if hits:
             return hits[0], True
+    if other_aisle and _food_penalty(other_aisle[0], 0, _norm_text(terms).split()) < 4:
+        return other_aisle[0], True
     # 3. Op de naam van het ingrediënt zelf (niet het product), in de hele winkel: "melk" vindt altijd wel melk
     if base and _norm_text(name) != _norm_text(terms):
         hits = [d for d in _best_matches(cands, name, 3) if _same_kind(base, d, strict=False) or d.get("aisle") == base.get("aisle")]
@@ -6947,6 +6952,11 @@ def _doc_price(d: dict) -> float:
     return resolve_price(d.get("prices") or {}, d.get("_src") or DEFAULT_STORE, d.get("unavailable") or [])
 
 
+_PACK_WORDS = {"verpakt", "voorverpakt", "los", "losse", "per", "stuk", "stuks", "zak", "zakje", "net", "netje", "bak", "bakje", "schaal",
+               "doos", "pak", "voordeelverpakking", "voordeel", "voordeelpak", "multipack", "grootverpakking", "fles", "pot", "potje",
+               "blik", "tray", "kilo", "gram", "nieuw", "de", "het", "een", "1", "beste"}
+
+
 def _alt_terms(name: str, base: Optional[dict]) -> str:
     # Merknaam en verpakking eruit: "AH Biologische halfvolle melk 1 l" -> "biologische halfvolle melk"
     n = _norm_text(name)
@@ -6955,7 +6965,8 @@ def _alt_terms(name: str, base: Optional[dict]) -> str:
         if b and n.startswith(b + " "):
             n = n[len(b) + 1:]
     n = re.sub(r"\b\d+([.,]\d+)?\s*(x\s*)?\d*\s*(g|gr|gram|kg|ml|cl|l|liter|stuks?|st)\b", " ", n)
-    words = [w for w in n.split() if len(w) > 1 and not w.isdigit()]
+    # Woorden over de verpakking zeggen niets over wat het is: "handsinaasappelen verpakt" is gewoon handsinaasappelen
+    words = [w for w in n.split() if len(w) > 1 and not w.isdigit() and w not in _PACK_WORDS]
     return " ".join(words[:4])
 
 
