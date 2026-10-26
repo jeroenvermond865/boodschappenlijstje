@@ -15,6 +15,7 @@ import { AISLE_ICONS, formatQty } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { usePremium } from "@/src/premium";
+import { RouteSheet, useRoute } from "@/src/route";
 import { storage } from "@/src/utils/storage";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -63,6 +64,10 @@ export default function ShoppingScreen() {
   });
 
   const multi = data?.multi_store ?? false;
+  const premium = usePremium();
+  const route = useRoute();
+  const onRoute = premium && route.on;
+  const [routeEdit, setRouteEdit] = useState<string | null>(null);
   // Algemeen block first, then each store's totals
   const totalBlocks: { store: string; label: string; grouped: Grouped[]; total?: number }[] = useMemo(() => {
     if (!data) return [];
@@ -71,12 +76,13 @@ export default function ShoppingScreen() {
       out.push({ store: `alg:${b.store}`, label: multi ? `Algemeen · ${b.store}` : "Algemeen", grouped: b.grouped, total: b.total }),
     );
     (data.by_store ?? []).forEach((b) => out.push({ store: b.store, label: b.store, grouped: b.grouped, total: b.total }));
-    return out;
-  }, [data, multi]);
+    // Looproute: afdelingen in de volgorde van de winkel (ook bij delen en printen)
+    return onRoute ? out.map((b) => ({ ...b, grouped: route.sort(b.store, b.grouped) })) : out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, multi, onRoute, route.version]);
   // "Algemeen" staat ook al in de winkeltotalen; het totaal is de som van de winkels
   const grandTotal = (data?.by_store ?? []).reduce((n, b) => n + (b.total ?? 0), 0);
   const promoSaving = (data?.by_store ?? []).reduce((n, b) => n + (b.saving ?? 0), 0);
-  const premium = usePremium();
 
   // Elk product staat één keer in het winkeltotaal; per dag en bij "Algemeen" zijn dat delen ervan.
   // Afvinken houden we op alle plekken gelijk: totaal af = alle delen af, alle delen af = totaal af.
@@ -318,6 +324,23 @@ export default function ShoppingScreen() {
               </Text>
             </Pressable>
           ) : null}
+          {tab === "total" && data?.by_store?.length ? (
+            <View style={styles.routeRow}>
+              <Pressable
+                testID="route-toggle"
+                onPress={() => (premium ? route.setOn(!route.on) : router.push("/premium"))}
+                style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1 }}
+              >
+                <Icon name={onRoute ? "checkbox-marked" : "checkbox-blank-outline"} size={20} color={colors.brandPrimary} />
+                <Text style={styles.pantryLinkText}>Op looproute van de winkel{premium ? "" : " (Premium)"}</Text>
+              </Pressable>
+              {onRoute ? (
+                <Pressable onPress={() => setRouteEdit(data.by_store[0].store)} hitSlop={8}>
+                  <Text style={styles.pantryLinkText}>Aanpassen</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
           {tab === "total" && grandTotal > 0 ? (
             <View style={styles.totalCard}>
               <Text style={styles.totalLabel}>Geschat totaal</Text>
@@ -337,6 +360,11 @@ export default function ShoppingScreen() {
                     <View style={styles.storeHeader}>
                       <Icon name={b.label === "Algemeen" ? "clipboard-list-outline" : "storefront"} size={18} color={colors.brandPrimary} />
                       <Text style={[styles.storeHeaderText, { flex: 1 }]}>{b.label}</Text>
+                      {onRoute && multi && !b.store.startsWith("alg:") ? (
+                        <Pressable onPress={() => setRouteEdit(b.store)} hitSlop={8}>
+                          <Icon name="map-marker-path" size={18} color={colors.brandPrimary} />
+                        </Pressable>
+                      ) : null}
                       {b.total ? <Text style={styles.storeHeaderText}>{euro(b.total)}</Text> : null}
                     </View>
                   ) : null}
@@ -377,6 +405,9 @@ export default function ShoppingScreen() {
               ))}
         </ScrollView>
       )}
+      {routeEdit ? (
+        <RouteSheet store={routeEdit} order={route.order(routeEdit)} onChange={(o) => route.setOrder(routeEdit, o)} onClose={() => setRouteEdit(null)} />
+      ) : null}
 
       <Modal visible={shareOpen} transparent animationType="fade" onRequestClose={() => setShareOpen(false)}>
         <Pressable style={styles.modalBackdrop} onPress={() => setShareOpen(false)}>
@@ -507,6 +538,7 @@ const useStyles = makeStyles((colors) => ({
   totalLabel: { fontSize: 13, fontFamily: fonts.medium, color: colors.muted },
   totalValue: { fontSize: 26, fontFamily: fonts.bold, color: colors.onSurface },
   pantryLink: { flexDirection: "row", alignItems: "center", gap: 6 },
+  routeRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   pantryLinkText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
   savingText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.success, marginTop: 6 },
   totalHint: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },
