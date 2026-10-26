@@ -1491,6 +1491,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     days_all = camp.get("days", [])
     only_days = set(data.days) if data.days else None
     added_online = 0
+    t_start = time.time()
     for cat in cats:
         slots = sum(1 for idx, day in enumerate(days_all)
                     if (only_days is None or day.get("index", idx) in only_days) and (data.overwrite or not (day.get("meals") or {}).get(cat)))
@@ -1498,23 +1499,29 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
         need = min(slots, 10) - have if data.style != "nieuw" else min(slots, 10) - min(have, slots // 2)
         if need <= 0:
             continue
+        if added_online >= MENU_ONLINE_MAX or time.time() - t_start > MENU_ONLINE_SECONDS:
+            break
         try:
             found = await _menu_recipes(cat, prefer, avoid, need * 3)
         except Exception as e:
             logger.warning("Menu aanvullen met recepten: %r", e)
             found = []
         have_rec = {(d.get("source") or {}).get("recipe_id") for d in dishes}
-        picks = [r for r in found if r["id"] not in have_rec][: need * 2]
+        picks = [r for r in found if r["id"] not in have_rec][: need + 3]
 
         async def take(r, cat=cat):
             try:
-                return await _recipe_to_dish(r["id"], cat, user, reuse=True)
+                return await _recipe_to_dish(r["id"], cat, user, reuse=True, light=True)
             except Exception as e:
                 logger.warning("Recept %s overnemen: %r", r.get("id"), e)
                 return None
+        # Eén voor één en met een grens: elk recept koppelen aan producten kost geheugen en tijd (anders loopt de server vol)
         got = 0
-        for d in await asyncio.gather(*(take(r) for r in picks)):
-            if d and d.get("ingredients") and fits(d) and got < need:
+        for r in picks:
+            if got >= need or added_online + got >= MENU_ONLINE_MAX or time.time() - t_start > MENU_ONLINE_SECONDS:
+                break
+            d = await take(r)
+            if d and d.get("ingredients") and fits(d):
                 dishes.append(d)
                 got += 1
         added_online += got
@@ -1603,6 +1610,9 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     updated = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0})
     return {"camp": camp_public(updated), "filled": filled, "promo_dishes": sorted(promo_dishes), "pool": len(dishes), "added_online": added_online}
 
+
+MENU_ONLINE_MAX = 8  # zoveel nieuwe recepten per keer invullen; de rest vult de app met wat er al is (herhalen)
+MENU_ONLINE_SECONDS = 25
 
 _MENU_COURSE = {"ontbijt": "ontbijt", "lunch": "lunch", "avondeten": "hoofdgerecht", "snacks": "borrel"}
 
@@ -5835,10 +5845,12 @@ async def _import_linked_jumbo(rec: dict) -> None:
         logger.warning("Jumbo-receptproducten inladen mislukt: %r", e)
 
 
-async def _recipe_products(rec: dict, user: dict) -> dict:
+async def _recipe_products(rec: dict, user: dict, light: bool = False) -> dict:
     await _global_products()
-    await _import_linked(rec)
-    await _import_linked_jumbo(rec)
+    if not light:
+        # Ontbrekende producten van de winkel inladen; dat ververst daarna de hele productlijst (zwaar), dus niet bij veel recepten tegelijk
+        await _import_linked(rec)
+        await _import_linked_jumbo(rec)
     matches = await _recipe_matches(rec)
     out = _recipe_with_products(rec, user, matches)
     out["is_favorite"] = any(f.get("id") == rec["id"] for f in user.get("recipe_favorites") or [])
@@ -5896,10 +5908,10 @@ class RecipeImport(BaseModel):
 
 
 async def _recipe_to_dish(rid: str, category: str, user: dict, reuse: bool = False, include: Optional[List[int]] = None,
-                          swaps: Optional[Dict[str, str]] = None) -> dict:
+                          swaps: Optional[Dict[str, str]] = None, light: bool = False) -> dict:
     if category not in MEAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="Ongeldige categorie")
-    rec = await _recipe_products(await _recipe_detail(rid), user)
+    rec = await _recipe_products(await _recipe_detail(rid), user, light=light)
     if swaps:
         by_pid = _product_cache.get("by_pid") or {}
         favs = set(user.get("favorite_products") or [])
