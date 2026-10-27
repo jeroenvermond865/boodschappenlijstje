@@ -1559,7 +1559,7 @@ async def create_camp(data: CampCreate, user: dict = Depends(get_current_user)):
 async def get_camp(camp_id: str, user: dict = Depends(get_current_user)):
     doc = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not doc:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     return camp_public(doc)
 
 
@@ -1567,7 +1567,7 @@ async def get_camp(camp_id: str, user: dict = Depends(get_current_user)):
 async def update_camp(camp_id: str, data: CampUpdate, user: dict = Depends(get_current_user)):
     doc = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])})
     if not doc:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     update: dict = {}
     if data.name is not None:
         update["name"] = data.name.strip()
@@ -1641,7 +1641,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
     uid = user["user_id"]
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(uid)}, {"_id": 0})
     if not camp:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     day_cats = {int(k): [c for c in v if c in MEAL_CATEGORIES] for k, v in (data.day_categories or {}).items()}
     base_cats = [c for c in data.categories if c in MEAL_CATEGORIES]
     cats = [c for c in MEAL_CATEGORIES if c in base_cats or any(c in v for v in day_cats.values())]
@@ -1965,7 +1965,7 @@ async def delete_camp(camp_id: str, keep_savings: bool = True, user: dict = Depe
     uid = user["user_id"]
     doc = await db.camps.find_one({"camp_id": camp_id, "deleted_at": None, "$or": [{"owner_id": uid}, {"member_ids": uid}]})
     if not doc:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     if doc.get("owner_id") == uid:
         # Owner removes the whole camp
         # keep_savings: wat al is afgevinkt (gekocht) blijft meetellen in je bespaaroverzicht
@@ -1981,14 +1981,14 @@ async def restore_camp(camp_id: str, user: dict = Depends(get_current_user)):
     uid = user["user_id"]
     doc = await db.camps.find_one({"camp_id": camp_id})
     if not doc:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     if doc.get("owner_id") == uid:
         await db.camps.update_one({"camp_id": camp_id}, {"$set": {"deleted_at": None}})
     elif uid in doc.get("left_ids", []):
         # Member re-joins the camp (undo leave); alleen wie zelf vertrok
         await db.camps.update_one({"camp_id": camp_id}, {"$addToSet": {"member_ids": uid}, "$pull": {"left_ids": uid}})
     else:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     restored = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0})
     return camp_public(restored)
 
@@ -1997,7 +1997,7 @@ async def restore_camp(camp_id: str, user: dict = Depends(get_current_user)):
 async def duplicate_camp(camp_id: str, user: dict = Depends(get_current_user)):
     src = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not src:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     new_id = f"camp_{uuid.uuid4().hex[:12]}"
     doc = {
         "camp_id": new_id,
@@ -2020,7 +2020,7 @@ async def duplicate_camp(camp_id: str, user: dict = Depends(get_current_user)):
 async def get_members(camp_id: str, user: dict = Depends(get_current_user)):
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not camp:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     ids = [camp["owner_id"]] + camp.get("member_ids", [])
     users = await db.users.find({"user_id": {"$in": ids}, "deleted_at": None}, {"_id": 0}).to_list(1000)
     by_id = {u["user_id"]: u for u in users}
@@ -2042,7 +2042,7 @@ async def get_members(camp_id: str, user: dict = Depends(get_current_user)):
 async def add_member(camp_id: str, data: MemberInput, user: dict = Depends(get_current_user)):
     camp = await db.camps.find_one({"camp_id": camp_id, "owner_id": user["user_id"], "deleted_at": None})
     if not camp:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden of je bent geen eigenaar")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden of je bent geen eigenaar")
     email = data.email.lower().strip()
     target = await db.users.find_one({"email": email})
     if target and target.get("deleted_at"):
@@ -2087,7 +2087,7 @@ async def add_member(camp_id: str, data: MemberInput, user: dict = Depends(get_c
 async def remove_member(camp_id: str, member_id: str, user: dict = Depends(get_current_user)):
     camp = await db.camps.find_one({"camp_id": camp_id, "owner_id": user["user_id"], "deleted_at": None})
     if not camp:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden of je bent geen eigenaar")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden of je bent geen eigenaar")
     await db.camps.update_one({"camp_id": camp_id}, {"$pull": {"member_ids": member_id, "left_ids": member_id}})
     return {"ok": True}
 
@@ -2385,13 +2385,13 @@ class ProductSwap(BaseModel):
 async def camp_product_swap(camp_id: str, data: ProductSwap, user: dict = Depends(get_current_user)):
     # Op de boodschappenlijst een ander product kiezen, alleen voor dit kamp
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "product_swaps": 1})
-    if not camp:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
-    if not await db.products.find_one({"product_id": data.to_id, "deleted_at": None}, {"_id": 1}):
-        raise HTTPException(status_code=404, detail="Product niet gevonden")
+    if camp is None:  # een leeg resultaat (veld nog niet gezet) is ook gevonden
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     # Al eens gewisseld? Dan vervangt het nieuwe product het oorspronkelijke
     old = camp.get("product_swaps") or {}
     origin = next((k for k, v in old.items() if v == data.from_id), data.from_id)
+    if data.to_id != origin and not await db.products.find_one({"product_id": data.to_id, "deleted_at": None}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Product niet gevonden")
     if data.to_id == origin:
         # Terug wisselen naar het oorspronkelijke product
         swaps = {k: v for k, v in old.items() if k != origin}
@@ -2414,7 +2414,7 @@ class TipExtra(BaseModel):
 async def camp_tip_extra(camp_id: str, data: TipExtra, user: dict = Depends(get_current_user)):
     # Tip bij een gerecht ("lekker met feta"): het product bij die maaltijd zetten, of weer weghalen
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "days": 1})
-    if not camp:
+    if camp is None:  # een leeg resultaat (veld nog niet gezet) is ook gevonden
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     days = camp.get("days") or []
     day = next((d for d in days if d.get("index") == data.day_index), None)
@@ -2448,8 +2448,8 @@ def _check_hash(k: str) -> str:
 @api_router.get("/camps/{camp_id}/checked")
 async def get_checked(camp_id: str, user: dict = Depends(get_current_user)):
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "checked": 1, "member_ids": 1})
-    if not camp:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+    if camp is None:  # een leeg resultaat (veld nog niet gezet) is ook gevonden
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     items = list((camp.get("checked") or {}).values())
     return {"keys": [x["k"] for x in items],
             "by": {x["k"]: x.get("by") for x in items if x.get("uid") != user["user_id"] and x.get("by")},
@@ -2459,7 +2459,7 @@ async def get_checked(camp_id: str, user: dict = Depends(get_current_user)):
 @api_router.post("/camps/{camp_id}/checked")
 async def set_checked(camp_id: str, data: CheckedInput, user: dict = Depends(get_current_user)):
     if not await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 1}):
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     name = (user.get("name") or "").split(" ")[0] or None
     sets = {f"checked.{_check_hash(k)}": {"k": k[:300], "uid": user["user_id"], "by": name, "at": now_utc()} for k in data.on[:500]}
     unsets = {f"checked.{_check_hash(k)}": "" for k in data.off[:500] if k not in data.on}
@@ -2473,7 +2473,7 @@ async def set_checked(camp_id: str, data: CheckedInput, user: dict = Depends(get
 async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _for_compare: bool = False):
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not camp:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
 
     active = await get_active_stores()
     primary_store = user.get("store", DEFAULT_STORE)
@@ -3152,7 +3152,7 @@ async def camp_restock(camp_id: str, data: RestockInput, user: dict = Depends(ge
     # Wat bijna op is bij de algemene boodschappen van dit lijstje zetten (onthoudt van welk voorraadproduct het komt)
     await require_premium(user)
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "general": 1})
-    if not camp:
+    if camp is None:  # een leeg resultaat (veld nog niet gezet) is ook gevonden
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     rate = _pantry_rate(user)
     by_pid = _product_cache.get("by_pid") or {}
@@ -3356,7 +3356,7 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Je hebt geen rechten voor het budget")
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not camp:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
 
     dish_ids = set()
     for day in camp.get("days", []):
@@ -8006,10 +8006,10 @@ class RecipeToCamp(BaseModel):
 async def recipe_to_camp(data: RecipeToCamp, user: dict = Depends(get_current_user)):
     camp = await db.camps.find_one({"camp_id": data.camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not camp:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     days = camp.get("days") or []
     if not 0 <= data.day_index < len(days):
-        raise HTTPException(status_code=400, detail="Die dag bestaat niet in dit kamp")
+        raise HTTPException(status_code=400, detail="Die dag bestaat niet in dit lijstje")
     dish = await _recipe_to_dish(data.id, data.category, user, reuse=True, include=data.include, swaps=data.swaps)
     if not user.get("no_personal"):
         asyncio.create_task(_track_recipe(user["user_id"], await _recipe_detail(data.id), 3))
@@ -8218,7 +8218,7 @@ async def compare_options(store: str, name: str, product_id: str = "", user: dic
 async def camp_compare_swap(camp_id: str, data: CompareSwap, user: dict = Depends(get_current_user)):
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "camp_id": 1})
     if not camp:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     field = f"compare_swaps.{_ikey(data.store)}.{_ikey(_norm_text(data.name))}"
     if data.product_id:
         if not await db.products.find_one({"product_id": data.product_id, "deleted_at": None}, {"_id": 1}):
@@ -8383,7 +8383,7 @@ async def _camp_compare(c: dict, user: dict) -> tuple:
 async def camp_compare(camp_id: str, user: dict = Depends(get_current_user)):
     c = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not c:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     compare, pending = await _camp_compare(c, user)
     return {"compare": compare, "compare_pending": pending, "shop_store": c.get("shop_store")}
 
@@ -8398,7 +8398,7 @@ async def camp_shop_store(camp_id: str, data: ShopStoreInput, user: dict = Depen
     # "Alles bij deze winkel": de boodschappenlijst zet alles op die winkel, met de producten uit de vergelijking
     c = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not c:
-        raise HTTPException(status_code=404, detail="Kamp niet gevonden")
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     split = [x for x in dict.fromkeys(data.split) if x in COMPARE_STORES]
     if len(split) >= 2 and not user.get("premium"):
         raise HTTPException(status_code=403, detail="Slim splitsen over winkels is een Premium-functie")

@@ -13,7 +13,7 @@ import { fonts, makeStyles, useTheme } from "@/src/theme";
 type Kind = "user" | "camp" | "dish" | "product";
 type TrashItem = { kind: Kind; id: string; name: string; extra?: string; deleted_at?: string; days_left: number };
 
-const KIND_LABEL: Record<Kind, string> = { user: "Gebruiker", camp: "Kamp", dish: "Gerecht", product: "Product" };
+const KIND_LABEL: Record<Kind, string> = { user: "Gebruiker", camp: "Lijstje", dish: "Gerecht", product: "Product" };
 const KIND_ICON: Record<Kind, any> = {
   user: "account-outline",
   camp: "clipboard-list-outline",
