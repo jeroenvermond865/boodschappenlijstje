@@ -5,6 +5,14 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-h",
+    date: "27 oktober 2026",
+    title: "Weer snel",
+    changes: [
+      { kind: "opgelost", text: "Na de vorige update was de app soms erg traag, omdat de AI bij veel recepten tegelijk producten zocht. Dat gebeurt nu rustig op de achtergrond, één voor één, en je hoeft er nooit meer op te wachten." },
+    ],
+  },
+  {
     id: "2026-10-27-g",
     date: "27 oktober 2026",
     title: "Je geschiedenis wissen, en elke nacht een back-up",

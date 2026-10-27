@@ -6869,11 +6869,35 @@ async def _recipe_matches(rec: dict) -> dict:
     missing = [i["name"] for i in rec["ingredients"] if not (i.get("product") and (i["product"]["store"], i["product"]["sid"]) in by_sid)]
     store = STORE_LABELS[rec["store"]]
     found = await asyncio.to_thread(_store_matches, missing, docs, store) if missing else {}
-    try:
-        found.update(await asyncio.wait_for(_ai_pick_products(missing, store, docs), 25))
-    except Exception as e:
-        logger.info("AI-keuze recept %s: %r", rec.get("id"), e)
+    # Wat de AI eerder al koos staat in de database: dat meteen gebruiken. Nieuwe keuzes op de achtergrond, één tegelijk,
+    # zodat een recept of de startpagina nooit op de AI hoeft te wachten (en de server niet vastloopt op veel recepten tegelijk)
+    if missing and os.environ.get("ANTHROPIC_API_KEY"):
+        keys = {n: f"{store}|{_norm_text(n)}" for n in missing}
+        by_pid = _product_cache.get("by_pid") or {}
+        async for d in db.ai_picks.find({"key": {"$in": list(keys.values())}}, {"_id": 0, "key": 1, "pid": 1}):
+            for n, k in keys.items():
+                if k == d["key"] and d.get("pid") in by_pid:
+                    found[n] = by_pid[d["pid"]]
+        todo = [n for n, k in keys.items() if k not in _ai_pick_tried]
+        if todo:
+            _ai_pick_tried.update(keys[n] for n in todo)
+            asyncio.create_task(_ai_pick_later(rec["id"], todo[:10], store))
     return _rc_set(("match", rec["id"]), found)
+
+
+_ai_pick_tried: set = set()  # al eens aan de AI gevraagd sinds de start (gelukt of niet): niet steeds opnieuw
+_ai_pick_lock = asyncio.Lock()
+
+
+async def _ai_pick_later(rid: str, names: list, store: str) -> None:
+    async with _ai_pick_lock:
+        try:
+            docs = await _global_products()
+            picked = await asyncio.wait_for(_ai_pick_products(names, store, docs), 60)
+            if picked:
+                _recipe_cache.pop(("match", rid), None)  # de volgende keer met de keuze van de AI
+        except Exception as e:
+            logger.info("AI-keuze recept %s: %r", rid, e)
 
 
 async def _cost_run(todo: list) -> None:
