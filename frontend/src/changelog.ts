@@ -10,7 +10,7 @@ export const CHANGELOG: Release[] = [
     title: "Sneller en stabieler",
     changes: [
       { kind: "opgelost", text: "De server liep soms vast doordat het geheugen vol raakte bij het bijwerken van prijzen. Dat gebeurt nu veel zuiniger, zodat de app niet meer even wegvalt." },
-      { kind: "beter", text: "Na een update is de app sneller klaar: de productlijst wordt als eerste geladen en onderhoud gebeurt daarna op de achtergrond." },
+      { kind: "beter", text: "Na een update is de app sneller klaar: eerst de productlijst, dan de acties en recepten voor de startpagina; onderhoud gebeurt daarna op de achtergrond." },
       { kind: "beter", text: "Lijstjes, gerechten en producten worden sneller gevonden in de database." },
     ],
   },

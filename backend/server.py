@@ -8683,6 +8683,26 @@ async def shopping_pdf(data: ShoppingPdf, user: dict = Depends(get_current_user)
                     headers={"Content-Disposition": f'inline; filename="Boodschappenlijst-{name}.pdf"', "Cache-Control": "no-store"})
 
 
+async def _refresh_inspiration() -> None:
+    if "inspiration" in _compare_running:
+        return
+    _compare_running.add("inspiration")
+    try:
+        p, r = await _home_inspiration()
+        if p or r:
+            _home_cache["inspiration"] = (time.time(), (p, r))
+    except Exception as e:
+        logger.warning("Inspiratie: %r", e)
+    finally:
+        _compare_running.discard("inspiration")
+
+
+async def _warm_home() -> None:
+    # Na opstarten de acties en recepten voor de startpagina alvast klaarzetten (daar begint iedereen)
+    await _global_products()
+    await _refresh_inspiration()
+
+
 @api_router.get("/home")
 async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
     # shuffle: verversen (omlaag trekken) geeft andere recepten en acties die bij je passen; anders blijft het een uur hetzelfde
@@ -8758,18 +8778,7 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
     if not hit or time.time() - hit[0] > 600:
         # Folders en recepten ophalen kan even duren: op de achtergrond, zodat de startpagina meteen verschijnt
         if "inspiration" not in _compare_running:
-            _compare_running.add("inspiration")
-
-            async def run_insp():
-                try:
-                    p, r = await _home_inspiration()
-                    if p or r:
-                        _home_cache["inspiration"] = (time.time(), (p, r))
-                except Exception as e:
-                    logger.warning("Inspiratie: %r", e)
-                finally:
-                    _compare_running.discard("inspiration")
-            asyncio.create_task(run_insp())
+            asyncio.create_task(_refresh_inspiration())
         compare_pending = compare_pending or not hit
     todo = {}
     if "review_submissions" in perms:
@@ -11318,6 +11327,7 @@ STARTER_PRODUCTS = [
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(_global_products())  # productlijst meteen laden: de rest van het opstarten heeft hem niet nodig
+    asyncio.create_task(_warm_home())  # daarna de startpagina (acties en recepten) klaarzetten
     try:
         await _init_storage()
         logger.info("Object storage initialised")
