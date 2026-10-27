@@ -1,0 +1,146 @@
+"""Snelle tests voor de belangrijkste dingen. Draaien met: cd backend && python -m pytest -q
+Ze gebruiken een nep-database in het geheugen (mongomock), dus er gaat niets naar de echte database of winkels."""
+import asyncio
+import io
+import json
+import os
+import sys
+import zipfile
+
+import pytest
+
+os.environ.setdefault("MONGO_URL", "mongodb://localhost:1")
+os.environ.setdefault("DB_NAME", "test")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import server as S  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
+from mongomock_motor import AsyncMongoMockClient  # noqa: E402
+
+_CACHE0 = dict(S._product_cache)
+U1 = {"user_id": "u1", "role": "standaard"}
+U2 = {"user_id": "u2", "role": "standaard"}
+
+
+@pytest.fixture(autouse=True)
+def nepdb():
+    S.db = AsyncMongoMockClient()["test"]
+    S._product_cache.clear()
+    S._product_cache.update(_CACHE0)
+    S._alert.update({"errors": [], "sent_at": 0.0})
+    yield S.db
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+async def _camp(**extra):
+    await S.db.camps.insert_one({"camp_id": "c1", "owner_id": "u1", "deleted_at": None, "days": [{"index": 0, "meals": {}}], **extra})
+    await S.db.products.insert_many([{"product_id": p, "name": n, "deleted_at": None} for p, n in (("p1", "Vega gyros"), ("p2", "Gyros"))])
+
+
+# --- Wisselen in een lijstje ---
+def test_wisselen_zonder_eerdere_wissels():
+    # Fout van 27-10: een lijstje zonder product_swaps gaf "niet gevonden"
+    async def t():
+        await _camp()
+        await S.camp_product_swap("c1", S.ProductSwap(from_id="p1", to_id="p2"), U1)
+        return (await S.db.camps.find_one({"camp_id": "c1"}))["product_swaps"]
+    assert run(t()) == {"p1": "p2"}
+
+
+def test_terug_wisselen():
+    async def t():
+        await _camp(product_swaps={"p1": "p2"})
+        await S.camp_product_swap("c1", S.ProductSwap(from_id="p2", to_id="p1"), U1)
+        return (await S.db.camps.find_one({"camp_id": "c1"}))["product_swaps"]
+    assert run(t()) == {}
+
+
+def test_lijstje_van_een_ander_niet_te_wijzigen():
+    async def t():
+        await _camp()
+        await S.camp_product_swap("c1", S.ProductSwap(from_id="p1", to_id="p2"), U2)
+    with pytest.raises(HTTPException) as e:
+        run(t())
+    assert e.value.status_code == 404 and "Lijstje" in e.value.detail
+
+
+def test_lid_mag_wel_wisselen():
+    async def t():
+        await _camp(member_ids=["u2"])
+        await S.camp_product_swap("c1", S.ProductSwap(from_id="p1", to_id="p2"), U2)
+        return (await S.db.camps.find_one({"camp_id": "c1"}))["product_swaps"]
+    assert run(t()) == {"p1": "p2"}
+
+
+# --- Tips bij gerechten ---
+def test_tip_product_toevoegen_en_weghalen():
+    async def t():
+        await _camp()
+        S._product_cache["by_pid"] = {"p2": {"product_id": "p2", "name": "Feta", "aisle": "Zuivel & kaas", "_src": "Dirk"}}
+        await S.camp_tip_extra("c1", S.TipExtra(product_id="p2", day_index=0, meal="avondeten"), U1)
+        na_toevoegen = (await S.db.camps.find_one({"camp_id": "c1"}))["days"][0]["extras"]
+        await S.camp_tip_extra("c1", S.TipExtra(product_id="p2", day_index=0, meal="avondeten", on=False), U1)
+        na_weghalen = (await S.db.camps.find_one({"camp_id": "c1"}))["days"][0]["extras"]
+        return na_toevoegen, na_weghalen
+    erbij, weg = run(t())
+    assert [x["product_id"] for x in erbij] == ["p2"] and erbij[0]["meal"] == "avondeten"
+    assert weg == []
+
+
+@pytest.mark.parametrize("zin,verwacht", [
+    ("Lekker met wat extra feta en verse munt.", ["feta", "munt"]),
+    ("Serveer met naanbrood of rijst.", ["naanbrood", "rijst"]),
+    ("Voeg eventueel nog een handje cashewnoten toe.", ["cashewnoten"]),
+    ("Voeg de ui toe en bak 5 minuten.", []),
+])
+def test_tips_herkennen(zin, verwacht):
+    gevonden = [n for r in S._TIP_ADD_RES for m in r.finditer(zin) for n in S._tip_names(m.group("x"))]
+    assert gevonden == verwacht
+
+
+def test_tip_ook_gebruiken():
+    m = S._TIP_ALT_RE.search("Je kunt ook spinazie gebruiken in plaats van andijvie.")
+    assert m and S._tip_names(m.group("x")) == ["spinazie"]
+
+
+def test_vega_vlees_wordt_niet_geleerd():
+    assert S._diet_differs({"name": "Go Vega Shoarma"}, {"name": "Vleesmeesters Shoarma"})
+    assert not S._diet_differs({"name": "Halfvolle melk 1L"}, {"name": "Halfvolle melk 1,5L"})
+
+
+# --- Back-up ---
+def test_backup_bevat_eigen_gegevens_zonder_geheimen():
+    async def t():
+        await S.db.users.insert_one({"user_id": "u1", "email": "a@b.nl"})
+        await S.db.user_sessions.insert_one({"session_token": "geheim"})
+        await S.db.products.insert_many([{"product_id": "g", "is_global": True}, {"product_id": "eigen", "is_global": False}])
+        await S.db.price_history.insert_one({"product_id": "g", "points": []})
+        return await S._backup_zip(history=False)
+    data, counts = run(t())
+    z = zipfile.ZipFile(io.BytesIO(data))
+    names = set(z.namelist())
+    assert "users.jsonl" in names and "info.json" in names
+    assert "user_sessions.jsonl" not in names and "price_history.jsonl" not in names
+    assert counts["products"] == 1 and "eigen" in z.read("products.jsonl").decode()
+    assert json.loads(z.read("info.json"))["aantallen"]["users"] == 1
+
+
+def test_backup_terugzetten_leest_zip(tmp_path):
+    import backup_restore
+
+    async def t():
+        await S.db.camps.insert_one({"camp_id": "c1", "name": "Weekend"})
+        return await S._backup_zip()
+    data, _ = run(t())
+    f = tmp_path / "b.zip"
+    f.write_bytes(data)
+    assert backup_restore.restore(str(f), really=False)["camps"] == 1
+
+
+# --- Foutmelding ---
+def test_foutmelding_pas_na_veel_fouten_en_niet_te_vaak():
+    uitkomst = [S._note_error("GET /api/x: 500") for _ in range(S.ALERT_MIN * 2)]
+    assert uitkomst.count(True) == 1 and uitkomst.index(True) == S.ALERT_MIN - 1

@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Field, Icon } from "@/src/components/ui";
 import { ImageUploadField } from "@/src/components/ImageUploadField";
-import { api } from "@/src/api";
+import { api, apiBlob } from "@/src/api";
 import { singularOf } from "@/src/settings";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
@@ -124,7 +124,63 @@ export default function AppSettingsScreen() {
         <Text style={styles.hint}>De naam én de ondertitel bovenaan elk tabblad passen zich hierop aan.</Text>
 
         <Button label="Opslaan" onPress={() => save.mutate()} loading={save.isPending} testID="settings-save" />
+        <BackupCard />
       </KeyboardAwareScrollView>
+    </View>
+  );
+}
+
+type BackupStatus = { at: string | null; ok: boolean | null; size: number | null; error: string | null; to: string };
+
+// Back-up: elke nacht gaat er een naar je mail; hier zie je de laatste, en mail of download je er zelf een
+function BackupCard() {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const status = useQuery({ queryKey: ["backup-status"], queryFn: () => api<BackupStatus>("/admin/backup/status") });
+  const mail = useMutation({
+    mutationFn: () => api<BackupStatus>("/admin/backup/mail", { method: "POST" }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["backup-status"] });
+      toast.show(r.ok ? `Back-up gemaild naar ${r.to}` : r.error ?? "Mailen lukte niet", r.ok ? "success" : "error");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mailen lukte niet", "error"),
+  });
+  const download = async () => {
+    if (Platform.OS !== "web") return toast.show("Downloaden kan op de website", "error");
+    setBusy(true);
+    try {
+      const blob = await apiBlob("/admin/backup?history=true");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `backup-${new Date().toISOString().slice(0, 10)}.zip`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } catch (e: any) {
+      toast.show(e?.message ?? "Downloaden lukte niet", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const s = status.data;
+  return (
+    <View style={{ gap: 10, marginTop: 12 }}>
+      <Text style={styles.group}>Back-up</Text>
+      <Text style={[styles.hint, { marginTop: 0 }]}>
+        Elke nacht gaat er een back-up van alle gegevens (gebruikers, lijstjes, gerechten, voorraad) naar {s?.to ?? "je mail"}.
+        Winkelproducten zitten er niet in, die haalt de app zelf weer op.
+      </Text>
+      {s ? (
+        <Text style={[styles.hint, { marginTop: 0, color: s.at && s.ok === false ? colors.error : undefined }]}>
+          {s.at
+            ? `Laatste: ${new Date(s.at).toLocaleString("nl-NL", { dateStyle: "medium", timeStyle: "short" })}${s.size ? `, ${Math.max(1, Math.round(s.size / 1024))} kB` : ""}${s.ok ? ", gemaild" : s.error ? `. ${s.error}` : ""}`
+            : "Nog geen back-up gemaakt."}
+        </Text>
+      ) : null}
+      <Button label="Nu een back-up mailen" icon="email-outline" variant="secondary" onPress={() => mail.mutate()} loading={mail.isPending} testID="backup-mail" />
+      <Button label="Back-up downloaden" sub="met prijsgeschiedenis" icon="download" variant="secondary" onPress={download} loading={busy} testID="backup-download" />
     </View>
   );
 }

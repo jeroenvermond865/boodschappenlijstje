@@ -1,0 +1,4 @@
+# Alleen voor de controle (tests), niet nodig op de server
+pytest==9.1.1
+mongomock-motor==0.0.36
+pyflakes==4.0.3

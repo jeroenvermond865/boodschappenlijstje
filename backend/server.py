@@ -307,7 +307,7 @@ async def gmail_sender() -> Optional[dict]:
     return await db.settings.find_one({"key": "gmail_sender"})
 
 
-async def _send_gmail(sender: dict, to: str, subject: str, html: str) -> Optional[str]:
+async def _send_gmail(sender: dict, to: str, subject: str, html: str, attachments: Optional[list] = None) -> Optional[str]:
     msg = EmailMessage()
     msg["From"] = formataddr((EMAIL_FROM_NAME, sender["email"]))
     msg["To"] = to
@@ -315,6 +315,9 @@ async def _send_gmail(sender: dict, to: str, subject: str, html: str) -> Optiona
     msg["Message-ID"] = make_msgid()
     msg.set_content("Open deze e-mail in een programma dat HTML kan tonen.")
     msg.add_alternative(html, subtype="html")
+    for name, data, mime in attachments or []:
+        main, sub = mime.split("/", 1)
+        msg.add_attachment(data, maintype=main, subtype=sub, filename=name)
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     async with httpx.AsyncClient(timeout=30) as c:
         tok = await c.post("https://oauth2.googleapis.com/token", data={
@@ -333,7 +336,8 @@ async def _send_gmail(sender: dict, to: str, subject: str, html: str) -> Optiona
         return resp.json().get("id")
 
 
-async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool = True) -> Optional[str]:
+async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool = True, attachments: Optional[list] = None) -> Optional[str]:
+    # attachments: [(bestandsnaam, bytes, "type/subtype")]
     sender = await gmail_sender()
     if not sender and not RESEND_API_KEY and not EMAIL_KEY:
         logger.warning("Geen e-maildienst ingesteld (Gmail koppelen of RESEND_API_KEY); e-mail overgeslagen")
@@ -352,7 +356,7 @@ async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool =
     _assert_safe_email(subject, html)
     if sender:
         try:
-            return await _send_gmail(sender, to, subject, html)
+            return await _send_gmail(sender, to, subject, html, attachments)
         except Exception as e:
             logger.error("Email send error: %s", e)
             return None
@@ -362,7 +366,8 @@ async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool =
                 resp = await c.post(
                     "https://api.resend.com/emails",
                     headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
-                    json={"from": f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>", "to": [to], "subject": subject, "html": html},
+                    json={"from": f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>", "to": [to], "subject": subject, "html": html,
+                          **({"attachments": [{"filename": n, "content": base64.b64encode(d).decode()} for n, d, _ in attachments]} if attachments else {})},
                 )
             else:
                 resp = await c.post(
@@ -893,8 +898,8 @@ async def _cleanup_inactive_users() -> None:
             f'<p><b>Wil je je account houden?</b> Log dan voor die tijd één keer in'
             + (f' op <a href="{escape(base)}" style="color:#2E5E38">{escape(base.replace("https://", ""))}</a>' if base else "")
             + '. Meer hoef je niet te doen.</p>'
-            f'<p>Wil je het niet meer gebruiken? Dan hoef je niets te doen.</p>'
-            f'<p style="font-size:12px;color:#888">Verstuurd door Slim Boodschappenlijstje.</p>'
+            '<p>Wil je het niet meer gebruiken? Dan hoef je niets te doen.</p>'
+            '<p style="font-size:12px;color:#888">Verstuurd door Slim Boodschappenlijstje.</p>'
             '</td></tr></table>'
         )
         # Alleen als de mail echt weg is, gaat de termijn lopen: zonder waarschuwing verwijderen we niets
@@ -11074,6 +11079,151 @@ async def import_shared_dish(token: str, user: dict = Depends(get_current_user))
     return dish_public(new_doc)
 
 
+# ---------------------------------------------------------------------------
+# Back-up: elke nacht je eigen gegevens naar de beheerder mailen; een beheerder kan er ook zelf een downloaden
+# ---------------------------------------------------------------------------
+# Niet nodig of geheim: inlogsessies en -codes, en wat de app zelf opnieuw uitrekent of ophaalt
+BACKUP_SKIP = {"user_sessions", "google_logins", "password_resets", "dirk_ai", "recipe_cost", "dish_preps", "ai_picks",
+               "auto_alert_marks", "recipe_diet"}
+BACKUP_MAIL_MAX = 18 * 1024 * 1024  # groter past niet in een mail
+
+
+def _backup_to() -> str:
+    return (os.environ.get("BACKUP_EMAIL") or ADMIN_SEED_EMAILS[0]).strip()
+
+
+async def _backup_zip(history: bool = True, files: bool = False) -> tuple:
+    # Eén zip met per collectie een .jsonl-bestand. Winkelproducten niet (die haalt de app zelf weer op), eigen producten wel.
+    import io
+    import zipfile
+    from bson import json_util
+    buf = io.BytesIO()
+    counts: Dict[str, int] = {}
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in sorted(await db.list_collection_names()):
+            if (name.startswith("system.") or name in BACKUP_SKIP or (name.startswith("uploads.") and not files)
+                    or (name == "price_history" and not history)):
+                continue
+            query = {"is_global": {"$ne": True}} if name == "products" else {}
+            lines = [json_util.dumps(d) async for d in db[name].find(query)]
+            counts[name] = len(lines)
+            z.writestr(f"{name}.jsonl", "\n".join(lines))
+        z.writestr("info.json", json.dumps({
+            "gemaakt": now_utc().isoformat(), "aantallen": counts, "prijsgeschiedenis": history, "foto's": files,
+            "uitleg": "Terugzetten met backend/backup_restore.py. Winkelproducten zitten er niet in: die haalt de app zelf weer op."},
+            indent=2, ensure_ascii=False))
+    return buf.getvalue(), counts
+
+
+async def _backup_mail(reason: str = "nacht") -> dict:
+    data, counts = await _backup_zip(history=False, files=False)
+    day = now_utc().strftime("%Y-%m-%d")
+    status = {"at": now_utc(), "size": len(data), "reason": reason, "ok": False, "error": None}
+    if len(data) > BACKUP_MAIL_MAX:
+        status["error"] = f"Te groot om te mailen ({len(data) // 1048576} MB); download hem bij Beheer"
+    else:
+        rows = "".join(f"<li>{escape(k)}: {v}</li>" for k, v in counts.items() if v)
+        mid = await send_email(_backup_to(), f"Back-up Slim Boodschappenlijstje {day}",
+                               f"<p>De back-up van {day} zit in de bijlage ({max(1, len(data) // 1024)} kB).</p>"
+                               f"<p>Bewaar deze mail. Wat erin zit:</p><ul>{rows}</ul>",
+                               allow_unsubscribe=False, attachments=[(f"backup-{day}.zip", data, "application/zip")])
+        status["ok"] = bool(mid)
+        if not mid:
+            status["error"] = "Mail versturen lukte niet (is Gmail gekoppeld bij Beheer?)"
+    await db.meta.update_one({"key": "backup"}, {"$set": {"key": "backup", **status}}, upsert=True)
+    logger.info("Back-up (%s): %d kB, gemaild: %s", reason, len(data) // 1024, status["ok"])
+    return status
+
+
+@api_router.get("/admin/backup")
+async def admin_backup_download(history: bool = True, files: bool = False, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_settings")
+    data, _ = await _backup_zip(history=history, files=files)
+    day = now_utc().strftime("%Y-%m-%d")
+    return Response(data, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="backup-{day}.zip"'})
+
+
+@api_router.post("/admin/backup/mail")
+async def admin_backup_mail(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_settings")
+    limit(f"backup-mail:{user['user_id']}", 5, 3600)
+    st = await _backup_mail("handmatig")
+    return {**st, "at": st["at"].isoformat(), "to": _backup_to()}
+
+
+@api_router.get("/admin/backup/status")
+async def admin_backup_status(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_settings")
+    doc = await db.meta.find_one({"key": "backup"}, {"_id": 0}) or {}
+    at = doc.get("at")
+    return {"at": ensure_aware(at).isoformat() if at else None, "ok": doc.get("ok"), "size": doc.get("size"),
+            "error": doc.get("error"), "to": _backup_to()}
+
+
+# ---------------------------------------------------------------------------
+# Foutmelding: veel fouten in korte tijd? Dan krijgt de beheerder een mail (hoogstens één per uur)
+# ---------------------------------------------------------------------------
+ALERT_WINDOW = 600  # seconden
+ALERT_MIN = 10  # zoveel fouten binnen het venster
+ALERT_PAUSE = 3600
+_alert: dict = {"errors": [], "sent_at": 0.0}
+
+
+def _note_error(what: str) -> bool:
+    # Onthoudt een fout; True als er nu een mail weg moet
+    now = time.time()
+    errs = [e for e in _alert["errors"] if now - e[0] < ALERT_WINDOW] + [(now, what[:200])]
+    _alert["errors"] = errs[-50:]
+    if len(errs) >= ALERT_MIN and now - _alert["sent_at"] > ALERT_PAUSE:
+        _alert["sent_at"] = now
+        return True
+    return False
+
+
+async def _send_alert() -> None:
+    errs = list(_alert["errors"])
+    counts: Dict[str, int] = {}
+    for _, w in errs:
+        counts[w] = counts.get(w, 0) + 1
+    rows = "".join(f"<li>{escape(w)} <b>({n}x)</b></li>" for w, n in sorted(counts.items(), key=lambda kv: -kv[1])[:15])
+    try:
+        await send_email(_backup_to(), f"Let op: {len(errs)} fouten in de app",
+                         f"<p>De app had de afgelopen {ALERT_WINDOW // 60} minuten {len(errs)} fouten. De meest voorkomende:</p><ul>{rows}</ul>"
+                         "<p>Kijk in de logs bij Render voor meer. Je krijgt hoogstens één zo'n mail per uur.</p>", allow_unsubscribe=False)
+    except Exception as e:
+        logger.warning("Foutmelding mailen mislukt: %r", e)
+
+
+def _alert_now(what: str) -> None:
+    if _note_error(what):
+        try:
+            asyncio.get_running_loop().create_task(_send_alert())
+        except RuntimeError:
+            pass
+
+
+class _AlertLogHandler(logging.Handler):
+    # Fouten die alleen in de logs komen (bijv. in achtergrondtaken) tellen ook mee
+    def emit(self, record):
+        if record.levelno >= logging.ERROR and not record.name.startswith("httpx"):
+            _alert_now(f"log: {record.getMessage()[:150]}")
+
+
+logging.getLogger().addHandler(_AlertLogHandler())
+
+
+@app.middleware("http")
+async def error_alert(request, call_next):
+    try:
+        response = await call_next(request)
+    except Exception as e:
+        _alert_now(f"{request.method} {request.url.path}: {type(e).__name__}")
+        raise
+    if response.status_code >= 500 and response.status_code not in (502, 503):
+        _alert_now(f"{request.method} {request.url.path}: {response.status_code}")
+    return response
+
+
 app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
@@ -11665,6 +11815,12 @@ async def _daily_refresh_loop():
                     await _import_barcodes("all")
         except Exception as e:
             logger.warning("Wekelijkse barcodes: %r", e)
+        try:
+            doc = await db.meta.find_one({"key": "backup"}) or {}
+            if not doc.get("at") or ensure_aware(doc["at"]) < now_utc() - timedelta(hours=22):
+                await _backup_mail()
+        except Exception as e:
+            logger.warning("Back-up mislukt: %r", e)
         try:
             doc = await db.meta.find_one({"key": "inactive_check"}) or {}
             if not doc.get("at") or ensure_aware(doc["at"]) < now_utc() - timedelta(hours=22):

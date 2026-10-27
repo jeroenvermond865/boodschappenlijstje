@@ -1,0 +1,36 @@
+# Controle bij elke push: server (pyflakes + tests) en app (esbuild leest alle schermen).
+# Tip: zet in Render bij Auto-Deploy "After CI Checks Pass", dan gaat een update pas online als dit groen is.
+name: Controle
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+      - run: pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+      - name: Pyflakes
+        run: python -m pyflakes backend
+      - name: Tests
+        working-directory: backend
+        run: python -m pytest -q
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Esbuild
+        run: npx --yes esbuild@0.24.0 $(git ls-files frontend/app frontend/src | grep -E '\.tsx?$') --outdir=/tmp/esbuild --log-level=error
