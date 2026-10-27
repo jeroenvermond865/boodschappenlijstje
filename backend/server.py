@@ -57,7 +57,10 @@ FRONTEND_URL = os.environ.get("FRONTEND_URL", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "onboarding@resend.dev")
 
-ADMIN_SEED_EMAILS = ["jeroenvermond865@gmail.com"]
+# Zakelijke adressen: beheer@ krijgt de back-ups, foutmeldingen en aanvragen; antwoorden van gebruikers gaan naar info@
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "beheer@slimboodschappenlijstje.nl").strip()
+INFO_EMAIL = os.environ.get("INFO_EMAIL", "info@slimboodschappenlijstje.nl").strip()
+ADMIN_SEED_EMAILS = ["jeroenvermond865@gmail.com", ADMIN_EMAIL.lower()]
 DEFAULT_ROLE = "gebruiker"
 ALL_PERMISSIONS = ["manage_standard_dishes", "review_submissions", "manage_users", "manage_roles", "view_budget", "manage_budget", "manage_settings", "manage_products"]
 # Drie rollen: de beheerder (alles), medebeheerders (alles behalve rollen aanpassen) en standaard gebruikers.
@@ -312,6 +315,8 @@ async def _send_gmail(sender: dict, to: str, subject: str, html: str, attachment
     msg["From"] = formataddr((EMAIL_FROM_NAME, sender["email"]))
     msg["To"] = to
     msg["Subject"] = subject
+    if INFO_EMAIL and INFO_EMAIL.lower() != sender["email"].lower():
+        msg["Reply-To"] = INFO_EMAIL
     msg["Message-ID"] = make_msgid()
     msg.set_content("Open deze e-mail in een programma dat HTML kan tonen.")
     msg.add_alternative(html, subtype="html")
@@ -367,6 +372,7 @@ async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool =
                     "https://api.resend.com/emails",
                     headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
                     json={"from": f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>", "to": [to], "subject": subject, "html": html,
+                          **({"reply_to": INFO_EMAIL} if INFO_EMAIL else {}),
                           **({"attachments": [{"filename": n, "content": base64.b64encode(d).decode()} for n, d, _ in attachments]} if attachments else {})},
                 )
             else:
@@ -3812,8 +3818,7 @@ async def request_premium(data: PremiumRequestInput, user: dict = Depends(get_cu
         + (f'<p><a href="{escape(base)}/admin/premium-requests">Bekijk de aanvragen</a></p>' if base else "")
         + '</div>'
     )
-    async for admin in db.users.find({"role": "beheerder", "deleted_at": None, "email": {"$ne": None}}, {"email": 1}):
-        asyncio.create_task(send_email(admin["email"], f"Premium-aanvraag: {org}", html, allow_unsubscribe=False))
+    asyncio.create_task(send_email(ADMIN_EMAIL, f"Premium-aanvraag: {org}", html, allow_unsubscribe=False))
     return {"request": _premium_request_public(doc)}
 
 
@@ -11176,7 +11181,7 @@ BACKUP_MAIL_MAX = 18 * 1024 * 1024  # groter past niet in een mail
 
 
 def _backup_to() -> str:
-    return (os.environ.get("BACKUP_EMAIL") or ADMIN_SEED_EMAILS[0]).strip()
+    return (os.environ.get("BACKUP_EMAIL") or ADMIN_EMAIL).strip()
 
 
 async def _backup_zip(history: bool = True, files: bool = False) -> tuple:

@@ -19,3 +19,9 @@ services:
         sync: false
       - key: EMAIL_FROM_NAME
         value: Slim Boodschappenlijstje
+      - key: GMAIL_SENDER
+        value: beheer@slimboodschappenlijstje.nl
+      - key: ADMIN_EMAIL
+        value: beheer@slimboodschappenlijstje.nl
+      - key: INFO_EMAIL
+        value: info@slimboodschappenlijstje.nl

@@ -18,6 +18,9 @@ De app draait als één website. De server (FastAPI) levert zowel de API (`/api/
 | `FRONTEND_URL` | het adres van de site, bijv. `https://boodschappenlijstje.onrender.com` |
 | `RESEND_API_KEY` | optioneel, voor e-mail |
 | `EMAIL_FROM_ADDRESS` | optioneel, afzender bij Resend (eigen domein nodig) |
+| `GMAIL_SENDER` | het Google-account dat de mails verstuurt: `beheer@slimboodschappenlijstje.nl`. Daarna eenmalig koppelen via `/api/email/gmail/connect` |
+| `ADMIN_EMAIL` | krijgt back-ups, foutmeldingen en Premium-aanvragen (standaard `beheer@slimboodschappenlijstje.nl`) |
+| `INFO_EMAIL` | antwoorden van gebruikers op een mail gaan hierheen (standaard `info@slimboodschappenlijstje.nl`) |
 
 ## Bestaande gegevens meenemen (optioneel)
 
