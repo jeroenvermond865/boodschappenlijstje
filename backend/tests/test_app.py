@@ -205,3 +205,22 @@ def test_grote_groepen_filter_eruit():
     rest, groep = S._take_group_filter(json.dumps({"groep": ["Voor grote groepen"], "gang": ["soep"]}))
     assert groep and json.loads(rest) == {"gang": ["soep"]}
     assert S._take_group_filter('{"gang": ["soep"]}') == ('{"gang": ["soep"]}', False)
+
+
+def test_herroepen_bewaart_en_bevestigt(monkeypatch):
+    # Herroepknop: opgeslagen (2 jaar), en een bevestiging naar de gebruiker plus een melding aan ons
+    sent = []
+
+    async def fake_mail(to, subject, html, **kw):
+        sent.append((to, subject))
+        return "id"
+
+    monkeypatch.setattr(S, "send_email", fake_mail)
+    req = type("R", (), {"headers": {}, "client": type("C", (), {"host": "1.2.3.4"})()})()
+    r = run(S.legal_withdraw(S.WithdrawInput(name="Test Persoon", email="Test@Voorbeeld.nl"), req, None))
+    assert r["ok"]
+    doc = run(S.db.withdrawals.find_one({"withdrawal_id": r["id"]}))
+    assert doc["email"] == "test@voorbeeld.nl" and doc["expires_at"] > doc["created_at"]
+    assert [t for t, _ in sent] == ["test@voorbeeld.nl", S.INFO_EMAIL]
+    with pytest.raises(HTTPException):
+        run(S.legal_withdraw(S.WithdrawInput(name="X", email="geen-mail"), req, None))

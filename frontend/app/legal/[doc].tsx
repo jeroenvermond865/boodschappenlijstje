@@ -5,12 +5,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Icon } from "@/src/components/ui";
 import { LEGAL, LEGAL_DOCS, type LegalDoc } from "@/src/legal";
 import { goBack } from "@/src/nav";
+import { WithdrawForm } from "@/src/WithdrawForm";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 const TABS: { key: LegalDoc; label: string }[] = [
   { key: "voorwaarden", label: "Voorwaarden" },
   { key: "privacy", label: "Privacy" },
   { key: "cookies", label: "Cookies" },
+  { key: "herroepen", label: "Herroepen" },
 ];
 
 // Leesbaar zonder in te loggen: ook vanaf het registratiescherm
@@ -47,7 +49,7 @@ export default function LegalScreen() {
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32, gap: 18 }}>
         <Text style={styles.updated}>Laatst bijgewerkt: {LEGAL.updated}</Text>
         <Text style={styles.body}>{doc.intro}</Text>
-        {doc.sections.map((s) => (
+        {doc.sections.map((s, si) => (
           <View key={s.h} style={{ gap: 8 }}>
             <Text style={styles.h}>{s.h}</Text>
             {s.p.map((p, i) => (
@@ -55,6 +57,8 @@ export default function LegalScreen() {
                 {p}
               </Text>
             ))}
+            {/* De herroepknop direct onder de uitleg, vóór het modelformulier */}
+            {key === "herroepen" && si === 0 ? <View style={{ marginTop: 8 }}><WithdrawForm /></View> : null}
           </View>
         ))}
       </ScrollView>
@@ -85,7 +89,7 @@ const useStyles = makeStyles((colors) => ({
   },
   segBtn: { flex: 1, paddingVertical: 8, borderRadius: 9, alignItems: "center" },
   segBtnActive: { backgroundColor: colors.surface },
-  segText: { fontSize: 14, fontFamily: fonts.medium, color: colors.muted },
+  segText: { fontSize: 13, fontFamily: fonts.medium, color: colors.muted },
   segTextActive: { color: colors.onSurface, fontFamily: fonts.semibold },
   updated: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted },
   h: { fontSize: 16, fontFamily: fonts.bold, color: colors.onSurface },
