@@ -86,7 +86,7 @@ export default function LoginScreen() {
     <View style={styles.root}>
       <Image source={{ uri: hero }} style={StyleSheet.absoluteFill} contentFit="cover" transition={300} />
       <LinearGradient
-        colors={["rgba(38,36,35,0.35)", "rgba(38,36,35,0.65)", colors.surfaceInverse]}
+        colors={["rgba(38,36,35,0.35)", "rgba(38,36,35,0.65)", BACKDROP]}
         locations={[0, 0.5, 1]}
         style={StyleSheet.absoluteFill}
       />
@@ -288,8 +288,11 @@ function ForgotPasswordModal({ visible, onClose }: { visible: boolean; onClose: 
   );
 }
 
+// Achter de foto altijd donker, ook in donkere modus, zodat de witte tekst goed leesbaar blijft
+const BACKDROP = "#262423";
+
 const useStyles = makeStyles((colors) => ({
-  root: { flex: 1, backgroundColor: colors.surfaceInverse },
+  root: { flex: 1, backgroundColor: BACKDROP },
   scroll: { flexGrow: 1, justifyContent: "flex-end", paddingHorizontal: 20 },
   brandRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 8 },
   logo: {
@@ -302,8 +305,8 @@ const useStyles = makeStyles((colors) => ({
     overflow: "hidden",
   },
   logoImg: { width: "100%", height: "100%" },
-  brandName: { fontSize: 30, fontFamily: fonts.bold, color: colors.onSurfaceInverse },
-  tagline: { fontSize: 15, fontFamily: fonts.regular, color: colors.onSurfaceInverse, opacity: 0.85, marginBottom: 20 },
+  brandName: { fontSize: 30, fontFamily: fonts.bold, color: "#F5F3EF" },
+  tagline: { fontSize: 15, fontFamily: fonts.regular, color: "#F5F3EF", opacity: 0.85, marginBottom: 20 },
   card: {
     backgroundColor: colors.surface,
     borderRadius: 24,

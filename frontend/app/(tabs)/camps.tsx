@@ -1,18 +1,19 @@
 import { useCallback, useState } from "react";
 import Modal from "@/src/components/Modal";
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, Text, View } from "react-native";
+import { FlatList, Pressable, RefreshControl, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Animated, { FadeInDown } from "react-native-reanimated";
 
+import { PressScale, SkeletonList } from "@/src/components/motion";
 import { Button, EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { cachedApi } from "@/src/offline";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings, useTerms } from "@/src/settings";
 import { useToast } from "@/src/toast";
-import { fonts, makeStyles, useTheme } from "@/src/theme";
+import { fonts, makeStyles, softShadow, useTheme } from "@/src/theme";
 
 type Day = { index: number; adults: number; children: number; is_shopping_day: boolean };
 type Camp = { id: string; name: string; days: Day[] };
@@ -86,11 +87,11 @@ export default function CampsScreen() {
       const totalChildren = item.days.reduce((s, d) => s + d.children, 0);
       const maxPeople = item.days.reduce((m, d) => Math.max(m, d.adults + d.children), 0);
       return (
-        <Animated.View entering={FadeInDown.delay(index * 50).springify()}>
-          <Pressable
+        <Animated.View entering={FadeInDown.delay(Math.min(index, 6) * 40).duration(260)}>
+          <PressScale
             testID={`camp-card-${item.id}`}
             onPress={() => router.push(`/camp/${item.id}`)}
-            style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
+            style={styles.card}
           >
             <View style={styles.cardIcon}>
               <Icon name="clipboard-list-outline" size={24} color={colors.brandPrimary} />
@@ -152,7 +153,7 @@ export default function CampsScreen() {
                 <Icon name="trash-can-outline" size={20} color={colors.muted} />
               </Pressable>
             </View>
-          </Pressable>
+          </PressScale>
         </Animated.View>
       );
     },
@@ -173,9 +174,7 @@ export default function CampsScreen() {
       </View>
 
       {isLoading ? (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={colors.brandPrimary} />
-        </View>
+        <SkeletonList rows={4} />
       ) : isError ? (
         <View style={styles.center}>
           <EmptyState icon="wifi-off" title={`Kon ${T.many} niet laden`} subtitle="Controleer je verbinding" />
@@ -272,6 +271,7 @@ const useStyles = makeStyles((colors) => ({
     borderWidth: 1,
     borderColor: colors.border,
     padding: 14,
+    ...softShadow(colors, 1),
   },
   cardIcon: {
     width: 52,

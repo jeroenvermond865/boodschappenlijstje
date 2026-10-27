@@ -15,7 +15,8 @@ import { useState } from "react";
 import * as Haptics from "expo-haptics";
 import MaterialDesignIcons from "@react-native-vector-icons/material-design-icons";
 
-import { fonts, makeStyles, useTheme } from "@/src/theme";
+import { PressScale } from "@/src/components/motion";
+import { fonts, makeStyles, softShadow, useTheme } from "@/src/theme";
 
 export function Icon({
   name,
@@ -61,14 +62,14 @@ export function Button({
     variant === "primary" ? colors.onBrandPrimary : variant === "secondary" ? colors.onBrandSecondary : colors.brandPrimary;
 
   return (
-    <Pressable
+    <PressScale
       testID={testID}
       disabled={isDisabled}
       onPress={() => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
         onPress();
       }}
-      style={({ pressed }) => [styles.btn, bg, isDisabled && styles.btnDisabled, pressed && styles.btnPressed, style]}
+      style={[styles.btn, bg, isDisabled && styles.btnDisabled, style]}
     >
       {loading ? (
         <ActivityIndicator color={fg} />
@@ -85,7 +86,7 @@ export function Button({
           )}
         </View>
       )}
-    </Pressable>
+    </PressScale>
   );
 }
 
@@ -272,7 +273,7 @@ export function Select({
 
 const useStyles = makeStyles((colors) => ({
   btn: {
-    borderRadius: 14,
+    borderRadius: 16,
     paddingVertical: 15,
     paddingHorizontal: 20,
     alignItems: "center",
@@ -280,11 +281,11 @@ const useStyles = makeStyles((colors) => ({
     minHeight: 52,
   },
   btnRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  btnPrimary: { backgroundColor: colors.brandPrimary },
-  btnSecondary: { backgroundColor: colors.brandSecondary },
+  btnPrimary: { backgroundColor: colors.brandPrimary, ...softShadow(colors, 1) },
+  btnSecondary: { backgroundColor: colors.brandSecondary, ...softShadow(colors, 1) },
   btnGhost: { backgroundColor: "transparent", borderWidth: 1.5, borderColor: colors.borderStrong },
   btnDisabled: { opacity: 0.5 },
-  btnPressed: { opacity: 0.85, transform: [{ scale: 0.97 }] },
+  btnPressed: { opacity: 0.85, transform: [{ scale: 0.94 }] },
   btnText: { fontSize: 16, fontFamily: fonts.semibold },
 
   stepper: {
@@ -329,10 +330,11 @@ const useStyles = makeStyles((colors) => ({
 
   card: {
     backgroundColor: colors.surface,
-    borderRadius: 18,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: colors.border,
     padding: 16,
+    ...softShadow(colors, 1),
   },
 
   empty: { alignItems: "center", justifyContent: "center", paddingVertical: 40, gap: 10, paddingHorizontal: 24 },

@@ -1,4 +1,4 @@
-// Design tokens for ScoutKook. Light theme (nature / scouting palette).
+// Design tokens for ScoutKook. Light and dark theme (nature / scouting palette).
 // Keys match the "color" block of /app/design_guidelines.json.
 
 import { useMemo } from "react";
@@ -38,13 +38,53 @@ const light = {
   border: "#E1DDD5",
   borderStrong: "#C7C1B5",
   divider: "#EBE7DF",
+
+  // Zachte schaduw onder kaarten en knoppen
+  shadow: "rgba(28, 27, 26, 0.07)",
 };
 
 export type ThemeColors = typeof light;
 
+// Donkere modus: warm donker, met dezelfde groene en gouden accenten. Volgt de instelling van je telefoon.
+const dark: ThemeColors = {
+  surface: "#151614",
+  onSurface: "#F2F0EC",
+  surfaceSecondary: "#1C1E1B",
+  onSurfaceSecondary: "#DAD6CF",
+  surfaceTertiary: "#272A26",
+  onSurfaceTertiary: "#CAC5BC",
+  surfaceInverse: "#F2F0EC",
+  onSurfaceInverse: "#1C1B1A",
+  muted: "#9C978E",
+
+  brand: "#4F8F5A",
+  onBrand: "#FFFFFF",
+  brandPrimary: "#5A9E66",
+  onBrandPrimary: "#FFFFFF",
+  brandSecondary: "#E2AC52",
+  onBrandSecondary: "#1C1B1A",
+  brandTertiary: "#1E3223",
+  onBrandTertiary: "#CDE6D2",
+
+  success: "#5DA47B",
+  onSuccess: "#FFFFFF",
+  warning: "#D96D43",
+  onWarning: "#FFFFFF",
+  error: "#D65858",
+  onError: "#FFFFFF",
+  info: "#6E7771",
+  onInfo: "#FFFFFF",
+
+  border: "#2C2F2B",
+  borderStrong: "#41453F",
+  divider: "#242723",
+
+  shadow: "rgba(0, 0, 0, 0.35)",
+};
+
 export const defaultScheme = "light" satisfies ColorScheme;
 
-export const themes: { light: ThemeColors; dark?: ThemeColors } = { light };
+export const themes: { light: ThemeColors; dark?: ThemeColors } = { light, dark };
 
 export const fonts = {
   regular: "PlusJakarta_400Regular",
@@ -61,7 +101,7 @@ setColorScheme?.(themes.dark ? null : defaultScheme);
 
 export function useTheme(): { scheme: ColorScheme; colors: ThemeColors } {
   const system = useColorScheme();
-  const scheme: ColorScheme = system && themes[system] ? system : defaultScheme;
+  const scheme: ColorScheme = system === "dark" && themes.dark ? "dark" : system === "light" ? "light" : defaultScheme;
   return { scheme, colors: themes[scheme] ?? themes.light };
 }
 
@@ -71,5 +111,16 @@ export function makeStyles<T extends StyleSheet.NamedStyles<T> | StyleSheet.Name
   return function useStyles(): T {
     const { colors } = useTheme();
     return useMemo(() => StyleSheet.create(factory(colors)), [colors]);
+  };
+}
+
+// Zachte schaduw voor kaarten (in donkere modus vrijwel onzichtbaar, daar doet de rand het werk)
+export function softShadow(colors: ThemeColors, lift = 1) {
+  return {
+    shadowColor: colors.shadow,
+    shadowOpacity: 1,
+    shadowRadius: 10 + lift * 6,
+    shadowOffset: { width: 0, height: 2 + lift * 2 },
+    elevation: lift * 2,
   };
 }

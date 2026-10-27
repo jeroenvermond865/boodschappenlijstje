@@ -3,6 +3,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 
+import { CountUp } from "@/src/components/motion";
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
@@ -57,7 +58,7 @@ export default function SavingsScreen() {
             <View style={styles.hero} testID="savings-total">
               <Icon name="piggy-bank" size={30} color={colors.success} />
               <Text style={styles.heroLabel}>Al bespaard</Text>
-              <Text style={styles.heroValue}>{euro(data!.bought ?? 0)}</Text>
+              <CountUp style={styles.heroValue} value={data!.bought ?? 0} format={euro} />
               <Text style={styles.heroSub}>op wat je hebt afgevinkt (gekocht), ook van verwijderde lijstjes</Text>
               <View style={styles.pendingBox}>
                 <Icon name="cart-outline" size={18} color={colors.brandPrimary} />

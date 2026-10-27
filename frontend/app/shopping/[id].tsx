@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Animated, Linking, Platform, Pressable, RefreshControl, ScrollView, Share, Text, View } from "react-native";
+import { Animated, Linking, Platform, Pressable, RefreshControl, ScrollView, Share, Text, View } from "react-native";
+import Reanimated, { LinearTransition } from "react-native-reanimated";
 import Image from "@/src/components/SafeImage";
+import { CheckPop, Confetti, CountUp, SkeletonList } from "@/src/components/motion";
 import Modal from "@/src/components/Modal";
 import { useHideOnScroll } from "@/src/hideOnScroll";
 import { RestockCard } from "@/src/RestockCard";
@@ -26,7 +28,7 @@ import { usePremium } from "@/src/premium";
 import { RouteSheet, useRoute } from "@/src/route";
 import { CompareCard, type CompareStore } from "@/src/CompareCard";
 import { storage } from "@/src/utils/storage";
-import { fonts, makeStyles, useTheme } from "@/src/theme";
+import { fonts, makeStyles, softShadow, useTheme } from "@/src/theme";
 
 type Item = { name: string; unit: string; aisle: string; qty: number; packs?: number; pack_unit?: string; price?: number; product?: string; product_id?: string; orig_product_id?: string | null; choose?: "todo" | "auto"; image?: string | null; better?: PackBetter | null; in_pantry?: number; was?: { store: string; price: number; product_id?: string | null; product?: string | null }; promo_then?: { label: string; start?: string | null; period?: string | null } };
 type Grouped = { aisle: string; items: Item[] };
@@ -222,6 +224,19 @@ export default function ShoppingScreen() {
 
   const totalCount = allItems.length;
   const doneCount = useMemo(() => allItems.filter((x) => shown.has(key(x.store, x.item))).length, [allItems, shown]);
+
+  // Laatste product afgevinkt: een kort feestje (niet als de lijst al af was toen je hem opende)
+  const [party, setParty] = useState(0);
+  const wasDone = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!loaded || !totalCount) return;
+    const all = doneCount === totalCount;
+    if (wasDone.current === false && all) {
+      setParty((n) => n + 1);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    }
+    wasDone.current = all;
+  }, [doneCount, totalCount, loaded]);
 
   const toggle = (k: string) => {
     Haptics.selectionAsync().catch(() => {});
@@ -425,8 +440,8 @@ export default function ShoppingScreen() {
       </Animated.View>
 
       {isLoading || !loaded ? (
-        <View style={[styles.center, { paddingTop: hide.padTop }]}>
-          <ActivityIndicator size="large" color={colors.brandPrimary} />
+        <View style={{ paddingTop: hide.padTop }}>
+          <SkeletonList rows={6} />
         </View>
       ) : totalCount === 0 ? (
         <View style={[styles.center, { paddingTop: hide.padTop }]}>
@@ -564,7 +579,7 @@ export default function ShoppingScreen() {
           {tab === "total" && grandTotal > 0 ? (
             <View style={styles.totalCard}>
               <Text style={styles.totalLabel}>Geschat totaal</Text>
-              <Text style={styles.totalValue}>{euro(grandTotal)}</Text>
+              <CountUp style={styles.totalValue} value={grandTotal} format={euro} />
               <Text style={styles.totalHint}>Hele verpakkingen tegen de huidige winkelprijs. Producten zonder prijs tellen niet mee.</Text>
               {promoSaving > 0 ? (
                 <Pressable onPress={() => router.push("/savings")} testID="promo-saving">
@@ -715,6 +730,7 @@ export default function ShoppingScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+      <Confetti fire={party} />
     </View>
   );
 }
@@ -799,9 +815,11 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
     }
   };
   return (
-    <View style={!last && styles.itemRowBorder}>
+    <Reanimated.View layout={LinearTransition.duration(240)} style={!last && styles.itemRowBorder}>
     <Pressable testID={`item-${item.name.toLowerCase()}`} onPress={onToggle} style={styles.itemRow}>
-      <Icon name={checked ? "checkbox-marked-circle" : "checkbox-blank-circle-outline"} size={24} color={checked ? colors.success : colors.borderStrong} />
+      <CheckPop checked={checked}>
+        <Icon name={checked ? "checkbox-marked-circle" : "checkbox-blank-circle-outline"} size={24} color={checked ? colors.success : colors.borderStrong} />
+      </CheckPop>
       {item.image ? (
         <Pressable onPress={open} hitSlop={4} testID={`item-image-${item.name.toLowerCase()}`}>
           <Image source={{ uri: item.image }} style={[styles.itemImg, checked && { opacity: 0.4 }]} resizeMode="contain" />
@@ -900,7 +918,7 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
           <BetterPack better={item.better} current={item.product} onSwap={item.product_id ? swap : undefined} />
         </View>
       ) : null}
-    </View>
+    </Reanimated.View>
   );
 }
 
@@ -941,7 +959,7 @@ const useStyles = makeStyles((colors) => ({
   storeHeaderText: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },
   aisleHeader: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8, paddingHorizontal: 4 },
   aisleTitle: { fontSize: 13, fontFamily: fonts.bold, color: colors.onSurfaceSecondary, textTransform: "uppercase", letterSpacing: 0.5 },
-  card: { backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
+  card: { backgroundColor: colors.surface, borderRadius: 18, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, ...softShadow(colors, 1) },
   itemRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14 },
   itemRowBorder: { borderBottomWidth: 1, borderBottomColor: colors.divider },
   itemName: { flex: 1, fontSize: 15, fontFamily: fonts.medium, color: colors.onSurface },
