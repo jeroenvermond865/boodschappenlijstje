@@ -11573,7 +11573,8 @@ def _alert_now(what: str) -> None:
 class _AlertLogHandler(logging.Handler):
     # Fouten die alleen in de logs komen (bijv. in achtergrondtaken) tellen ook mee
     def emit(self, record):
-        if record.levelno >= logging.ERROR and not record.name.startswith("httpx"):
+        # uvicorn meldt een fout in een verzoek zelf ook; die telt de middleware hieronder al
+        if record.levelno >= logging.ERROR and not record.name.startswith(("httpx", "uvicorn")):
             _alert_now(f"log: {record.getMessage()[:150]}")
 
 
@@ -11585,7 +11586,9 @@ async def error_alert(request, call_next):
     try:
         response = await call_next(request)
     except Exception as e:
-        _alert_now(f"{request.method} {request.url.path}: {type(e).__name__}")
+        # Weggeklikt voordat het antwoord klaar was ("No response returned"): geen echte fout
+        if not (isinstance(e, RuntimeError) and "No response returned" in str(e)):
+            _alert_now(f"{request.method} {request.url.path}: {type(e).__name__}")
         raise
     if response.status_code >= 500 and response.status_code not in (502, 503):
         _alert_now(f"{request.method} {request.url.path}: {response.status_code}")
