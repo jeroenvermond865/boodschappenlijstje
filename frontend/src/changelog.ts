@@ -7,8 +7,11 @@ export const CHANGELOG: Release[] = [
   {
     id: "2026-10-27-i",
     date: "27 oktober 2026",
-    title: "Slim splitsen klopt altijd, en de Jumbo-folder van volgende week",
+    title: "Gerechten in blokken, slim splitsen klopt altijd, en de Jumbo-folder van volgende week",
     changes: [
+      { kind: "nieuw", text: "Gerechten: app-gerechten, eigen gerechten en online recepten staan nu eerst in blokken per hoofdcategorie, net als bij Producten. Bijvoorbeeld Voor grote groepen, Ontbijt, Lunch, Hoofdgerecht, Bijgerecht, Soep, Dessert en Borrel." },
+      { kind: "nieuw", text: "Bij een gerecht kies je zelf de hoofdcategorie, ook meer dan één. Doe je niets, dan kiest de app er een op naam." },
+      { kind: "beter", text: "Pakketten staan nu ook als blokken, met een passend plaatje." },
       { kind: "opgelost", text: "Folders: bij Jumbo opent 'Bekijk de echte folder' nu ook de aanbiedingen van volgende week als je Volgende week hebt gekozen." },
       { kind: "opgelost", text: "Slim splitsen over bijvoorbeeld AH en Jumbo kon duurder uitkomen dan alles bij Jumbo. Wat een winkel niet heeft, telt nu bij splitsen op dezelfde manier mee als bij één winkel, dus splitsen is nooit duurder dan een van de gekozen winkels." },
     ],

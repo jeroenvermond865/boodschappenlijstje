@@ -481,6 +481,7 @@ class DishInput(BaseModel):
     ingredients: List[Ingredient] = []
     pantry: Optional[List[Ingredient]] = None  # "waarschijnlijk al in huis", niet op de boodschappenlijst
     is_standard: bool = False
+    groups: Optional[List[str]] = None  # hoofdcategorieën (DISH_GROUPS); leeg laten = de app kiest zelf
 
 
 class ExtraItem(BaseModel):
@@ -964,11 +965,45 @@ def _needs_vega(doc: dict) -> list:
     return [k for k, i in enumerate(ings) if _ing_diet(i) == "meat" and _is_meat(i)]
 
 
+# Hoofdcategorieën voor gerechten: dezelfde als de gangen bij online recepten, plus "voor grote groepen"
+DISH_GROUPS = ["ontbijt", "lunch", "hoofdgerecht", "bijgerecht", "soep", "dessert", "borrel", "groep"]
+_GROUP_FROM_MEAL = {"ontbijt": "ontbijt", "lunch": "lunch", "avondeten": "hoofdgerecht", "snacks": "borrel"}
+_GROUP_WORDS = [
+    ("soep", re.compile(r"soep|bouillon|gazpacho", re.I)),
+    ("dessert", re.compile(r"toetje|dessert|vla|pudding|yoghurt.*fruit|ijs\b|taart|cake|tiramisu|mousse|appelmoes|kwark|crumble|brownie", re.I)),
+    ("bijgerecht", re.compile(r"salade|rauwkost|bijgerecht|frietjes|aardappeltjes|groente\b|stokbrood", re.I)),
+    ("borrel", re.compile(r"borrel|hapje|nacho|chips|bitterbal|dip\b|tapas|popcorn|snack", re.I)),
+    ("groep", re.compile(r"stamppot|hutspot|chili|lasagne|ovenschotel|schotel|nasi|bami|macaroni|spaghetti|pasta|curry|goulash|stoof|"
+                         r"soep|pannenkoek|wraps?|taco|hotdog|hamburger|pizza|rijst|tortilla|poffertjes|tosti|broodje|bbq|barbecue", re.I)),
+]
+
+
+def _dish_groups(doc: dict) -> list:
+    if isinstance(doc.get("groups"), list) and doc["groups"]:
+        return [g for g in DISH_GROUPS if g in doc["groups"]]
+    out = {_GROUP_FROM_MEAL.get(doc.get("category"), "hoofdgerecht")}
+    name = doc.get("name") or ""
+    for g, rx in _GROUP_WORDS:
+        if rx.search(name):
+            out.add(g)
+    if out & {"soep", "dessert"} and doc.get("category") == "avondeten" and not re.search(r"pasta|schotel|stamppot|curry|nasi|bami", name, re.I):
+        out.discard("hoofdgerecht")  # een soep of toetje bij het avondeten is geen hoofdgerecht
+    if ((doc.get("source") or {}).get("servings") or 0) >= 8:
+        out.add("groep")
+    return [g for g in DISH_GROUPS if g in out]
+
+
+def _clean_groups(groups: Optional[List[str]]) -> Optional[list]:
+    return None if groups is None else [g for g in DISH_GROUPS if g in groups]
+
+
 def dish_public(doc: dict) -> dict:
     return {
         "id": doc["dish_id"],
         "name": doc["name"],
         "category": doc["category"],
+        "groups": _dish_groups(doc),
+        "groups_set": bool(doc.get("groups")),  # zelf gekozen; anders kiest de app
         "is_standard": doc.get("is_standard", False),
         "ingredients": [{**i, "diet": _ing_diet(i)} for i in doc.get("ingredients", [])],
         "source": doc.get("source"),
@@ -1380,6 +1415,7 @@ async def create_dish(data: DishInput, user: dict = Depends(get_current_user)):
         "owner_id": None if make_standard else user["user_id"],
         "ingredients": [i.model_dump() for i in data.ingredients],
         "pantry": [i.model_dump() for i in data.pantry or []],
+        **({"groups": _clean_groups(data.groups)} if data.groups is not None else {}),
         "deleted_at": None,
         "created_at": now_utc(),
     }
@@ -1407,6 +1443,7 @@ async def update_dish(dish_id: str, data: DishInput, user: dict = Depends(get_cu
             "category": data.category,
             "ingredients": [i.model_dump() for i in data.ingredients],
             **({"pantry": [i.model_dump() for i in data.pantry]} if data.pantry is not None else {}),
+            **({"groups": _clean_groups(data.groups)} if data.groups is not None else {}),
             "online": False,  # aangepast: nu een eigen gerecht
         }},
     )
@@ -1427,7 +1464,8 @@ async def save_camp_dish(camp_id: str, dish_id: str, data: DishInput, user: dict
     if data.category not in MEAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="Ongeldige categorie")
     fields = {"name": data.name.strip(), "category": data.category, "ingredients": [i.model_dump() for i in data.ingredients],
-              **({"pantry": [i.model_dump() for i in data.pantry]} if data.pantry is not None else {})}
+              **({"pantry": [i.model_dump() for i in data.pantry]} if data.pantry is not None else {}),
+              **({"groups": _clean_groups(data.groups)} if data.groups is not None else {})}
     asyncio.create_task(_learn_from_dish(user, doc.get("ingredients") or [], fields["ingredients"]))
     if doc.get("camp_id") == camp_id:
         await db.dishes.update_one({"dish_id": dish_id}, {"$set": fields})
@@ -7004,6 +7042,22 @@ async def _track_recipe(user_id: str, rec: dict, weight: int = 1) -> None:
         await _interest_inc(user_id, "recepten", inc)
 
 
+GROUP_RECIPE_WORDS = ["ovenschotel", "stamppot", "soep", "chili", "lasagne", "curry", "nasi", "macaroni", "stoof", "traybake"]
+
+
+def _take_group_filter(filters: str) -> tuple:
+    # Haal de app-eigen keuze "Voor grote groepen" uit de filters; de winkels kennen die niet
+    import json as _json
+    try:
+        flt = _json.loads(filters or "{}") or {}
+    except Exception:
+        return filters, False
+    if not isinstance(flt, dict) or "groep" not in flt:
+        return filters, False
+    group = bool(flt.pop("groep"))
+    return _json.dumps(flt), group
+
+
 def _personal_recipes(recipes: list, interest: dict, seed: str) -> list:
     # Zonder zoekterm: elke keer een andere volgorde, met wat op jouw smaak lijkt bovenaan
     import random
@@ -7020,6 +7074,12 @@ def _personal_recipes(recipes: list, interest: dict, seed: str) -> list:
 @api_router.get("/recipes/search")
 async def search_recipes(q: str = "", store: str = "all", page: int = 0, filters: str = "{}", user: dict = Depends(get_current_user)):
     q = (q or "").strip()[:80]
+    filters, group = _take_group_filter(filters)
+    if group and not q:
+        # "Voor grote groepen": winkels hebben daar geen filter voor, dus om en om zoeken op gerechten die je makkelijk in een grote pan maakt
+        n = len(GROUP_RECIPE_WORDS)
+        res = await _search_recipes(GROUP_RECIPE_WORDS[page % n], store, page // n, filters)
+        return {**res, "recipes": await _with_costs(res["recipes"]), "has_more": page < n * 6 and (res.get("has_more") or page < n - 1)}
     if q:
         res = await _search_recipes(q, store, page, filters)
         if page == 0 and len(res.get("recipes") or []) < 6:
