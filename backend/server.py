@@ -4828,6 +4828,201 @@ async def _ai_search_terms(q: str) -> list:
     return terms
 
 
+# Zoeksuggesties onder elke zoekbalk: "tomaten" -> tomatensoep, tomatenpuree; "soep" -> kippensoep, tomatensoep.
+# Eerst zonder AI uit de woorden in alle producten en gerechten. Wat mensen kiezen en vaak typen wordt onthouden
+# (zonder te weten wie), en pas als dat te weinig geeft vraagt de AI één keer wat erbij hoort. Dat antwoord wordt
+# bewaard, dus hoe vaker de app gebruikt wordt, hoe minder AI er nodig is.
+_suggest_words: dict = {"docs": None, "count": {}}
+_suggest_dishes: dict = {"at": 0.0, "count": {}, "busy": False}
+AI_SUGGEST_DAILY = 800
+_ai_suggest_mem: Dict[str, list] = {}
+_ai_suggest_state = {"day": "", "n": 0}
+_ai_suggest_tasks: Dict[str, asyncio.Task] = {}
+
+
+def _word_counts(texts) -> Dict[str, int]:
+    count: Dict[str, int] = {}
+    for t in texts:
+        for w in set(_norm_text(t).replace(",", " ").replace(".", " ").split()):
+            if len(w) >= 3 and w.isalpha():
+                count[w] = count.get(w, 0) + 1
+    return count
+
+
+def _product_word_counts(docs: list) -> Dict[str, int]:
+    if _suggest_words["docs"] is not docs:
+        _suggest_words.update(docs=docs, count=_word_counts(d.get("name") or "" for d in docs))
+    return _suggest_words["count"]
+
+
+async def _refresh_dish_words() -> None:
+    # Namen van de standaardgerechten en alle Dirk-recepten; elke 6 uur opnieuw, op de achtergrond
+    if _suggest_dishes["busy"]:
+        return
+    _suggest_dishes["busy"] = True
+    try:
+        names = [d["name"] async for d in db.dishes.find({"is_standard": True, "deleted_at": None}, {"_id": 0, "name": 1}) if d.get("name")]
+        try:
+            names += [r["title"] for r in await _dirk_all_recipes()]
+        except Exception as e:
+            logger.info("Zoeksuggesties: Dirk-recepten niet geladen: %r", e)
+        count = await asyncio.to_thread(_word_counts, names)
+        _suggest_dishes.update(at=time.time(), count=count)
+    finally:
+        _suggest_dishes["busy"] = False
+
+
+def _suggest_from(count: Dict[str, int], w: str) -> list:
+    # Woorden die beginnen met wat je typt (tomaten -> tomatensoep, ook gewoon aanvullen: toma -> tomaten)
+    # of erop eindigen (soep -> kippensoep). Hoe vaker het woord voorkomt, hoe hoger.
+    found: Dict[str, float] = {}
+    # tomaat -> ook tomaten (zelfde woordgroep), tomaten -> ook tomaat
+    stems = list(dict.fromkeys(_stems(w) + [a for a in _SEARCH_SYN.get(w, []) if a.isalpha() and a[:3] == w[:3]]))
+    for s in stems:
+        if len(s) < 3:
+            continue
+        for c, n in count.items():
+            if c == w or len(c) <= len(s):
+                continue
+            if c.startswith(s):
+                found[c] = max(found.get(c, 0), n * (1.0 if len(c) > len(s) + 2 else 0.6))
+            elif len(s) >= 4 and c.endswith(s) and len(c) >= len(s) + 3:
+                found[c] = max(found.get(c, 0), n * 0.9)
+    top = sorted(found.items(), key=lambda kv: -kv[1])
+    out: list = []
+    for c, _ in top:
+        if any(c in (o + "s", o + "en", o + "e") or o in (c + "s", c + "en", c + "e") for o in out):
+            continue  # meervoud van iets dat er al staat
+        out.append(c)
+        if len(out) >= 12:
+            break
+    return out
+
+
+async def _ai_suggest(q: str, kind: str, known: Dict[str, int]) -> list:
+    key = f"{kind}|{_norm_text(q)}"
+    if key in _ai_suggest_mem:
+        return _ai_suggest_mem[key]
+    doc = await db.ai_suggest.find_one({"k": key}, {"_id": 0, "terms": 1})
+    if doc is not None:
+        _ai_suggest_mem[key] = doc.get("terms") or []
+        return _ai_suggest_mem[key]
+    day = now_utc().date().isoformat()
+    if _ai_suggest_state["day"] != day:
+        _ai_suggest_state.update(day=day, n=0)
+    if not os.environ.get("ANTHROPIC_API_KEY") or _ai_suggest_state["n"] >= AI_SUGGEST_DAILY:
+        return []
+    _ai_suggest_state["n"] += 1
+    what = "gerechten en recepten" if kind == "dishes" else "producten in de supermarkt"
+    try:
+        from anthropic import AsyncAnthropic
+        msg = await asyncio.wait_for(AsyncAnthropic().beta.messages.create(
+            model=AI_PICK_MODEL, max_tokens=300, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"format": {"type": "json_schema", "schema": {
+                "type": "object", "additionalProperties": False, "required": ["terms"],
+                "properties": {"terms": {"type": "array", "items": {"type": "string"}}}}}},
+            messages=[{"role": "user", "content": (
+                f"In een Nederlandse boodschappen-app typt iemand in de zoekbalk voor {what}: \"{q[:60]}\". "
+                "Geef maximaal 6 korte Nederlandse zoeksuggesties (1 of 2 woorden) die daarbij passen, zoals: "
+                "tomaten -> tomatensoep, tomatenpuree, cherrytomaten; soep -> kippensoep, tomatensoep, groentesoep. "
+                "Verbeter ook tikfouten. Geen uitleg. Weet je het niet, geef dan een lege lijst.")}]), 10)
+        text = next((b.text for b in msg.content if b.type == "text"), "")
+        terms = (json.loads(text) if text and msg.stop_reason not in ("refusal", "max_tokens") else {}).get("terms") or []
+    except Exception as e:
+        logger.info("Zoeksuggesties AI %r: %r", q, e)
+        return []
+    # Alleen wat ook echt iets vindt in de app
+    terms = [t.strip().lower()[:40] for t in terms if isinstance(t, str) and t.strip() and _norm_text(t) != _norm_text(q)]
+    terms = [t for t in dict.fromkeys(terms) if all(w in known for w in _norm_text(t).split())][:6]
+    _ai_suggest_mem[key] = terms
+    if len(_ai_suggest_mem) > 5000:
+        _ai_suggest_mem.pop(next(iter(_ai_suggest_mem)))
+    await db.ai_suggest.update_one({"k": key}, {"$set": {"k": key, "terms": terms, "at": now_utc()}}, upsert=True)
+    return terms
+
+
+@api_router.get("/search/suggest")
+async def search_suggest(q: str = "", kind: str = "products", user: dict = Depends(get_current_user)):
+    kind = "dishes" if kind == "dishes" else "products"
+    words = _norm_text(q).replace(",", " ").replace(".", " ").split()
+    if not words or len(" ".join(words)) < 3 or len(q) > 60:
+        return {"suggestions": []}
+    head, last = words[:-1], words[-1]
+    if time.time() - _suggest_dishes["at"] > 6 * 3600:
+        asyncio.ensure_future(_refresh_dish_words())
+    prod = await asyncio.to_thread(_product_word_counts, await _global_products())
+    dish = _suggest_dishes["count"]
+    own = [d["name"] async for d in db.dishes.find({"owner_id": user["user_id"], "deleted_at": None}, {"_id": 0, "name": 1}).limit(300) if d.get("name")]
+    own_count = _word_counts(own) if kind == "dishes" else {}
+    full = " ".join(words)
+    out: list = []
+
+    def add(s: str):
+        s = _norm_text(s)
+        if s and s != full and s not in out:
+            out.append(s)
+
+    # 1. Wat mensen bij dit woord eerder kozen of vaak typten (geleerd)
+    async for d in db.search_learn.find({"k": f"{kind}|{full}"}, {"_id": 0, "pick": 1}).sort("n", -1).limit(6):
+        add(d["pick"])
+    if len(last) >= 3:
+        async for d in db.search_typed.find({"kind": kind, "term": {"$regex": "^" + re.escape(full)}, "n": {"$gte": 3}},
+                                            {"_id": 0, "term": 1}).sort("n", -1).limit(4):
+            add(d["term"])
+    # 2. Samengestelde woorden uit producten en gerechten
+    if len(last) >= 3:
+        pre = " ".join(head)
+        sources = [own_count, dish, prod] if kind == "dishes" else [prod, dish]
+        lists = await asyncio.to_thread(lambda: [_suggest_from(c, last) for c in sources])
+        for c in itertools.chain.from_iterable(itertools.zip_longest(*lists)):
+            if c:
+                add(f"{pre} {c}".strip())
+            if len(out) >= 8:
+                break
+    # 3. Te weinig? Dan de AI (één keer per zoekwoord; daarna uit het geheugen)
+    if len(out) < 3 and len(full) >= 4 and len(last) >= 3:
+        key = f"{kind}|{full}"
+        task = _ai_suggest_tasks.get(key)
+        if task is None or task.done():
+            known = {**prod, **dish, **own_count}
+            task = asyncio.ensure_future(_ai_suggest(full, kind, known))
+            _ai_suggest_tasks[key] = task
+            task.add_done_callback(lambda _t, k=key: _ai_suggest_tasks.pop(k, None))
+        try:
+            for t in await asyncio.wait_for(asyncio.shield(task), 6):
+                add(t)
+        except Exception:
+            pass  # te langzaam: de volgende keer staat het klaar
+    return {"suggestions": out[:8]}
+
+
+class SuggestLearnInput(BaseModel):
+    q: str
+    pick: str = ""
+    kind: str = "products"
+
+
+@api_router.post("/search/learn")
+async def search_learn(body: SuggestLearnInput, user: dict = Depends(get_current_user)):
+    # Onthouden wat er bij een zoekwoord gekozen wordt, en welke zoekwoorden vaak gebruikt worden.
+    # Zonder te bewaren wie het was.
+    kind = "dishes" if body.kind == "dishes" else "products"
+    q, pick = _norm_text(body.q)[:60], _norm_text(body.pick)[:60]
+    if len(q) < 3:
+        return {"ok": True}
+    if pick and pick != q:
+        await db.search_learn.update_one({"k": f"{kind}|{q}", "pick": pick}, {"$inc": {"n": 1}, "$set": {"at": now_utc()}}, upsert=True)
+    term = pick or q
+    if not pick:
+        # Alleen hele, bestaande woorden (niet "toma" terwijl iemand nog aan het typen is)
+        prod = await asyncio.to_thread(_product_word_counts, await _global_products())
+        if not all(prod.get(w) or _suggest_dishes["count"].get(w) for w in term.split()):
+            return {"ok": True}
+    if 3 <= len(term) <= 40 and len(term.split()) <= 4:
+        await db.search_typed.update_one({"kind": kind, "term": term}, {"$inc": {"n": 1}, "$set": {"at": now_utc()}}, upsert=True)
+    return {"ok": True}
+
+
 _ai_profile_mem: Dict[str, dict] = {}
 _ai_profile_tasks: Dict[str, asyncio.Task] = {}
 
@@ -12643,6 +12838,9 @@ async def startup():
     await db.ai_checks.create_index("key", unique=True)
     await db.ai_search.create_index("q", unique=True)
     await db.ai_search_rank.create_index("q", unique=True)
+    await db.ai_suggest.create_index("k", unique=True)
+    await db.search_learn.create_index([("k", 1), ("pick", 1)], unique=True)
+    await db.search_typed.create_index([("kind", 1), ("term", 1)], unique=True)
     await db.ai_usage.create_index([("user_id", 1), ("day", 1)], unique=True)
     await db.camps.create_index("camp_id", unique=True)
     await db.invitations.create_index([("email", 1), ("camp_id", 1)], unique=True)

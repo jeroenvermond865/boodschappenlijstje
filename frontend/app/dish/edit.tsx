@@ -31,6 +31,7 @@ import type { Product } from "@/app/(tabs)/products";
 import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
+import SearchSuggestions from "@/src/SearchSuggestions";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Ing = {
@@ -871,6 +872,7 @@ function SwapSheet({
             />
           </View>
           )}
+          {readOnly ? null : <SearchSuggestions q={q} onPick={setQ} />}
           {searching ? (
             <ScrollView
               horizontal

@@ -205,3 +205,25 @@ def test_grote_groepen_filter_eruit():
     rest, groep = S._take_group_filter(json.dumps({"groep": ["Voor grote groepen"], "gang": ["soep"]}))
     assert groep and json.loads(rest) == {"gang": ["soep"]}
     assert S._take_group_filter('{"gang": ["soep"]}') == ('{"gang": ["soep"]}', False)
+
+
+def test_zoeksuggesties_zonder_ai_en_leren():
+    async def go():
+        from datetime import datetime, timezone
+        names = ["AH Tomatensoep", "Unox tomatensoep", "Tomatenpuree", "Cherrytomaten", "Kippensoep blik", "Kippensoep Unox", "Groentesoep"]
+        S._product_cache.update(docs=[{"product_id": f"p{i}", "name": n} for i, n in enumerate(names)], at=datetime.now(timezone.utc), stale=False)
+        S._suggest_dishes.update(at=S.time.time(), count={"tomatensoep": 3, "kippensoep": 2})
+        await S.db.dishes.insert_one({"dish_id": "d1", "owner_id": "u1", "deleted_at": None, "name": "Oma's mosterdsoep"})
+        r = (await S.search_suggest(q="tomaten", user=U1))["suggestions"]
+        assert r[:2] == ["tomatensoep", "tomatenpuree"] and "cherrytomaten" in r
+        r = (await S.search_suggest(q="soep", kind="dishes", user=U1))["suggestions"]
+        assert "kippensoep" in r and "tomatensoep" in r and r[0] == "mosterdsoep"
+        # Wat iemand kiest komt de volgende keer bovenaan
+        await S.search_learn(S.SuggestLearnInput(q="soep", pick="groentesoep"), user=U2)
+        assert (await S.search_suggest(q="soep", user=U2))["suggestions"][0] == "groentesoep"
+        assert (await S.search_suggest(q="to", user=U1))["suggestions"] == []
+        # Half getypte woorden worden niet onthouden, hele wel
+        await S.search_learn(S.SuggestLearnInput(q="toma"), user=U1)
+        await S.search_learn(S.SuggestLearnInput(q="tomatensoep"), user=U1)
+        assert [d["term"] async for d in S.db.search_typed.find({})] == ["groentesoep", "tomatensoep"]
+    run(go())

@@ -5,6 +5,16 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-zoeksuggesties",
+    date: "27 oktober 2026",
+    title: "Zoekbalken denken mee",
+    changes: [
+      { kind: "nieuw", text: "Onder elke zoekbalk staan nu suggesties terwijl je typt. Typ je 'tomaten', dan zie je ook tomatensoep en tomatenpuree. Typ je 'soep', dan zie je kippensoep, tomatensoep en groentesoep. Tik erop om meteen daarop te zoeken." },
+      { kind: "beter", text: "De app leert van wat mensen kiezen en vaak zoeken, zonder te onthouden wie het was. Zo komen de beste suggesties steeds vaker bovenaan." },
+      { kind: "beter", text: "Alleen als de app zelf niets weet, helpt de AI een keer. Dat antwoord wordt onthouden, dus er is steeds minder AI nodig." },
+    ],
+  },
+  {
     id: "2026-10-27-i",
     date: "27 oktober 2026",
     title: "Gerechten in blokken, logischer zoeken, slim splitsen klopt altijd en de Jumbo-folder van volgende week",

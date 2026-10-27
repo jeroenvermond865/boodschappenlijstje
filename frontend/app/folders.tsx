@@ -15,6 +15,7 @@ import { goBack } from "@/src/nav";
 import { euro, useDebounced } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { useGrid } from "@/src/layout";
+import SearchSuggestions from "@/src/SearchSuggestions";
 import type { Product } from "@/app/(tabs)/products";
 import { useSwipePages } from "@/src/useSwipePages";
 
@@ -191,6 +192,7 @@ export default function FoldersScreen() {
             </Pressable>
           ) : null}
         </View>
+        <SearchSuggestions q={q} onPick={setQ} testID="folder-suggest" />
         {searching ? (
           <View style={{ flexDirection: "row", gap: 8 }}>
             {[false, true].map((a) => (

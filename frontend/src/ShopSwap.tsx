@@ -12,6 +12,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { euro, fetchProducts, useDebounced } from "@/src/search";
+import SearchSuggestions from "@/src/SearchSuggestions";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 import type { Product } from "@/app/(tabs)/products";
 
@@ -197,6 +198,7 @@ export function ShopSwapSheet({
             <Icon name="magnify" size={20} color={colors.muted} />
             <TextInput placeholder="Zoek in alle producten" placeholderTextColor={colors.muted} value={q} onChangeText={setQ} style={styles.input} />
           </View>
+          <SearchSuggestions q={q} onPick={setQ} />
           {searching ? (
             <View style={{ flexDirection: "row", gap: 6 }}>
               {[false, true].map((h) => (

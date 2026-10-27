@@ -3,6 +3,7 @@ import { ActivityIndicator, Animated, FlatList, Pressable, RefreshControl, Scrol
 import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { smartFilter } from "@/src/smartSearch";
+import SearchSuggestions from "@/src/SearchSuggestions";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1298,6 +1299,13 @@ function DishPickerModal({
                 style={styles.pickerSearchInput}
               />
             </View>
+            <SearchSuggestions
+              q={q}
+              onPick={setQ}
+              kind="dishes"
+              within={own.map((d) => [d.name, ...(d.ingredients ?? []).map((i) => i.name)].join(" "))}
+              testID="picker-suggest"
+            />
             {category ? (
               <Pressable testID="picker-all-cats" onPress={() => setAllCats((v) => !v)} style={styles.createRow}>
                 <Icon name={allCats ? "checkbox-marked-outline" : "checkbox-blank-outline"} size={20} color={colors.brandPrimary} />

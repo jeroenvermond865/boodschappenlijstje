@@ -9,6 +9,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
+import SearchSuggestions from "@/src/SearchSuggestions";
 import { api } from "@/src/api";
 import { useGrid } from "@/src/layout";
 import { countFilters, euro, fetchProducts, NO_FILTERS, useDebounced } from "@/src/search";
@@ -212,6 +213,7 @@ export function ProductBrowser({
             style={styles.searchInput}
           />
         </View>
+        <SearchSuggestions q={search} onPick={setSearch} testID="product-suggest" />
         <View style={styles.toggleRow}>
           <Pressable
             testID="product-favorites-toggle"

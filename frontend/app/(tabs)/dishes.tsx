@@ -10,6 +10,7 @@ import type { Package } from "@/app/package/edit";
 import { OnlineRecipes } from "@/src/OnlineRecipes";
 import { useHideOnScroll } from "@/src/hideOnScroll";
 import { smartFilter } from "@/src/smartSearch";
+import SearchSuggestions from "@/src/SearchSuggestions";
 import { api } from "@/src/api";
 import { dietConflicts, useDiet } from "@/src/diet";
 import { useAuth } from "@/src/auth";
@@ -181,6 +182,15 @@ export default function DishesScreen() {
             style={styles.searchInput}
           />
         </View>
+        <SearchSuggestions
+          q={search}
+          onPick={setSearch}
+          kind="dishes"
+          within={(data?.dishes ?? [])
+            .filter((d) => isOwnDish(d, user?.id) && (tab === "app" ? d.is_standard : !d.is_standard))
+            .map((d) => [d.name, ...(d.ingredients ?? []).map((i) => i.name)].join(" "))}
+          testID="dish-suggest"
+        />
 
         {diet.length ? (
           <Pressable testID="diet-chip" onPress={() => setFitsOnly((v) => !v)} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>

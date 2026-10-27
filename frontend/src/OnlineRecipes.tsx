@@ -15,6 +15,7 @@ import { useGrid } from "@/src/layout";
 import { useAuth } from "@/src/auth";
 import { DISH_GROUPS, GROUP_FILTER } from "@/src/constants";
 import { GroupTiles } from "@/src/GroupTiles";
+import SearchSuggestions from "@/src/SearchSuggestions";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 export type RecipeTile = {
@@ -195,6 +196,7 @@ export function OnlineRecipes({
             </Pressable>
           ) : null}
         </View>
+        <SearchSuggestions q={input} onPick={(s) => { setInput(s); setQ(s); }} kind="dishes" testID="recipe-suggest" />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScroll} contentContainerStyle={styles.chipRow}>
           <Pressable onPress={() => setOpen(true)} style={[styles.chip, active > 0 && styles.chipActive, favQuery && { display: "none" }]} testID="recipe-filters">
             <Icon name="tune-variant" size={16} color={active ? colors.onBrandPrimary : colors.onSurfaceTertiary} />

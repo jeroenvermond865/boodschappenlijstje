@@ -12,6 +12,7 @@ import { api } from "@/src/api";
 import type { Product } from "@/src/ProductBrowser";
 import { euro, fetchProducts, useDebounced } from "@/src/search";
 import { useToast } from "@/src/toast";
+import SearchSuggestions from "@/src/SearchSuggestions";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Suggestion = { name: string; group: string; default: boolean; users: number; product: Product | null };
@@ -113,6 +114,7 @@ export function PantrySuggestions({ onDone }: { onDone?: () => void }) {
           </Pressable>
         ) : null}
       </View>
+      <SearchSuggestions q={q} onPick={setQ} />
       {dq.trim().length > 1 && q.trim().length > 1
         ? (found.data?.products ?? []).map((p) => (
             <Pressable key={p.id} onPress={() => addFound(p)} style={styles.row} testID={`pantry-sug-found-${p.id}`}>
@@ -259,6 +261,7 @@ function PickSheet({ item, current, onClose, onPick }: { item: Suggestion | null
               testID="pantry-pick-search"
             />
           </View>
+          <SearchSuggestions q={q} onPick={setQ} />
           <ScrollView contentContainerStyle={{ gap: 6 }} keyboardShouldPersistTaps="handled">
             {searching ? (
               (found.data?.products ?? []).map((p) => (
