@@ -276,7 +276,7 @@ export default function RecipeScreen() {
                   ))}
                 </>
               ) : null}
-              {r.tip && !(q.data?.alt_swaps ?? []).some((s) => s.text && r.tip!.includes(s.text)) ? (
+              {r.tip ? (
                 <View style={styles.tip}>
                   <Icon name="lightbulb-on-outline" size={18} color={colors.brandPrimary} />
                   <Text style={[styles.body, { flex: 1 }]}>{r.tip}</Text>
