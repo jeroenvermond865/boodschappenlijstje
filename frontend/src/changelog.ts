@@ -5,6 +5,14 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-i",
+    date: "27 oktober 2026",
+    title: "Slim splitsen klopt altijd",
+    changes: [
+      { kind: "opgelost", text: "Slim splitsen over bijvoorbeeld AH en Jumbo kon duurder uitkomen dan alles bij Jumbo. Wat een winkel niet heeft, telt nu bij splitsen op dezelfde manier mee als bij één winkel, dus splitsen is nooit duurder dan een van de gekozen winkels." },
+    ],
+  },
+  {
     id: "2026-10-27-h",
     date: "27 oktober 2026",
     title: "Weer snel",
