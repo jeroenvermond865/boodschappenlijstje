@@ -30,6 +30,8 @@ export type User = {
   premium_welcome?: boolean;
   premium_org?: string | null;
   premium_until?: string | null;
+  plan?: "standaard" | "premium" | "ultra";
+  features?: string[];
 };
 type Status = "loading" | "authed" | "guest";
 

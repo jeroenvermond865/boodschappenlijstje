@@ -81,6 +81,8 @@ function Gate() {
       <Stack.Screen name="recipe/[id]" />
       <Stack.Screen name="admin/users" />
       <Stack.Screen name="admin/roles" />
+      <Stack.Screen name="admin/plans" />
+      <Stack.Screen name="admin/dashboard" />
       <Stack.Screen name="account/profile" />
       <Stack.Screen name="account/diet" />
       <Stack.Screen name="budget/[id]" />

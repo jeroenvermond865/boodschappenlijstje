@@ -12,7 +12,7 @@ import { Button, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { euro } from "@/src/search";
 import { useToast } from "@/src/toast";
-import { GOLD, usePremium } from "@/src/premium";
+import { GOLD, useFeature } from "@/src/premium";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 export type CompareItem = NonNullable<CompareStore["items"]>[number];
@@ -109,7 +109,7 @@ export function CompareCard({
   const fairTotal = (c: CompareStore) => c.total_fair ?? c.total;
   const best = compare.length > 1 ? compare.reduce((a, b) => (fairTotal(b) < fairTotal(a) ? b : a)) : null;
   const maxTotal = Math.max(1, ...compare.map(fairTotal));
-  const premium = usePremium();
+  const premium = useFeature("slim_splitsen");
   const router = useRouter();
   const auto = bestSplit(compare, best ? fairTotal(best) : 0);
   const split = splitPick ? splitFor(compare, splitPick, best ? fairTotal(best) : 0) : auto;

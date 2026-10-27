@@ -10,7 +10,8 @@ import { Icon } from "@/src/components/ui";
 import { niceDate } from "@/src/DateField";
 import { api } from "@/src/api";
 import { cachedApi } from "@/src/offline";
-import { AdSlot, GOLD, usePremium } from "@/src/premium";
+import { AdSlot, GOLD, PLAN_NAME, useFeature, usePlanOf } from "@/src/premium";
+import { TodayCard } from "@/src/TodayCard";
 import { useTerms } from "@/src/settings";
 import { usesNativeTabs } from "@/src/navigation";
 import { euro } from "@/src/search";
@@ -96,7 +97,11 @@ export default function HomeScreen() {
     refetch();
   };
 
-  const premium = usePremium();
+  const premium = useFeature("extra_besparen");
+  const hasPantry = useFeature("voorraadkast");
+  const hasAlerts = useFeature("prijsalarm");
+  const hasSlim = useFeature("slimme_hulp");
+  const slimPlan = usePlanOf("slimme_hulp");
   const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
   const actions = [
     { icon: "clipboard-plus-outline", label: `${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`, onPress: () => router.push("/camp/new") },
@@ -125,6 +130,11 @@ export default function HomeScreen() {
           {greeting()}
           {data?.name ? `, ${data.name}` : ""}
         </Text>
+      </View>
+
+      {/* Vandaag: voor wie (bijna) elke dag even boodschappen doet */}
+      <View style={styles.pad}>
+        <TodayCard />
       </View>
 
       {/* Je kamp */}
@@ -195,17 +205,17 @@ export default function HomeScreen() {
           <Icon name="piggy-bank-outline" size={22} color={premium ? GOLD.icon : colors.brandPrimary} />
           <Text style={premium ? styles.premTileText : [styles.premTileText, { color: colors.onSurface }]}>Bespaaroverzicht</Text>
         </Pressable>
-        {premium ? (
-          <>
-            <Pressable testID="home-pantry" onPress={() => router.push("/pantry")} style={styles.premTile}>
-              <Icon name="fridge-outline" size={22} color={GOLD.icon} />
-              <Text style={styles.premTileText}>Voorraadkast</Text>
-            </Pressable>
-            <Pressable testID="home-alerts" onPress={() => router.push("/alerts")} style={styles.premTile}>
-              <Icon name="bell-ring-outline" size={22} color={GOLD.icon} />
-              <Text style={styles.premTileText}>Prijsalarmen</Text>
-            </Pressable>
-          </>
+        {hasPantry ? (
+          <Pressable testID="home-pantry" onPress={() => router.push("/pantry")} style={styles.premTile}>
+            <Icon name="fridge-outline" size={22} color={GOLD.icon} />
+            <Text style={styles.premTileText}>Voorraadkast</Text>
+          </Pressable>
+        ) : null}
+        {hasAlerts ? (
+          <Pressable testID="home-alerts" onPress={() => router.push("/alerts")} style={styles.premTile}>
+            <Icon name="bell-ring-outline" size={22} color={GOLD.icon} />
+            <Text style={styles.premTileText}>Prijsalarmen</Text>
+          </Pressable>
         ) : null}
       </View>
 
@@ -214,7 +224,7 @@ export default function HomeScreen() {
         <Pressable testID="home-slim" onPress={() => router.push("/slim")} style={styles.slim}>
           <Icon name="auto-fix" size={26} color={GOLD.icon} />
           <View style={{ flex: 1 }}>
-            <Text style={[styles.premTileText, { fontSize: 15, textAlign: "left", fontFamily: fonts.bold }]}>Slimme hulp{premium ? "" : " (Premium)"}</Text>
+            <Text style={[styles.premTileText, { fontSize: 15, textAlign: "left", fontFamily: fonts.bold }]}>Slimme hulp{hasSlim ? "" : ` (${PLAN_NAME[slimPlan]})`}</Text>
             <Text style={[styles.premTileText, { textAlign: "left", fontFamily: fonts.regular }]}>
               Menu uit één zin, koken met restjes, recept of foto overnemen, je lijst inspreken en bespaartips
             </Text>

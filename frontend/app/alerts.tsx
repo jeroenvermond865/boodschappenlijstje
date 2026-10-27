@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
-import { PremiumLock, usePremium } from "@/src/premium";
+import { PremiumLock, useFeature } from "@/src/premium";
 import { euro } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -31,7 +31,7 @@ export default function AlertsScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const premium = usePremium();
+  const premium = useFeature("prijsalarm");
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ["price-alerts"],
     queryFn: () => api<{ alerts: A[]; auto?: A[]; auto_on?: boolean }>("/price-alerts"),
@@ -97,7 +97,7 @@ export default function AlertsScreen() {
         contentContainerStyle={{ padding: 16, gap: 12, paddingBottom: insets.bottom + 24 }}
       >
         {!premium ? (
-          <PremiumLock title="Prijsalarm" text="Krijg een mail als een product in de aanbieding is of onder jouw prijs zakt." />
+          <PremiumLock feature="prijsalarm" title="Prijsalarm" text="Krijg een mail als een product in de aanbieding is of onder jouw prijs zakt." />
         ) : isLoading ? (
           <ActivityIndicator color={colors.brandPrimary} />
         ) : (

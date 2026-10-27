@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ActivityIndicator, Alert, Platform, Pressable, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Field, Icon } from "@/src/components/ui";
@@ -25,6 +26,7 @@ export default function AdminRolesScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const qc = useQueryClient();
+  const router = useRouter();
 
   const [newLabel, setNewLabel] = useState("");
 
@@ -104,6 +106,14 @@ export default function AdminRolesScreen() {
           contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 24, gap: 14 }}
           keyboardShouldPersistTaps="handled"
         >
+          <Pressable testID="roles-plans-link" onPress={() => router.push("/admin/plans")} style={styles.plansLink}>
+            <Icon name="star-cog-outline" size={22} color={colors.brandPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.roleLabel}>Standaard, Premium en Ultra</Text>
+              <Text style={styles.roleMeta}>Kies welke functies bij welk abonnement horen</Text>
+            </View>
+            <Icon name="chevron-right" size={22} color={colors.muted} />
+          </Pressable>
           {(data?.roles ?? []).map((role) => {
             const locked = role.name === "beheerder";
             return (
@@ -211,5 +221,6 @@ const useStyles = makeStyles((colors) => ({
     padding: 16,
     gap: 12,
   },
+  plansLink: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 16, padding: 14, backgroundColor: colors.brandTertiary },
   createTitle: { fontSize: 16, fontFamily: fonts.bold, color: colors.onSurface },
 }));

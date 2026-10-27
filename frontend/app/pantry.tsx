@@ -10,7 +10,7 @@ import { Button, EmptyState, Field, Icon, Select } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { AISLES, AISLE_ICONS, formatQty, UNITS } from "@/src/constants";
 import { goBack } from "@/src/nav";
-import { PremiumLock, usePremium } from "@/src/premium";
+import { PremiumLock, useFeature } from "@/src/premium";
 import { PantrySuggestions } from "@/src/PantrySuggestions";
 import type { Product } from "@/src/ProductBrowser";
 import { euro, fetchProducts, useDebounced } from "@/src/search";
@@ -71,7 +71,7 @@ export default function PantryScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const qc = useQueryClient();
-  const premium = usePremium();
+  const premium = useFeature("voorraadkast");
   const [name, setName] = useState("");
   const [qty, setQty] = useState("1");
   const [unit, setUnit] = useState("stuks");
@@ -201,7 +201,7 @@ export default function PantryScreen() {
       </View>
       <KeyboardAwareScrollView refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => refetch()} tintColor={colors.brandPrimary} />} bottomOffset={20} contentContainerStyle={{ padding: 16, gap: 16, paddingBottom: insets.bottom + 24 }} keyboardShouldPersistTaps="handled">
         {!premium ? (
-          <PremiumLock title="De voorraadkast" text="Houd bij wat je al in huis hebt. Op je boodschappenlijst zie je dan meteen wat je niet hoeft te kopen." />
+          <PremiumLock feature="voorraadkast" title="De voorraadkast" text="Houd bij wat je al in huis hebt. Op je boodschappenlijst zie je dan meteen wat je niet hoeft te kopen." />
         ) : (
           <>
             {/* Bovenaan: zoeken (filtert ook je voorraad) en toevoegen */}

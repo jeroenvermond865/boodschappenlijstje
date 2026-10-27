@@ -5,6 +5,18 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-j",
+    date: "27 oktober 2026",
+    title: "Vandaag op Home, Standaard, Premium en Ultra, en een slimmere AI die minder kost",
+    changes: [
+      { kind: "nieuw", text: "Vandaag op Home: even snel naar de winkel? Eén lijstje voor vandaag, voor 1 of meer personen. Het begint elke dag opnieuw; wat je nog niet had gekocht, blijft staan. Het staat meteen op de looproute van je vaste winkel." },
+      { kind: "nieuw", text: "Wat je vaak koopt: de app onthoudt wat je in de winkel afvinkt. Met één tik zet je het op je lijstje voor vandaag. Is iets daarvan vandaag in de aanbieding, dan zie je dat meteen." },
+      { kind: "nieuw", text: "Er zijn nu drie abonnementen: Standaard (gratis), Premium en Ultra. Bij Account > Abonnementen zie je wat ze kosten en wat je krijgt." },
+      { kind: "beter", text: "De slimme hulp onthoudt antwoorden. Stel je dezelfde vraag nog eens, dan krijg je het antwoord meteen." },
+      { kind: "beter", text: "Mijn geschiedenis: je kunt nu ook wissen wat de app onthield van wat je vaak koopt." },
+    ],
+  },
+  {
     id: "2026-10-27-i",
     date: "27 oktober 2026",
     title: "Gerechten in blokken, logischer zoeken, slim splitsen klopt altijd en de Jumbo-folder van volgende week",

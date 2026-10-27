@@ -118,6 +118,8 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
           "Wat je in de app maakt: je planningen (dagen, aantal personen en vega-eters, maaltijden, budget), boodschappenlijsten, eigen gerechten en pakketten, favoriete producten en recepten, feedback en supermarkt-aanvragen.",
           "Mensen die je uitnodigt: hun e-mailadres, zodat we ze een uitnodiging kunnen sturen.",
           "Wat je bekijkt: welke afdelingen, merken, producten en recepten je opzoekt en kiest. Dit gebruiken we alleen om aanbiedingen en recepten op de startpagina in een voor jou handige volgorde te zetten. Je kunt dit uitzetten (zie punt 4).",
+          "Wat je koopt: welke producten je op je boodschappenlijst afvinkt, en hoe vaak. Daarmee laten we bij Vandaag op de startpagina zien wat je vaak koopt. Ook dit kun je wissen of uitzetten (zie punt 4).",
+          "Gebruik van de app: hoe vaak onderdelen van de app gebruikt worden, en hoeveel vragen je aan de slimme hulp stelt (zodat we het aantal per dag kunnen begrenzen en de kosten kennen). Voor het tellen van actieve gebruikers gebruiken we een onherkenbare code in plaats van je naam of e-mailadres. We gebruiken hiervoor geen trackers of cookies van andere bedrijven.",
           "Technische gegevens: een inlogcode op je apparaat zodat je ingelogd blijft, en je IP-adres in de logboeken van de server.",
           "We vragen nooit om bijzondere gegevens, zoals gezondheid of geloof. Vul die ook niet in bij namen of notities. Allergieën en dieet die je bij Account instelt, blijven alleen op je eigen apparaat. Die krijgen wij niet te zien.",
         ],
@@ -158,6 +160,7 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
           "Een inlogsessie verloopt na 7 dagen. Een code om je wachtwoord te herstellen verloopt na 1 uur.",
           "Gebruik je je account twee jaar niet, dan sturen we je een e-mail. Log je daarna binnen 30 dagen niet in, dan verwijderen we je account en je gegevens. Inloggen is genoeg om je account te houden.",
           "Logboeken van de server worden na korte tijd automatisch gewist.",
+          "Tellingen van het gebruik van de app worden na ruim een jaar automatisch gewist. Antwoorden van de slimme hulp die we onthouden, worden na 90 dagen gewist.",
         ],
       },
       {

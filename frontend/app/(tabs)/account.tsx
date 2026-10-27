@@ -111,7 +111,7 @@ export default function AccountScreen() {
             <View style={styles.rolePill}>
               <Icon name="shield-account-outline" size={13} color={colors.onBrandTertiary} />
               <Text style={styles.rolePillText}>{roleLabel}</Text>
-              {user?.premium ? <Text style={styles.rolePillText}> · Premium</Text> : null}
+              {user?.premium ? <Text style={styles.rolePillText}> · {user.plan === "ultra" ? "Ultra" : "Premium"}</Text> : null}
             </View>
           </View>
         </Card>
@@ -122,7 +122,7 @@ export default function AccountScreen() {
               <Icon name="star" size={26} color={colors.onBrandSecondary} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.premiumTitle}>Premium</Text>
+              <Text style={styles.premiumTitle}>{user.plan === "ultra" ? "Ultra" : "Premium"}</Text>
               <Text style={styles.premiumText}>
                 {user.premium_org
                   ? `Via ${user.premium_org}. `
@@ -139,7 +139,7 @@ export default function AccountScreen() {
               <Icon name="star-outline" size={26} color={colors.onBrandSecondary} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.premiumTitle}>Premium</Text>
+              <Text style={styles.premiumTitle}>{user.plan === "ultra" ? "Ultra" : "Premium"}</Text>
               <Text style={styles.premiumText}>Gratis voor verenigingen. Bekijk wat je krijgt en vraag het aan.</Text>
             </View>
             <Icon name="chevron-right" size={22} color="#7A5212" />
@@ -222,6 +222,22 @@ export default function AccountScreen() {
                 icon="account-group-outline"
                 label="Gebruikers & rollen"
                 onPress={() => router.push("/admin/users")}
+              />
+            ) : null}
+            {canUsers ? (
+              <AdminRow
+                testID="admin-dashboard-link"
+                icon="chart-box-outline"
+                label="Dashboard (live gebruik en AI-kosten)"
+                onPress={() => router.push("/admin/dashboard")}
+              />
+            ) : null}
+            {canSettings ? (
+              <AdminRow
+                testID="admin-plans-link"
+                icon="star-cog-outline"
+                label="Abonnementen en AI-model"
+                onPress={() => router.push("/admin/plans")}
               />
             ) : null}
             {canUsers ? (

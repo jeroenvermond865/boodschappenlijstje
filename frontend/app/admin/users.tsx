@@ -11,7 +11,7 @@ import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type AdminUser = { id: string; name: string; email: string; username?: string | null; phone?: string | null; role: string; premium?: boolean;
+type AdminUser = { id: string; name: string; email: string; username?: string | null; phone?: string | null; role: string; premium?: boolean; plan?: "standaard" | "premium" | "ultra";
   terms_ok?: boolean; terms_version?: string | null; terms_accepted_at?: string | null; created_at?: string | null };
 
 const nlDate = (iso?: string | null) =>
@@ -49,12 +49,14 @@ export default function AdminUsersScreen() {
   // Alleen de beheerder kan iemand beheerder maken
   const roles = (rolesData?.roles ?? []).filter((r) => iAmOwner || r.name !== "beheerder");
 
+  // De ster wisselt: Standaard -> Premium -> Ultra -> Standaard
+  const NEXT_PLAN: Record<string, "standaard" | "premium" | "ultra"> = { standaard: "premium", premium: "ultra", ultra: "standaard" };
+  const PLAN_LABEL: Record<string, string> = { standaard: "Standaard", premium: "Premium", ultra: "Ultra" };
   const setPremium = useMutation({
-    mutationFn: (v: { id: string; premium: boolean }) =>
-      api(`/admin/users/${v.id}/premium`, { method: "PUT", body: { premium: v.premium } }),
+    mutationFn: (v: { id: string; plan: string }) => api(`/admin/users/${v.id}/plan`, { method: "PUT", body: { plan: v.plan } }),
     onSuccess: (_d, v) => {
       qc.invalidateQueries({ queryKey: ["admin-users"] });
-      toast.show(v.premium ? "Premium aangezet" : "Premium uitgezet", "success");
+      toast.show(`Abonnement: ${PLAN_LABEL[v.plan]}`, "success");
     },
     onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
   });
@@ -157,7 +159,7 @@ export default function AdminUsersScreen() {
                     {u.premium ? (
                       <View style={styles.premiumPill}>
                         <Icon name="star" size={11} color={colors.onBrandSecondary} />
-                        <Text style={styles.premiumText}>Premium</Text>
+                        <Text style={styles.premiumText}>{u.plan === "ultra" ? "Ultra" : "Premium"}</Text>
                       </View>
                     ) : null}
                   </View>
@@ -172,11 +174,11 @@ export default function AdminUsersScreen() {
                 </View>
                 <Pressable
                   testID={`user-premium-${u.id}`}
-                  onPress={() => setPremium.mutate({ id: u.id, premium: !u.premium })}
+                  onPress={() => setPremium.mutate({ id: u.id, plan: NEXT_PLAN[u.plan ?? (u.premium ? "premium" : "standaard")] })}
                   hitSlop={8}
                   style={styles.editBtn}
                 >
-                  <Icon name={u.premium ? "star" : "star-outline"} size={22} color={u.premium ? colors.brandSecondary : colors.muted} />
+                  <Icon name={u.plan === "ultra" ? "star-shooting" : u.premium ? "star" : "star-outline"} size={22} color={u.premium ? colors.brandSecondary : colors.muted} />
                 </Pressable>
                 <Pressable testID={`user-edit-${u.id}`} onPress={() => openEdit(u)} hitSlop={8} style={styles.editBtn}>
                   <Icon name="pencil-outline" size={20} color={colors.brandPrimary} />

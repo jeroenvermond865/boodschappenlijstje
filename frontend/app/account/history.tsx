@@ -11,13 +11,14 @@ import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-type Kind = "producten" | "recepten" | "voorraad";
+type Kind = "producten" | "recepten" | "voorraad" | "gekocht";
 type Period = "vandaag" | "week" | "maand" | "alles";
 type History = { kinds: Record<Kind, { items: number; since: string | null }>; no_personal: boolean };
 
 const KINDS: { key: Kind; label: string; sub: string }[] = [
   { key: "producten", label: "Bekeken producten", sub: "Bepaalt welke aanbiedingen je op Home ziet." },
   { key: "recepten", label: "Bekeken en gekozen recepten", sub: "Bepaalt welke recepten je voorgesteld krijgt." },
+  { key: "gekocht", label: "Wat je vaak koopt", sub: "Wat je in de winkel afvinkte. Bepaalt wat je bij Vandaag op Home ziet." },
   { key: "voorraad", label: "Geleerde voorraad", sub: "Wat de voorraadkast zelf onthield ('al in huis' bij een recept). Wat je zelf invulde blijft." },
 ];
 const PERIODS: { key: Period; label: string }[] = [

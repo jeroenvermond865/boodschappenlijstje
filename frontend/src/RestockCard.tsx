@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { formatQty } from "@/src/constants";
-import { usePremium } from "@/src/premium";
+import { useFeature } from "@/src/premium";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -16,7 +16,7 @@ type Low = { id: string; name: string; qty: number; unit: string; image?: string
 export function RestockCard({ campId, compact }: { campId: string; compact?: boolean }) {
   const styles = useStyles();
   const { colors } = useTheme();
-  const premium = usePremium();
+  const premium = useFeature("voorraadkast");
   const toast = useToast();
   const qc = useQueryClient();
   const [off, setOff] = useState<Set<string>>(new Set());
