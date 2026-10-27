@@ -24,6 +24,16 @@ export const CHANGELOG: Release[] = [
     ],
   },
   {
+    id: "2026-10-27-j",
+    date: "27 oktober 2026",
+    title: "Lijstjes bewaren en sneller een nieuw lijstje",
+    changes: [
+      { kind: "nieuw", text: "Lijstjes bewaren: tik bij een lijstje op het doosje. Het gaat niet weg, maar staat dan onder Bewaarde lijstjes. Daar zet je het met één tik weer terug. Bij een gedeeld lijstje geldt dit alleen voor jou." },
+      { kind: "nieuw", text: "Bij verwijderen kun je nu ook kiezen voor Liever bewaren." },
+      { kind: "beter", text: "Een recept of product aan een lijstje toevoegen: je ziet nu altijd al je lijstjes, ook als je er maar één hebt, en je kunt daar meteen een nieuw lijstje maken zonder het scherm te verlaten." },
+    ],
+  },
+  {
     id: "2026-10-27-i",
     date: "27 oktober 2026",
     title: "Gerechten in blokken, logischer zoeken, slim splitsen klopt altijd en de Jumbo-folder van volgende week",
