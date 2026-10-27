@@ -5,6 +5,16 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-b",
+    date: "27 oktober 2026",
+    title: "Sneller en stabieler",
+    changes: [
+      { kind: "opgelost", text: "De server liep soms vast doordat het geheugen vol raakte bij het bijwerken van prijzen. Dat gebeurt nu veel zuiniger, zodat de app niet meer even wegvalt." },
+      { kind: "beter", text: "Na een update is de app sneller klaar: de productlijst wordt als eerste geladen en onderhoud gebeurt daarna op de achtergrond." },
+      { kind: "beter", text: "Lijstjes, gerechten en producten worden sneller gevonden in de database." },
+    ],
+  },
+  {
     id: "2026-10-27-a",
     date: "27 oktober 2026",
     title: "Tips bij gerechten: echt doen, en terug wisselen",

@@ -4120,32 +4120,74 @@ def _fill_brands(docs: list) -> None:
             d["_bio"] = d.get("_bio") or bool(_BIO_RE.search(_norm_text(b)))
 
 
+def _intern_product(d: dict) -> None:
+    # Veel producten delen dezelfde afdeling, merk en verpakking: één keer in het geheugen is genoeg (scheelt bij 50.000+ producten)
+    for k in ("aisle", "subcategory", "brand", "unit"):
+        v = d.get(k)
+        if isinstance(v, str):
+            d[k] = sys.intern(v)
+    d["owner_id"] = None
+    d["deleted_at"] = None
+
+
+def _known_brands(docs) -> list:
+    counts: Dict[str, int] = {}
+    for d in docs:
+        b = (d.get("brand") or "").strip()
+        if b:
+            counts[b] = counts.get(b, 0) + 1
+    known = sorted(((b, _norm_text(b)) for b, n in counts.items() if n >= 3 and len(b) >= 2), key=lambda x: -len(x[1]))
+    return [k for k in known if k[1]]
+
+
+# Velden die de app niet uit de lijst in het geheugen gebruikt
+_PRODUCT_CACHE_PROJ = {"_id": 0, "created_at": 0, "updated_at": 0, "missing_since": 0, "owner_id": 0, "deleted_at": 0,
+                       "hist_last": 0, "barcode_from": 0, "pack_count_from": 0}
+
+
+async def _merge_products(old: dict, query: dict) -> list:
+    # Verversen zonder tweede lijst: bestaande producten in het geheugen bijwerken. Twee volle lijsten tegelijk
+    # passen niet in het geheugen van de server (512 MB), dan crasht hij.
+    known = _known_brands(old.values())
+    docs = []
+    i = 0
+    async for raw in db.products.find(query, _PRODUCT_CACHE_PROJ, batch_size=1000):
+        _intern_product(raw)
+        _prep_product(raw, known)
+        cur = old.get(raw["product_id"])
+        if cur is None:
+            docs.append(raw)
+        else:
+            for k in [k for k in cur if k not in raw]:
+                cur.pop(k, None)
+            for k, v in raw.items():
+                if cur.get(k) != v:
+                    cur[k] = v
+            docs.append(cur)
+        i += 1
+        if i % 2000 == 0:
+            await asyncio.sleep(0)  # andere aanvragen niet blokkeren
+    return docs
+
+
 async def _load_products() -> None:
     try:
         cutoff = now_utc() - timedelta(days=ASSORTMENT_GRACE_DAYS)
-        docs = await db.products.find({"deleted_at": None, "is_global": True,
-                                       "$or": [{"missing_since": None}, {"missing_since": {"$gt": cutoff}}]},
-                                      {"_id": 0, "created_at": 0, "updated_at": 0, "missing_since": 0, "owner_id": 0, "deleted_at": 0}).to_list(None)
-        # Veel producten delen dezelfde afdeling, merk en verpakking: één keer in het geheugen is genoeg (scheelt bij 50.000+ producten)
-        for d in docs:
-            for k in ("aisle", "subcategory", "brand", "unit"):
-                v = d.get(k)
-                if isinstance(v, str):
-                    d[k] = sys.intern(v)
-            d["owner_id"] = None
-            d["deleted_at"] = None
-        counts: Dict[str, int] = {}
-        for d in docs:
-            b = (d.get("brand") or "").strip()
-            if b:
-                counts[b] = counts.get(b, 0) + 1
-        known = sorted(((b, _norm_text(b)) for b, n in counts.items() if n >= 3 and len(b) >= 2), key=lambda x: -len(x[1]))
-        known = [k for k in known if k[1]]
+        query = {"deleted_at": None, "is_global": True, "$or": [{"missing_since": None}, {"missing_since": {"$gt": cutoff}}]}
+        old = _product_cache.get("by_pid")
+        if old:
+            docs = await _merge_products(old, query)
+            del old
+        else:
+            docs = await db.products.find(query, _PRODUCT_CACHE_PROJ).to_list(None)
+            for d in docs:
+                _intern_product(d)
+            known = _known_brands(docs)
+            for i, d in enumerate(docs):
+                _prep_product(d, known)
+                if i % 2000 == 0:
+                    await asyncio.sleep(0)  # andere aanvragen niet blokkeren
         docs.sort(key=lambda d: (AISLES.index(d["aisle"]) if d.get("aisle") in AISLES else 99, d["name"].lower()))
-        for i, d in enumerate(docs):
-            _prep_product(d, known)
-            if i % 2000 == 0:
-                await asyncio.sleep(0)  # andere aanvragen niet blokkeren
         _product_cache["docs"] = docs
         _product_cache["by_pid"] = {d["product_id"]: d for d in docs}
         _product_cache["by_sid"] = {(d["_src"], str(d.get("dirk_id") or d.get("ah_id") or d.get("jumbo_id"))): d
@@ -11275,6 +11317,7 @@ STARTER_PRODUCTS = [
 
 @app.on_event("startup")
 async def startup():
+    asyncio.create_task(_global_products())  # productlijst meteen laden: de rest van het opstarten heeft hem niet nodig
     try:
         await _init_storage()
         logger.info("Object storage initialised")
@@ -11474,21 +11517,8 @@ async def startup():
 
     # De app heet nu Slim Boodschappenlijstje (zoals de website); een opgeslagen oude naam meenemen
     await db.settings.update_one({"key": "app", "app_name": "Boodschappenlijstje"}, {"$set": {"app_name": "Slim Boodschappenlijstje"}})
-    # Migrate legacy department names -> new Dirk-style departments
-    for old, new in OLD_AISLE_MAP.items():
-        await db.products.update_many({"aisle": old}, {"$set": {"aisle": new}})
-    async for d in db.dishes.find({"ingredients.aisle": {"$in": list(OLD_AISLE_MAP.keys())}}, {"_id": 0, "dish_id": 1, "ingredients": 1}):
-        changed = False
-        for ing in d.get("ingredients", []):
-            if ing.get("aisle") in OLD_AISLE_MAP:
-                ing["aisle"] = OLD_AISLE_MAP[ing["aisle"]]
-                changed = True
-        if changed:
-            await db.dishes.update_one({"dish_id": d["dish_id"]}, {"$set": {"ingredients": d["ingredients"]}})
-    logger.info("Department migration done")
-
-    await _trash_orphans()
-    await _purge_expired_trash()
+    # Onderhoud dat de app niet nodig heeft om te starten: op de achtergrond, als de productlijst klaar is
+    asyncio.create_task(_startup_maintenance())
 
     # Testsite (BACKGROUND_JOBS=0): zelfde database, maar prijsrondes en imports alleen op de echte site
     if os.environ.get("BACKGROUND_JOBS", "1") != "0":
@@ -11496,12 +11526,49 @@ async def startup():
         asyncio.create_task(_import_extra_terms())
     else:
         logger.info("Testsite: achtergrondtaken staan uit")
-    asyncio.create_task(_global_products())  # productlijst alvast in het geheugen
     asyncio.create_task(_basic_dish_info_loop())
     asyncio.create_task(_folders_fresh(wait=False))  # acties en folders ophalen
     asyncio.create_task(_log_product_counts())
     if os.environ.get("DISH_AUDIT") == "1":
         asyncio.create_task(_dish_audit())
+
+
+# Zoeksleutels zodat de database niet alles hoeft door te lopen (bestaan ze al, dan doet dit niets)
+_EXTRA_INDEXES = [
+    ("camps", "owner_id"), ("camps", "member_ids"), ("dishes", "owner_id"), ("dishes", "basic"),
+    ("products", "dirk_id"), ("products", "ah_id"), ("products", "jumbo_id"), ("products", "aisle"),
+    ("user_interest", "user_id"), ("submissions", "status"), ("store_requests", "status"),
+    ("premium_requests", "status"), ("email_prefs", "email"), ("users", "username"), ("settings", "key"), ("meta", "key"),
+]
+
+
+async def _startup_maintenance() -> None:
+    await asyncio.sleep(30)
+    for coll, field in _EXTRA_INDEXES:
+        try:
+            await db[coll].create_index(field)
+        except Exception as e:
+            logger.warning("Index %s.%s mislukt: %r", coll, field, e)
+    try:
+        await _global_products()
+        # Oude afdelingsnamen omzetten. Eerst één keer kijken of er nog iets om te zetten is (scheelt negen keer alle producten doorzoeken)
+        olds = list(OLD_AISLE_MAP.keys())
+        if await db.products.find_one({"aisle": {"$in": olds}}, {"_id": 1}):
+            for old, new in OLD_AISLE_MAP.items():
+                await db.products.update_many({"aisle": old}, {"$set": {"aisle": new}})
+        async for d in db.dishes.find({"ingredients.aisle": {"$in": olds}}, {"_id": 0, "dish_id": 1, "ingredients": 1}):
+            changed = False
+            for ing in d.get("ingredients", []):
+                if ing.get("aisle") in OLD_AISLE_MAP:
+                    ing["aisle"] = OLD_AISLE_MAP[ing["aisle"]]
+                    changed = True
+            if changed:
+                await db.dishes.update_one({"dish_id": d["dish_id"]}, {"$set": {"ingredients": d["ingredients"]}})
+        logger.info("Department migration done")
+        await _trash_orphans()
+        await _purge_expired_trash()
+    except Exception as e:
+        logger.warning("Onderhoud na opstarten mislukt: %r", e)
 
 
 async def _dish_audit() -> None:
