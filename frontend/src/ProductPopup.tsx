@@ -1,6 +1,7 @@
 // Een product als venster (bijv. vanaf de boodschappenlijst): foto, prijs, wat het bij de andere winkels kost,
 // en meteen door naar wisselen. "Alles over dit product" opent de hele productpagina.
-import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -14,7 +15,7 @@ import type { Product } from "@/src/ProductBrowser";
 
 type Other = { store: string; product_id?: string; product: string | null; unit?: string; image?: string | null; price?: number; same?: boolean; unit_price?: string | null };
 
-export function ProductPopup({ productId, onClose, onSwap }: { productId: string | null; onClose: () => void; onSwap?: () => void }) {
+export function ProductPopup({ productId, onClose, onSwap, swapLabel = "Wisselen" }: { productId: string | null; onClose: () => void; onSwap?: () => void; swapLabel?: string }) {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -56,7 +57,7 @@ export function ProductPopup({ productId, onClose, onSwap }: { productId: string
                 {onSwap ? (
                   <Pressable onPress={onSwap} style={[styles.btn, { backgroundColor: colors.brandPrimary }]} testID="product-popup-swap">
                     <Icon name="swap-horizontal" size={18} color={colors.onBrandPrimary} />
-                    <Text style={[styles.btnText, { color: colors.onBrandPrimary }]}>Wisselen</Text>
+                    <Text style={[styles.btnText, { color: colors.onBrandPrimary }]}>{swapLabel}</Text>
                   </Pressable>
                 ) : null}
                 <Pressable

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, Image, Pressable, ScrollView, Share, Text, TextInput, View } from "react-native";
+import { FlatList, Pressable, ScrollView, Share, Text, TextInput, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { norm } from "@/src/smartSearch";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";

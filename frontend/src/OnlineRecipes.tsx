@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Animated, FlatList, Image, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Animated, FlatList, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import { HideOnScroll, useHideOnScroll } from "@/src/hideOnScroll";
 import { smartFilter } from "@/src/smartSearch";
 import Modal from "@/src/components/Modal";

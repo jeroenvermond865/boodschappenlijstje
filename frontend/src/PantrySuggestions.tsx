@@ -1,7 +1,8 @@
 // Voorraadkast snel vullen: wat de meeste mensen al in huis hebben, met per stuk het product dat de app erbij kiest.
 // Het meeste staat al aangevinkt; tik op een product om een ander te kiezen, net als bij gerechten.
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 

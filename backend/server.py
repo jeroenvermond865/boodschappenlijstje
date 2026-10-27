@@ -1143,7 +1143,7 @@ async def get_dish(dish_id: str, user: dict = Depends(get_current_user)):
 # Bereiding bij een gerecht: van het recept op de site, aangepast als je andere producten gebruikt,
 # of een voorstel als er geen bereiding is (app-gerechten). Met AI (en zoeken op internet) als die er is,
 # anders uit de bereidingstekst die de winkel bij het product zet.
-PREP_V = 1
+PREP_V = 2
 
 
 async def _product_usage(p: dict) -> Optional[str]:
@@ -1176,6 +1176,42 @@ def _ing_changed(i: dict, prod: Optional[dict]) -> bool:
     return bool(ww) and not any(w in have or (len(w) > 5 and w[:-1] in have) for w in ww)
 
 
+# Zonder AI een logische bereiding: per soort product wat je ermee doet, in een vaste volgorde (snijden, koken, bakken, opdienen)
+_PREP_KINDS = [
+    ("skip", r"\b(water|zout|peper|ijsblokjes|limonade|frisdrank|cola|sap|melk|koffie|thee|bier|wijn)\b"),
+    ("side", r"ketchup|mayo|mosterd|curry(saus)?\b|saus|dressing|sambal|chilisaus|ketjap|sojasaus|piccalilly|augurk|zilverui|jam\b|hagelslag|pindakaas|"
+             r"appelmoes|stroop|honing|chocopasta|boter\b|margarine|halvarine|smeerkaas|zuivelspread"),
+    ("starch", r"rijst|pasta|spaghetti|macaroni|penne|fusilli|tagliatelle|noedels|mie\b|couscous|bulgur|quinoa|aardappel|krieltjes|gnocchi|tortellini|ravioli"),
+    ("oven", r"friet|patat|frites|wedges|kroket|frikandel|bitterbal|loempia|pizza|ovenschotel|lasagne|vissticks|kipnuggets|nuggets|schnitzel"),
+    ("bread", r"brood|broodje|bolletje|bol\b|pistolet|stokbrood|wrap|tortilla|pita|naan|hamburgerbroodje|bun\b|croissant|beschuit|cracker|knackebrod|toast"),
+    ("meat", r"hamburger|burger|gehakt|kip|kipfilet|kipdij|drumstick|worst|braadworst|rookworst|slavink|speklap|spek|karbonade|biefstuk|steak|shoarma|gyros|"
+             r"vis\b|zalm|kabeljauw|tilapia|pangasius|garnaal|tofu|tempeh|vegaburger|vegetarische|schijf|balletje|gehaktbal|frikadel"),
+    ("cheese", r"kaas|mozzarella|feta|parmezaan|plakken\s+kaas|cheddar"),
+    ("egg", r"\beieren\b|\bei\b"),
+    ("raw", r"sla\b|ijsberg|rucola|veldsla|tomaat|tomaten|komkommer|paprika|ui\b|uien|rode ui|radijs|wortel|avocado|lente-?ui|bosui|augurk"),
+    ("cookveg", r"broccoli|bloemkool|sperziebonen|boontjes|spinazie|andijvie|boerenkool|zuurkool|spruit|courgette|champignon|paddenstoel|prei|erwt|doperwt|mais|wokgroente|groente"),
+    ("fruit", r"appel|peer|banaan|sinaasappel|mandarijn|druif|druiven|aardbei|framboos|blauwe bes|meloen|ananas|kiwi|mango|fruit"),
+    ("dairy", r"yoghurt|kwark|vla|pudding|skyr"),
+]
+
+
+def _prep_kind(name: str) -> str:
+    n = _norm_text(name)
+    for kind, rx in _PREP_KINDS:
+        if re.search(rx, n):
+            return kind
+    return "other"
+
+
+def _usage_short(u: Optional[str]) -> Optional[str]:
+    # Van de verpakking alleen de eerste zin of twee: "Pan: 3-4 min. per kant op middelhoog vuur."
+    if not u:
+        return None
+    parts = re.split(r"(?<=[.!])\s+", re.sub(r"\s+", " ", u).strip())
+    out = " ".join(parts[:2])[:220].strip()
+    return out or None
+
+
 def _prep_basic(base: List[str], items: list) -> List[str]:
     # Zonder AI: de stappen van het recept met de nieuwe producten erin, plus wat er op de verpakking staat
     steps = list(base)
@@ -1184,18 +1220,56 @@ def _prep_basic(base: List[str], items: list) -> List[str]:
             continue
         new = re.sub(r"^(dirk|ah|jumbo|1 de beste|g'woon)\s+", "", it["name"], flags=re.I)
         steps = [re.sub(re.escape(it["was"]), new, st, flags=re.I) for st in steps]
-    tips = [f"{it['name']}: {it['usage'].strip()}" for it in items if it.get("usage") and (it["changed"] or not base)]
-    if not base:
-        if not items:
-            return []
-        steps = [f"Zet alles klaar: {', '.join(it['name'] for it in items)}."]
-        steps += tips
-        rest = [it["name"] for it in items if not it.get("usage")]
-        if rest:
-            steps.append(f"Maak {', '.join(rest)} klaar zoals je gewend bent.")
-        steps.append("Verdeel alles over de borden en eet smakelijk.")
-        return [t[:500] for t in steps]
-    return steps + [t[:500] for t in tips]
+    if base:
+        tips = [f"{it['name']}: {_usage_short(it['usage'])}" for it in items if it.get("usage") and it["changed"]]
+        return steps + [t[:500] for t in tips]
+    if not items:
+        return []
+    def short(it):
+        n = re.sub(r"^(dirk|ah|jumbo|1 de beste|g'woon|ah biologisch)\s+", "", it["name"], flags=re.I)
+        return n[:1].lower() + n[1:] if n[1:2].islower() else n  # midden in een zin met een kleine letter
+
+    def cap(t: str) -> str:
+        return t[:1].upper() + t[1:]
+    by: Dict[str, list] = {}
+    for it in items:
+        by.setdefault(_prep_kind(it["name"]), []).append(it)
+    names = lambda k: ", ".join(short(it) for it in by.get(k, []))  # noqa: E731
+    out: List[str] = []
+    if by.get("raw"):
+        out.append(f"Was en snijd {names('raw')}.")
+    for it in by.get("starch", []):
+        u = _usage_short(it.get("usage"))
+        out.append(f"{cap(short(it))}: {u}" if u else f"Kook {short(it)} volgens de verpakking en giet af.")
+    for it in by.get("oven", []):
+        u = _usage_short(it.get("usage"))
+        out.append(f"{cap(short(it))}: {u}" if u else f"Bak {short(it)} in de oven of airfryer volgens de verpakking.")
+    for it in by.get("meat", []):
+        u = _usage_short(it.get("usage"))
+        out.append(f"{cap(short(it))}: {u}" if u else f"Bak {short(it)} in een koekenpan met een beetje olie of boter tot het gaar en goudbruin is.")
+    if by.get("egg"):
+        out.append("Bak of kook de eieren zoals je ze het lekkerst vindt.")
+    for it in by.get("cookveg", []):
+        u = _usage_short(it.get("usage"))
+        out.append(f"{cap(short(it))}: {u}" if u else f"Kook of roerbak {short(it)} een paar minuten tot het beetgaar is.")
+    for it in by.get("other", []):
+        u = _usage_short(it.get("usage"))
+        if u:
+            out.append(f"{cap(short(it))}: {u}")
+    if by.get("bread"):
+        filling = [short(it) for k in ("meat", "cheese", "raw", "egg") for it in by.get(k, [])]
+        if filling:
+            out.append(f"Snijd {names('bread')} open (eventueel even warm in de oven) en beleg met {', '.join(filling)}.")
+        else:
+            out.append(f"Snijd {names('bread')} en leg het op tafel.")
+    elif by.get("cheese"):
+        out.append(f"Snijd of rasp {names('cheese')}.")
+    if by.get("fruit"):
+        out.append(f"Was {names('fruit')} en snijd het in stukjes als dat nodig is.")
+    if by.get("side") or by.get("dairy"):
+        out.append(f"Zet {', '.join(x for x in (names('side'), names('dairy')) if x)} op tafel.")
+    out.append("Verdeel alles over de borden en eet smakelijk.")
+    return [t[:500] for t in out]
 
 
 async def _prep_ai(name: str, base: List[str], items: list) -> Optional[List[str]]:
@@ -7748,8 +7822,22 @@ _TIP_FILLER = re.compile(r"^(?:de|het|een|wat|nog|extra|eventueel|beetje|paar|ha
 _TIP_TAIL = re.compile(r"\s+(?:erbij|erover|ernaast|eroverheen|als\s+bijgerecht|voor\s+erbij|bij\s+het\s+\w+|naar\s+smaak|voor\s+\w+)\b.*$", re.I)
 
 
+_TIP_GENERIC = {"maaltijd", "gerecht", "volledige", "voedzame", "voedzaam", "gezonde", "gezond", "lekkere", "extra", "smaak", "bijgerecht",
+                "variatie", "afwisseling", "kleur", "frisse", "fris", "knapperige", "romige", "hartige", "zoete", "makkelijk", "snel"}
+_TIP_CUT = re.compile(r"\s+(?:voor|als|om|zodat|dan)\s+(?:een|de|het|je|jij|meer|nog|extra)\b.*$", re.I)
+
+
+def _tip_words_in(name: str, d: dict) -> bool:
+    # Het product moet echt over de tip gaan: elk woord uit de tip zit in de productnaam ("rijst" -> geen Tutku-koekjes)
+    n = d.get("_norm") or _norm_text(d.get("name") or "")
+    words = [w for w in _norm_text(name).split() if len(w) >= 3]
+    return bool(words) and all(w in n or (len(w) > 4 and w[:-1] in n) or (len(w) > 5 and w[:-2] in n) for w in words)
+
+
 def _tip_names(x: str) -> list:
     out = []
+    # "rijst voor een volledige en voedzame maaltijd": alleen "rijst"
+    x = _TIP_CUT.sub("", x)
     for part in re.split(r",|\s+of\s+|\s+en\s+|\s+met\s+", x):
         n = _TIP_TAIL.sub("", part.strip())
         while True:
@@ -7758,7 +7846,8 @@ def _tip_names(x: str) -> list:
                 break
             n = m
         n = re.sub(r"\([^)]*\)", "", n).strip(" -")
-        if 2 < len(n) <= 40 and len(n.split()) <= 4 and not re.search(r"\b(je|jij|het\s+gerecht|dit|deze|die|zelf|smaak)\b", n, re.I):
+        if 2 < len(n) <= 40 and len(n.split()) <= 4 and not re.search(r"\b(je|jij|het\s+gerecht|dit|deze|die|zelf|smaak)\b", n, re.I) \
+                and not all(w in _TIP_GENERIC for w in _norm_text(n).split()):
             out.append(n)
     return out
 
@@ -7791,6 +7880,8 @@ def _recipe_tip_actions(rec: dict, user: dict, used: list) -> list:
                 d = _cheapest_good(pool, name, store)
                 if not d or d.get("product_id") in have or any(o["product"]["id"] == d.get("product_id") for o in out):
                     continue
+                if not _tip_words_in(name, d) and not _learned_product(store, name):
+                    continue  # geen product dat echt bij de tip past: liever geen voorstel dan een gek voorstel
                 index, frm = -1, ""
                 if kind == "swap":
                     # Wat vervang je: het ingrediënt uit dezelfde afdeling (spinazie voor andijvie, kip voor gehakt)
@@ -8825,6 +8916,34 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
         recipes = recipes[:6]
     return {"name": (user.get("name") or "").split(" ")[0], "camp": camp, "compare": compare, "compare_pending": compare_pending, "shop_store": (c or {}).get("shop_store") if camp else None, "promos": promos,
             "recipes": await _with_costs(recipes), "todo": todo, "own_dishes": own_dishes, "alerts_hit": alerts_hit}
+
+
+# --- Foto's via onze eigen server: sommige winkels laten hun productfoto's niet zomaar in een andere site zien ---
+_IMG_HOSTS = ("dirk.nl", "ah.nl", "jumbo.com", "wikimedia.org", "unsplash.com", "plus.nl", "lidl.nl", "aldi.nl", "coop.nl", "spar.nl", "hoogvliet.com", "vomar.nl", "dekamarkt.nl", "poiesz-supermarkten.nl")
+_img_cache: Dict[str, tuple] = {}  # url -> (inhoud, soort); klein gehouden, de browser bewaart ze daarna zelf
+_IMG_CACHE_MAX = 300
+
+
+@api_router.get("/img")
+async def image_proxy(u: str):
+    host = (urlparse(u).hostname or "").lower()
+    if not u.startswith("https://") or not any(host == h or host.endswith("." + h) for h in _IMG_HOSTS):
+        raise HTTPException(status_code=400, detail="Onbekende foto")
+    hit = _img_cache.get(u)
+    if hit is None:
+        try:
+            async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers={"User-Agent": DIRK_HEADERS["User-Agent"], "Accept": "image/*"}) as c:
+                r = await c.get(u)
+        except Exception:
+            raise HTTPException(status_code=502, detail="Foto niet op te halen")
+        kind = r.headers.get("content-type", "").split(";")[0]
+        if r.status_code != 200 or not kind.startswith("image/") or len(r.content) > 3_000_000:
+            raise HTTPException(status_code=404, detail="Foto niet gevonden")
+        hit = (r.content, kind)
+        if len(_img_cache) >= _IMG_CACHE_MAX:
+            _img_cache.pop(next(iter(_img_cache)), None)
+        _img_cache[u] = hit
+    return Response(hit[0], media_type=hit[1], headers={"Cache-Control": "public, max-age=604800, immutable"})
 
 
 # --- Andere producten voor een ingrediënt: logische voorstellen per winkel, goedkoper of in de aanbieding ---

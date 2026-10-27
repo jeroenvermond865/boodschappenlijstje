@@ -7,9 +7,14 @@ export const CHANGELOG: Release[] = [
   {
     id: "2026-10-27-d",
     date: "27 oktober 2026",
-    title: "Startpagina sneller",
+    title: "Startpagina sneller, betere tips en foto's",
     changes: [
       { kind: "beter", text: "De startpagina rekent voor de winkelvergelijking niet meer eerst alle prijzen en verpakkingen van je boodschappenlijst uit, dus hij opent sneller." },
+      { kind: "nieuw", text: "Tik bij een tip onder een recept op het product om het te bekijken; daar kun je ook een ander product kiezen." },
+      { kind: "nieuw", text: "Een product dat je via een tip toevoegt, staat meteen bij de ingrediënten (en telt mee in de prijs). Met het kruisje haal je het weer weg." },
+      { kind: "opgelost", text: "Geen gekke productvoorstellen meer bij tips: bij 'Serveer met rijst voor een volledige maaltijd' krijg je alleen rijst." },
+      { kind: "opgelost", text: "Productfoto's die niet laadden, worden nu via onze eigen server opgehaald. Lukt het echt niet, dan zie je een rustig vlak." },
+      { kind: "beter", text: "De bereiding die de app zelf voorstelt is logischer: eerst snijden, dan koken en bakken, sauzen gewoon op tafel." },
     ],
   },
   {
