@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import Modal from "@/src/components/Modal";
-import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -14,6 +13,7 @@ import { useTerms } from "@/src/settings";
 import { useToast } from "@/src/toast";
 import { CATEGORY_LABELS, MEAL_CATEGORIES, type MealCategory } from "@/src/constants";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
+import { NewListInline } from "@/src/NewListInline";
 import { isOwnDish, type Dish } from "@/app/(tabs)/dishes";
 
 type CampLite = { id: string; name: string; days: { index: number; date?: string | null }[] };
@@ -41,7 +41,6 @@ function AddSheet({ mode, onClose, productId, productName }: { mode: "camp" | "d
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
-  const router = useRouter();
   const toast = useToast();
   const T = useTerms();
   const { user, has } = useAuth();
@@ -116,13 +115,7 @@ function AddSheet({ mode, onClose, productId, productName }: { mode: "camp" | "d
             {mode === "camp" ? (
               <>
                 {camps.isLoading ? <ActivityIndicator color={colors.brandPrimary} /> : null}
-                {!camps.isLoading && !list.length ? (
-                  <Pressable onPress={() => { close(); router.push("/camp/new"); }} style={styles.row}>
-                    <Icon name="plus" size={20} color={colors.brandPrimary} />
-                    <Text style={styles.rowText}>{`Eerst een ${T.one} maken`}</Text>
-                  </Pressable>
-                ) : null}
-                {list.length > 1
+                {list.length
                   ? list.map((c) => (
                       <Pressable key={c.id} onPress={() => { setCampId(c.id); setDay(null); }} style={[styles.row, camp?.id === c.id && styles.rowOn]}>
                         <Icon name="clipboard-list-outline" size={20} color={colors.brandPrimary} />
@@ -131,6 +124,7 @@ function AddSheet({ mode, onClose, productId, productName }: { mode: "camp" | "d
                       </Pressable>
                     ))
                   : null}
+                {!camps.isLoading ? <NewListInline onCreated={(id) => { setCampId(id); setDay(null); }} /> : null}
                 {camp ? (
                   <>
                     <Text style={styles.label}>Wanneer?</Text>

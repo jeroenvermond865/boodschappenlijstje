@@ -17,6 +17,7 @@ import { STORE_LABEL } from "@/src/OnlineRecipes";
 import type { Product } from "@/app/(tabs)/products";
 import { BetterPack, PackBetter, PackPlan, packText } from "@/src/packs";
 import { AltSwapList, slotOf, type AltSwap } from "@/src/DishPreview";
+import { NewListInline } from "@/src/NewListInline";
 
 type Recipe = {
   id: string;
@@ -421,21 +422,9 @@ function CampSheet({
             <ScrollView contentContainerStyle={{ gap: 12 }}>
               <Text style={styles.sheetTitle}>{`Toevoegen aan ${T.one}`}</Text>
               {camps.isLoading ? <ActivityIndicator color={colors.brandPrimary} /> : null}
-              {!camps.isLoading && !list.length ? (
-                <Pressable
-                  onPress={() => {
-                    close();
-                    router.push("/camp/new");
-                  }}
-                  style={styles.catRow}
-                >
-                  <Icon name="plus" size={22} color={colors.brandPrimary} />
-                  <Text style={styles.catText}>{`Eerst een ${T.one} maken`}</Text>
-                </Pressable>
-              ) : null}
-              {list.length > 1 ? (
+              {list.length ? (
                 <View style={{ gap: 8 }}>
-                  <Text style={styles.label}>{T.One}</Text>
+                  <Text style={styles.label}>{`Kies ${T.de} ${T.one}`}</Text>
                   {list.map((c) => (
                     <Pressable key={c.id} onPress={() => { setCampId(c.id); setDay(0); }} style={[styles.catRow, camp?.id === c.id && styles.catRowSuggested]}>
                       <Icon name="clipboard-list-outline" size={20} color={colors.brandPrimary} />
@@ -445,6 +434,7 @@ function CampSheet({
                   ))}
                 </View>
               ) : null}
+              {!camps.isLoading ? <NewListInline onCreated={(id) => { setCampId(id); setDay(0); }} /> : null}
               {camp ? (
                 <>
                   <Text style={styles.label}>Dag</Text>

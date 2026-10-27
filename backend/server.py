@@ -1597,7 +1597,7 @@ async def meta(user: dict = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 # Camps
 # ---------------------------------------------------------------------------
-def camp_public(doc: dict) -> dict:
+def camp_public(doc: dict, uid: Optional[str] = None) -> dict:
     return {
         "id": doc["camp_id"],
         "name": doc["name"],
@@ -1610,6 +1610,7 @@ def camp_public(doc: dict) -> dict:
         "start_date": doc.get("start_date"),
         "owner_id": doc.get("owner_id"),
         "member_ids": doc.get("member_ids", []),
+        "archived": bool(uid and uid in (doc.get("archived_by") or [])),
         "created_at": doc["created_at"].isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at"),
     }
 
@@ -1654,10 +1655,27 @@ class MemberInput(BaseModel):
 
 
 @api_router.get("/camps")
-async def list_camps(user: dict = Depends(get_current_user)):
-    cursor = db.camps.find(camp_access_filter(user["user_id"]), {"_id": 0}).sort("created_at", -1)
-    docs = await cursor.to_list(1000)
-    return {"camps": [camp_public(d) for d in docs]}
+async def list_camps(archived: bool = False, user: dict = Depends(get_current_user)):
+    # Bewaarde (gearchiveerde) lijstjes staan apart; dat is per persoon, een gedeeld lijstje blijft voor de anderen gewoon staan
+    uid = user["user_id"]
+    flt = {**camp_access_filter(uid), "archived_by": uid if archived else {"$ne": uid}}
+    docs = await db.camps.find(flt, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    out = {"camps": [camp_public(d, uid) for d in docs]}
+    if not archived:
+        out["archived_count"] = await db.camps.count_documents({**camp_access_filter(uid), "archived_by": uid})
+    return out
+
+
+@api_router.post("/camps/{camp_id}/archive")
+async def archive_camp(camp_id: str, keep: bool = True, user: dict = Depends(get_current_user)):
+    # keep=True: bewaren (uit je gewone overzicht, niets gaat weg); keep=False: terugzetten
+    uid = user["user_id"]
+    doc = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(uid)}, {"_id": 0, "camp_id": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
+    op = {"$addToSet": {"archived_by": uid}} if keep else {"$pull": {"archived_by": uid}}
+    await db.camps.update_one({"camp_id": camp_id}, op)
+    return {"ok": True, "archived": keep}
 
 
 @api_router.post("/camps")
@@ -1686,7 +1704,7 @@ async def get_camp(camp_id: str, user: dict = Depends(get_current_user)):
     doc = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
-    return camp_public(doc)
+    return camp_public(doc, user["user_id"])
 
 
 @api_router.put("/camps/{camp_id}")
@@ -9240,7 +9258,8 @@ async def _warm_home() -> None:
 async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
     # shuffle: verversen (omlaag trekken) geeft andere recepten en acties die bij je passen; anders blijft het een uur hetzelfde
     perms = await user_permissions(user)
-    camps = await db.camps.find(camp_access_filter(user["user_id"]), {"_id": 0}).sort("created_at", -1).to_list(50)
+    # Bewaarde (gearchiveerde) lijstjes horen niet meer op Home
+    camps = await db.camps.find({**camp_access_filter(user["user_id"]), "archived_by": {"$ne": user["user_id"]}}, {"_id": 0}).sort("created_at", -1).to_list(50)
     camp = None
     compare = None
     compare_pending = False

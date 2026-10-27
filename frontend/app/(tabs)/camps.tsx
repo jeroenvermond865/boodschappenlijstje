@@ -28,9 +28,28 @@ export default function CampsScreen() {
   const qc = useQueryClient();
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
 
+  // Bewaarde (gearchiveerde) lijstjes: niet weggegooid, alleen uit het gewone overzicht
+  const [showArchived, setShowArchived] = useState(false);
   const { data, isLoading, isError, refetch, isRefetching } = useQuery({
+    queryKey: showArchived ? ["camps", "archived"] : ["camps"],
+    queryFn: () => cachedApi<{ camps: Camp[]; archived_count?: number }>(showArchived ? "/camps?archived=true" : "/camps"),
+  });
+  const archivedCount = useQuery({
     queryKey: ["camps"],
-    queryFn: () => cachedApi<{ camps: Camp[] }>("/camps"),
+    queryFn: () => cachedApi<{ camps: Camp[]; archived_count?: number }>("/camps"),
+    enabled: showArchived,
+  }).data?.archived_count ?? data?.archived_count ?? 0;
+
+  const archive = useMutation({
+    mutationFn: ({ id, keep }: { id: string; keep: boolean }) => api(`/camps/${id}/archive?keep=${keep}`, { method: "POST" }),
+    onSuccess: (_d, { id, keep }) => {
+      setAsk(null);
+      qc.invalidateQueries({ queryKey: ["camps"] });
+      qc.invalidateQueries({ queryKey: ["home"] });
+      if (keep) toast.show(`${T.One} bewaard`, "success", { label: "Ongedaan maken", onPress: () => archive.mutate({ id, keep: false }) });
+      else toast.show(`${T.One} staat weer bij je ${T.many}`, "success");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Bewaren mislukt", "error"),
   });
 
   const restore = useMutation({
@@ -95,6 +114,27 @@ export default function CampsScreen() {
               </View>
             </View>
             <View style={styles.cardActions}>
+              {showArchived ? (
+                <Pressable
+                  testID={`camp-unarchive-${item.id}`}
+                  hitSlop={8}
+                  onPress={() => archive.mutate({ id: item.id, keep: false })}
+                  style={styles.cardActionBtn}
+                  accessibilityLabel="Terugzetten"
+                >
+                  <Icon name="archive-arrow-up-outline" size={20} color={colors.brandPrimary} />
+                </Pressable>
+              ) : (
+                <Pressable
+                  testID={`camp-archive-${item.id}`}
+                  hitSlop={8}
+                  onPress={() => archive.mutate({ id: item.id, keep: true })}
+                  style={styles.cardActionBtn}
+                  accessibilityLabel="Bewaren"
+                >
+                  <Icon name="archive-arrow-down-outline" size={20} color={colors.muted} />
+                </Pressable>
+              )}
               <Pressable
                 testID={`camp-duplicate-${item.id}`}
                 hitSlop={8}
@@ -116,14 +156,20 @@ export default function CampsScreen() {
         </Animated.View>
       );
     },
-    [styles, colors, router, del, duplicate],
+    [styles, colors, router, del, duplicate, archive, showArchived],
   );
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Text style={styles.title}>{s.tab_camps}</Text>
-        <Text style={styles.subtitle}>{s.sub_camps}</Text>
+        <Text style={styles.subtitle}>{showArchived ? `Bewaarde ${T.many}: niet weg, alleen uit je overzicht. Zet ze terug wanneer je wilt.` : s.sub_camps}</Text>
+        {showArchived || archivedCount > 0 ? (
+          <Pressable testID="camps-archived-toggle" onPress={() => setShowArchived((v) => !v)} hitSlop={6} style={styles.archToggle}>
+            <Icon name={showArchived ? "arrow-left" : "archive-outline"} size={17} color={colors.brandPrimary} />
+            <Text style={styles.archToggleText}>{showArchived ? `Terug naar ${T.many}` : `Bewaarde ${T.many} (${archivedCount})`}</Text>
+          </Pressable>
+        ) : null}
       </View>
 
       {isLoading ? (
@@ -145,11 +191,15 @@ export default function CampsScreen() {
             <RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={colors.brandPrimary} />
           }
           ListEmptyComponent={
+            showArchived ? (
+              <EmptyState icon="archive-outline" title={`Geen bewaarde ${T.many}`} subtitle={`Tik bij ${T.de} ${T.one} op het doosje om hem te bewaren.`} />
+            ) : (
             <EmptyState
               icon="clipboard-list-outline"
               title={`Nog geen ${T.many} gepland`}
               subtitle={`Maak een ${T.one} aan en plan per dag de maaltijden en het aantal personen.`}
             />
+            )
           }
         />
       )}
@@ -169,6 +219,14 @@ export default function CampsScreen() {
             <Text style={styles.askText}>
               Wat je op dit lijstje al hebt afgevinkt, heb je gekocht. Die besparing kan blijven meetellen in je bespaaroverzicht.
             </Text>
+            <Button
+              label={`Liever bewaren (niet weggooien)`}
+              icon="archive-arrow-down-outline"
+              variant="secondary"
+              loading={archive.isPending}
+              onPress={() => ask && archive.mutate({ id: ask.id, keep: true })}
+              testID="camp-delete-archive"
+            />
             <Button
               label="Verwijderen, besparing bewaren"
               icon="piggy-bank-outline"
@@ -197,6 +255,8 @@ export default function CampsScreen() {
 const useStyles = makeStyles((colors) => ({
   askBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", padding: 24 },
   askBox: { backgroundColor: colors.surface, borderRadius: 20, padding: 18, gap: 12, maxWidth: 440, width: "100%", alignSelf: "center" },
+  archToggle: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", marginTop: 10, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 999, backgroundColor: colors.brandTertiary },
+  archToggleText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.brandPrimary },
   askText: { fontSize: 14, lineHeight: 20, fontFamily: fonts.regular, color: colors.onSurfaceSecondary },
   root: { flex: 1, backgroundColor: colors.surface },
   header: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 },

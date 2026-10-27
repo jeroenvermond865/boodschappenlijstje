@@ -75,6 +75,33 @@ def test_lid_mag_wel_wisselen():
     assert run(t()) == {"p1": "p2"}
 
 
+# --- Lijstjes bewaren (archiveren) ---
+def test_lijstje_bewaren_en_terugzetten():
+    async def t():
+        await _camp(name="Week", created_at=S.now_utc(), member_ids=["u2"])
+        await S.archive_camp("c1", True, U1)
+        eigen = await S.list_camps(False, U1)
+        bewaard = await S.list_camps(True, U1)
+        ander = await S.list_camps(False, U2)  # per persoon: het lid ziet hem nog gewoon
+        await S.archive_camp("c1", False, U1)
+        terug = await S.list_camps(False, U1)
+        return eigen, bewaard, ander, terug
+    eigen, bewaard, ander, terug = run(t())
+    assert eigen["camps"] == [] and eigen["archived_count"] == 1
+    assert [c["id"] for c in bewaard["camps"]] == ["c1"] and bewaard["camps"][0]["archived"]
+    assert [c["id"] for c in ander["camps"]] == ["c1"]
+    assert [c["id"] for c in terug["camps"]] == ["c1"] and terug["archived_count"] == 0
+
+
+def test_lijstje_van_een_ander_niet_te_bewaren():
+    async def t():
+        await _camp()
+        await S.archive_camp("c1", True, U2)
+    with pytest.raises(HTTPException) as e:
+        run(t())
+    assert e.value.status_code == 404
+
+
 # --- Tips bij gerechten ---
 def test_tip_product_toevoegen_en_weghalen():
     async def t():
