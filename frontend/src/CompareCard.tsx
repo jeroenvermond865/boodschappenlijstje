@@ -31,7 +31,7 @@ export const SHORT: Record<string, string> = { "Albert Heijn": "AH", Jumbo: "Jum
 
 // Slim splitsen: elk product bij de goedkoopste van de gekozen winkels. Zonder keuze: de goedkoopste combinatie (2 of 3 winkels),
 // alleen als het echt scheelt. Per product ook wat het bij de andere winkel kost ("bij Jumbo € 2,49").
-type SplitLine = { name: string; product: string | null; store: string; price: number; was?: { store: string; price: number } };
+type SplitLine = { name: string; product: string | null; store: string; price: number; was?: { store: string; price: number }; estimate?: boolean };
 type Split = { stores: string[]; total: number; saving: number; lines: SplitLine[] };
 
 function splitFor(compare: CompareStore[], stores: string[], bestSingle: number): Split | null {
@@ -44,9 +44,15 @@ function splitFor(compare: CompareStore[], stores: string[], bestSingle: number)
       .map((c) => ({ store: c.store, it: c.items?.[k], price: c.items?.[k]?.price ?? null }))
       .filter((o) => o.it && o.price != null)
       .sort((x, y) => (x.price as number) - (y.price as number));
-    if (!opts.length) {
-      // Geen van de winkels heeft het: de schatting telt mee (zoals bij één winkel)
-      if (first.estimate != null) total += first.estimate;
+    // Heeft een van de gekozen winkels het niet, dan rekent die winkel alleen met de schatting (zoals bij "alles bij één winkel").
+    // Die schatting mag ook hier: zo is splitten nooit duurder dan alles bij een van de gekozen winkels.
+    const est = per.some((c) => c.items?.[k] && c.items[k].price == null) ? first.estimate ?? null : null;
+    if (!opts.length || (est != null && est < (opts[0].price as number))) {
+      if (est != null) {
+        total += est;
+        const miss = per.find((c) => c.items?.[k] && c.items[k].price == null)!;
+        lines.push({ name: first.name, product: null, store: miss.store, price: est, estimate: true });
+      }
       return;
     }
     const top = opts[0];
@@ -67,7 +73,7 @@ function bestSplit(compare: CompareStore[], bestSingle: number): Split | null {
     const pick = names.filter((_, i) => mask & (1 << i));
     if (pick.length < 2) continue;
     const s = splitFor(compare, pick, bestSingle);
-    if (!s || new Set(s.lines.map((l) => l.store)).size < pick.length) continue; // elke winkel moet ook echt iets hebben
+    if (!s || new Set(s.lines.filter((l) => !l.estimate).map((l) => l.store)).size < pick.length) continue; // elke winkel moet ook echt iets hebben
     // Een winkel extra is pas de moeite als het minstens € 1 scheelt
     if (s.saving >= 1 && (!top || s.total < top.total - (pick.length > top.stores.length ? 1 : 0))) top = s;
   }
@@ -283,7 +289,9 @@ export function CompareCard({
                             <View key={l.name} style={styles.cmpRow}>
                               <View style={{ flex: 1 }}>
                                 <Text style={styles.cmpName} numberOfLines={1}>{l.product ?? l.name}</Text>
-                                {l.was ? (
+                                {l.estimate ? (
+                                  <Text style={styles.small}>Niet bij {SHORT[l.store] ?? l.store}: geschat, je haalt het ergens anders</Text>
+                                ) : l.was ? (
                                   <Text style={[styles.small, { color: colors.success }]}>
                                     Bij {SHORT[l.was.store] ?? l.was.store} {euro(l.was.price)}, hier {euro(l.price)}: {euro(l.was.price - l.price)} goedkoper
                                   </Text>

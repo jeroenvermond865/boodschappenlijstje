@@ -3371,8 +3371,10 @@ def _best_split_saving(rows: list) -> float:
         total, used = 0.0, set()
         for k, first in enumerate(per[0]["items"]):
             opts = sorted(((r["items"][k]["price"], r["store"]) for r in per if k < len(r["items"]) and r["items"][k].get("price") is not None))
-            if not opts:
-                total += float(first.get("estimate") or 0)
+            # Mist een gekozen winkel dit, dan telt daar de schatting (zoals bij één winkel): splitsen is nooit duurder dan een van die winkels
+            est = first.get("estimate") if any(k < len(r["items"]) and r["items"][k].get("price") is None for r in per) else None
+            if not opts or (est is not None and float(est) < opts[0][0]):
+                total += float(est or 0)
                 continue
             total += opts[0][0]
             used.add(opts[0][1])
