@@ -122,6 +122,16 @@ export default function PremiumScreen() {
             <Text style={styles.small}>Voor thuisgebruik komt Premium later tegen een kleine vergoeding.</Text>
           </View>
         )}
+        <Text style={styles.small}>
+          Je betaalt nooit ongemerkt, kunt altijd opzeggen en hebt bij kopen 14 dagen bedenktijd.{"\n"}
+          <Text style={styles.link} onPress={() => router.push({ pathname: "/legal/[doc]", params: { doc: "voorwaarden" } })} testID="premium-terms">
+            Voorwaarden
+          </Text>
+          {"  ·  "}
+          <Text style={styles.link} onPress={() => router.push({ pathname: "/legal/[doc]", params: { doc: "herroepen" } })} testID="premium-withdraw">
+            Herroepen
+          </Text>
+        </Text>
       </KeyboardAwareScrollView>
     </View>
   );
@@ -150,7 +160,8 @@ const useStyles = makeStyles((colors) => ({
   section: { gap: 12, borderTopWidth: 1, borderTopColor: colors.divider, paddingTop: 18 },
   sectionTitle: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },
   sectionText: { fontSize: 14, lineHeight: 20, fontFamily: fonts.regular, color: colors.onSurfaceSecondary },
-  small: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, textAlign: "center" },
+  small: { fontSize: 12, lineHeight: 18, fontFamily: fonts.regular, color: colors.muted, textAlign: "center" },
+  link: { fontFamily: fonts.semibold, color: colors.brandPrimary, textDecorationLine: "underline" },
   status: { flexDirection: "row", gap: 10, backgroundColor: colors.brandTertiary, borderRadius: 14, padding: 14 },
   statusText: { flex: 1, fontSize: 14, lineHeight: 20, fontFamily: fonts.medium, color: colors.onBrandTertiary },
 }));

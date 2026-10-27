@@ -42,6 +42,15 @@ export const CHANGELOG: Release[] = [
     ],
   },
   {
+    id: "2026-10-27-j",
+    date: "27 oktober 2026",
+    title: "Nieuwe voorwaarden, privacy en cookies",
+    changes: [
+      { kind: "beter", text: "De voorwaarden, privacyverklaring en het cookiebeleid zijn bijgewerkt met alles wat nu in de app zit: Premium, Slimme hulp met AI, delen en Premium verdienen, back-ups en e-mails. Je geeft één keer opnieuw akkoord." },
+      { kind: "nieuw", text: "Bedenktijd: koop je later Premium, dan heb je 14 dagen om je koop zonder reden ongedaan te maken. Bij Voorwaarden staat daarvoor een tab Herroepen, met een knop en een bevestiging per e-mail." },
+    ],
+  },
+  {
     id: "2026-10-27-i",
     date: "27 oktober 2026",
     title: "Gerechten in blokken, logischer zoeken, slim splitsen klopt altijd en de Jumbo-folder van volgende week",

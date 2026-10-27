@@ -204,7 +204,7 @@ async def create_session(user_id: str) -> str:
 
 # Datum van de huidige voorwaarden en privacyverklaring. Verander je de teksten wezenlijk, zet dan een nieuwe datum:
 # iedereen moet dan bij de volgende keer inloggen opnieuw akkoord geven.
-TERMS_VERSION = "2026-10-25"
+TERMS_VERSION = "2026-10-27"
 
 
 def public_user(doc: dict) -> dict:
@@ -11654,6 +11654,76 @@ async def reject_store_request(req_id: str, user: dict = Depends(get_current_use
 
 
 # ---------------------------------------------------------------------------
+# Herroepen (bedenktijd van 14 dagen bij betaald Premium). Kan ook zonder in te loggen.
+# De wet vraagt een duidelijke knop in de app en een bevestiging per e-mail; we bewaren het 2 jaar als bewijs.
+# ---------------------------------------------------------------------------
+class WithdrawInput(BaseModel):
+    name: str
+    email: str
+    what: str = "Slim Boodschappenlijstje Premium"
+    ordered_on: Optional[str] = None
+    note: Optional[str] = None
+
+
+def _mail_box(title: str, body: str) -> str:
+    return ('<table role="presentation" width="100%"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#1C1B1A">'
+            f'<h2 style="color:#2E5E38;margin:0 0 12px">{title}</h2>{body}'
+            '<p style="font-size:12px;color:#888">Verstuurd door Slim Boodschappenlijstje.</p></td></tr></table>')
+
+
+@api_router.post("/legal/withdraw")
+async def legal_withdraw(data: WithdrawInput, request: Request, authorization: Optional[str] = Header(None)):
+    limit(f"withdraw:{client_ip(request)}", 5, 3600)
+    user = None
+    if authorization:
+        try:
+            user = await get_current_user(authorization)
+        except HTTPException:
+            user = None
+    name, mail = data.name.strip()[:100], data.email.strip().lower()[:200]
+    if len(name) < 2:
+        raise HTTPException(status_code=400, detail="Vul je naam in")
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", mail):
+        raise HTTPException(status_code=400, detail="Vul een geldig e-mailadres in")
+    doc = {
+        "withdrawal_id": f"wd_{uuid.uuid4().hex[:12]}",
+        "name": name, "email": mail,
+        "what": (data.what or "").strip()[:200] or "Slim Boodschappenlijstje Premium",
+        "ordered_on": (data.ordered_on or "").strip()[:40] or None,
+        "note": (data.note or "").strip()[:1000] or None,
+        "user_id": user["user_id"] if user else None,
+        "account_email": user.get("email") if user else None,
+        "status": "new",
+        "created_at": now_utc(),
+        "expires_at": now_utc() + timedelta(days=730),
+    }
+    await db.withdrawals.insert_one(dict(doc))
+    try:
+        from zoneinfo import ZoneInfo
+        when = doc["created_at"].astimezone(ZoneInfo("Europe/Amsterdam")).strftime("%-d-%-m-%Y om %H:%M")
+    except Exception:  # geen tijdzonegegevens op de server
+        when = doc["created_at"].strftime("%-d-%-m-%Y om %H:%M (UTC)")
+    rows = "".join(f"<tr><td style='padding:2px 12px 2px 0;color:#666'>{k}</td><td>{escape(str(v))}</td></tr>"
+                   for k, v in (("Dienst", doc["what"]), ("Afgesloten op", doc["ordered_on"] or "niet ingevuld"), ("Naam", name),
+                                ("E-mailadres", mail), ("Ontvangen", when), ("Kenmerk", doc["withdrawal_id"]))
+                   + ((("Toelichting", doc["note"]),) if doc["note"] else ()))
+    table = f"<table style='font-size:14px;margin:8px 0 16px'>{rows}</table>"
+    # Bevestiging aan de gebruiker (verplicht), en een melding aan ons om het af te handelen
+    await send_email(mail, "Bevestiging: je herroeping is ontvangen", _mail_box(
+        "Je herroeping is ontvangen",
+        f"<p>Hoi {escape(name)},</p><p>We hebben je herroeping goed ontvangen. Dit zijn de gegevens:</p>{table}"
+        "<p>Heb je betaald, dan krijg je je geld binnen 14 dagen terug, op dezelfde manier als waarop je betaalde. "
+        "Zei je bij het afsluiten dat Premium meteen mocht starten, dan houden we alleen het deel in voor de dagen dat je Premium al had.</p>"
+        f"<p>Vragen? Antwoord gewoon op deze mail of mail naar {escape(INFO_EMAIL)}.</p>"), allow_unsubscribe=False)
+    await send_email(INFO_EMAIL or ADMIN_EMAIL, f"Herroeping ontvangen van {name}", _mail_box(
+        "Nieuwe herroeping",
+        f"<p>Iemand heeft via de app herroepen. Betaal binnen 14 dagen terug.</p>{table}"
+        + (f"<p>Account: {escape(doc['account_email'] or '')} ({escape(doc['user_id'] or '')})</p>" if user else "<p>Niet ingelogd verstuurd.</p>")),
+        allow_unsubscribe=False)
+    return {"ok": True, "id": doc["withdrawal_id"], "at": doc["created_at"].isoformat()}
+
+
+# ---------------------------------------------------------------------------
 # Feedback / verbeteringen
 # ---------------------------------------------------------------------------
 class FeedbackInput(BaseModel):
@@ -12972,6 +13042,7 @@ async def startup():
     await db.invitations.create_index([("email", 1), ("camp_id", 1)], unique=True)
     await db.google_logins.create_index("expires_at", expireAfterSeconds=0)
     await db.password_resets.create_index("expires_at", expireAfterSeconds=0)
+    await db.withdrawals.create_index("expires_at", expireAfterSeconds=0)
     try:
         await _pantry_freeze_rate()
     except Exception as e:
