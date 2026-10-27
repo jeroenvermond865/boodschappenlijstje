@@ -4713,6 +4713,12 @@ async def search_products(
                     seen = {d["product_id"] for d in hit[0]}
                     docs_all = hit[0] + [d for d in more[0] if d["product_id"] not in seen]
                     hit = (docs_all, more[1] if len(more[0]) > len(hit[0]) else hit[1], more[2] if len(more[0]) > len(hit[0]) else hit[2])
+        if q.strip() and sort in ("", "relevance") and not (sub or brand or offer or bio) and len(hit[0]) > 8:
+            # Onzichtbare standaardvolgorde: de soorten producten die mensen bij dit woord bedoelen eerst (zoals op de site van de winkel).
+            # Kies je zelf een filter of sortering, dan geldt die.
+            prof = await _ai_search_profile(q, hit[0])
+            if prof:
+                hit = (_apply_profile(hit[0], prof, store), hit[1], hit[2])
         if len(_search_cache) > 150:
             _search_cache.pop(next(iter(_search_cache)))
         _search_cache[key] = hit
@@ -4782,6 +4788,88 @@ async def _ai_search_terms(q: str) -> list:
         _ai_search_mem.pop(next(iter(_ai_search_mem)))
     await db.ai_search.update_one({"q": key}, {"$set": {"q": key, "terms": terms, "at": now_utc()}}, upsert=True)
     return terms
+
+
+_ai_profile_mem: Dict[str, dict] = {}
+_ai_profile_tasks: Dict[str, asyncio.Task] = {}
+
+
+def _group_of(d: dict) -> str:
+    return f"{d.get('aisle') or 'Overig'} > {d.get('subcategory') or '-'}"
+
+
+def _apply_profile(docs: list, prof: dict, store: str) -> list:
+    rank = {g: k for k, g in enumerate(prof.get("order") or [])}
+    low = set(prof.get("bottom") or [])
+    mid = len(rank)
+
+    def key(rd):
+        k, d = rd
+        g = _group_of(d)
+        return (mid + 100 if g in low else rank.get(g, mid), 0 if d.get("_src") == store else 1, k)
+    return [d for _, d in sorted(enumerate(docs), key=key)]
+
+
+async def _ai_search_profile(q: str, docs: list) -> Optional[dict]:
+    # Per zoekwoord één keer aan de AI vragen welke soorten producten bovenaan horen ("brood": broden, niet broodbeleg of paneermeel)
+    key = _norm_text(q)
+    if key in _ai_profile_mem:
+        return _ai_profile_mem[key]
+    doc = await db.ai_search_rank.find_one({"q": key}, {"_id": 0})
+    if doc is not None:
+        _ai_profile_mem[key] = doc
+        return doc
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    t = _ai_profile_tasks.get(key)
+    if t is None:
+        groups: Dict[str, list] = {}
+        for d in docs[:400]:
+            groups.setdefault(_group_of(d), []).append(d["name"])
+        t = asyncio.create_task(_ai_profile_ask(q, key, groups))
+        _ai_profile_tasks[key] = t
+        t.add_done_callback(lambda _t, k=key: _ai_profile_tasks.pop(k, None))
+    try:
+        return await asyncio.wait_for(asyncio.shield(t), 6)  # te traag? Dan nu zonder, de volgende keer wel
+    except Exception:
+        return None
+
+
+async def _ai_profile_ask(q: str, key: str, groups: Dict[str, list]) -> Optional[dict]:
+    day = now_utc().date().isoformat()
+    if _ai_search_state["day"] != day:
+        _ai_search_state.update(day=day, n=0)
+    if _ai_search_state["n"] >= AI_SEARCH_DAILY:
+        return None
+    _ai_search_state["n"] += 1
+    names = list(groups)[:45]
+    lines = [f"{k + 1}. {g} ({len(groups[g])}x, bijv. {'; '.join(groups[g][:3])})" for k, g in enumerate(names)]
+    try:
+        from anthropic import AsyncAnthropic
+        msg = await AsyncAnthropic().beta.messages.create(
+            model=AI_PICK_MODEL, max_tokens=600, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"format": {"type": "json_schema", "schema": {
+                "type": "object", "additionalProperties": False, "required": ["order", "bottom"],
+                "properties": {"order": {"type": "array", "items": {"type": "integer"}}, "bottom": {"type": "array", "items": {"type": "integer"}}}}}},
+            messages=[{"role": "user", "content": (
+                f"Iemand zoekt in een Nederlandse supermarkt-app op \"{q[:60]}\". Dit zijn de soorten producten die gevonden worden (afdeling > soort).\n\n"
+                + "\n".join(lines) +
+                "\n\norder: de nummers van de soorten die iemand met dit zoekwoord echt bedoelt, de meest logische eerst (zoals de site van Albert Heijn of Jumbo ze bovenaan zet; "
+                "bij 'brood' dus eerst gewone broden, niet broodbeleg, broodjes kroket of paneermeel). "
+                "bottom: de nummers van soorten die er alleen bij komen omdat het woord erin zit en die helemaal achteraan horen. De rest blijft in het midden.")}])
+        text = next((b.text for b in msg.content if b.type == "text"), "")
+        res = json.loads(text) if text and msg.stop_reason not in ("refusal", "max_tokens") else {}
+    except Exception as e:
+        logger.info("Zoekvolgorde %r: %r", q, e)
+        return None
+    pick = lambda xs: [names[i - 1] for i in xs or [] if isinstance(i, int) and 1 <= i <= len(names)]
+    prof = {"q": key, "order": pick(res.get("order"))[:20], "bottom": pick(res.get("bottom"))}
+    _ai_profile_mem[key] = prof
+    if len(_ai_profile_mem) > 5000:
+        _ai_profile_mem.pop(next(iter(_ai_profile_mem)))
+    await db.ai_search_rank.update_one({"q": key}, {"$set": {**prof, "at": now_utc()}}, upsert=True)
+    _search_cache.clear()  # nieuwe volgorde meteen gebruiken
+    return prof
 
 
 # Een herkenbaar plaatje per hoofdafdeling, zoals ijsblokjes bij diepvries
@@ -12485,6 +12573,7 @@ async def startup():
     await db.ai_tips.create_index("sig", unique=True)
     await db.ai_checks.create_index("key", unique=True)
     await db.ai_search.create_index("q", unique=True)
+    await db.ai_search_rank.create_index("q", unique=True)
     await db.ai_usage.create_index([("user_id", 1), ("day", 1)], unique=True)
     await db.camps.create_index("camp_id", unique=True)
     await db.invitations.create_index([("email", 1), ("camp_id", 1)], unique=True)
