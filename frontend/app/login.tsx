@@ -21,7 +21,7 @@ export default function LoginScreen() {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { login, register, loginWithGoogle } = useAuth();
+  const { login, register, loginWithGoogle, notice, setNotice } = useAuth();
   const toast = useToast();
 
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -34,7 +34,7 @@ export default function LoginScreen() {
 
   const { data: settings } = useQuery({
     queryKey: ["settings"],
-    queryFn: () => api<{ app_name: string; tagline: string; hero_url: string; logo_url: string }>("/settings"),
+    queryFn: () => api<{ app_name: string; tagline: string; hero_url: string; logo_url: string; signup_approval?: boolean }>("/settings"),
   });
   const appName = settings?.app_name ?? "Slim Boodschappenlijstje";
   const tagline = settings?.tagline ?? "Plan maaltijden en boodschappen per kampdag";
@@ -55,11 +55,14 @@ export default function LoginScreen() {
       return;
     }
     setBusy(true);
+    setNotice(null);
     try {
       if (mode === "login") {
         await login(email.trim(), password);
       } else {
         await register(name.trim(), email.trim(), password, agree);
+        setMode("login");
+        setPassword("");
       }
     } catch (e: any) {
       toast.show(e?.message ?? "Inloggen mislukt", "error");
@@ -106,6 +109,15 @@ export default function LoginScreen() {
         <Text style={styles.tagline}>{tagline}</Text>
 
         <View style={styles.card}>
+          {notice ? (
+            <View style={styles.notice} testID="auth-notice">
+              <Icon name="information-outline" size={20} color={colors.brandPrimary} />
+              <Text style={styles.noticeText}>{notice}</Text>
+              <Pressable onPress={() => setNotice(null)} hitSlop={8}>
+                <Icon name="close" size={18} color={colors.muted} />
+              </Pressable>
+            </View>
+          ) : null}
           <View style={styles.segment}>
             <Pressable
               testID="tab-login"
@@ -157,10 +169,15 @@ export default function LoginScreen() {
                 <Text style={styles.forgotText}>Wachtwoord vergeten?</Text>
               </Pressable>
             ) : (
-              <TermsCheck value={agree} onChange={setAgree} />
+              <>
+                {settings?.signup_approval ? (
+                  <Text style={styles.approvalHint}>De app is nog in een testfase. Een nieuw account wordt eerst door de beheerder goedgekeurd.</Text>
+                ) : null}
+                <TermsCheck value={agree} onChange={setAgree} />
+              </>
             )}
             <Button
-              label={mode === "login" ? "Inloggen" : "Account aanmaken"}
+              label={mode === "login" ? "Inloggen" : settings?.signup_approval ? "Account aanvragen" : "Account aanmaken"}
               onPress={submit}
               loading={busy}
               testID="submit-button"
@@ -308,6 +325,9 @@ const useStyles = makeStyles((colors) => ({
   line: { flex: 1, height: 1, backgroundColor: colors.divider },
   dividerText: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
   forgotWrap: { alignSelf: "flex-end", marginTop: -4 },
+  notice: { flexDirection: "row", alignItems: "flex-start", gap: 8, padding: 12, marginBottom: 12, borderRadius: 12, backgroundColor: colors.surfaceSecondary },
+  noticeText: { flex: 1, fontSize: 14, lineHeight: 20, fontFamily: fonts.regular, color: colors.onSurface },
+  approvalHint: { fontSize: 13, lineHeight: 18, fontFamily: fonts.regular, color: colors.onSurfaceSecondary },
   forgotText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
   sheetBackdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(28,27,26,0.5)" },
   sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "92%", padding: 20 },

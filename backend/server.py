@@ -273,6 +273,27 @@ async def accept_invitations(user: dict) -> None:
         await db.invitations.update_one({"invite_id": inv["invite_id"]}, {"$set": {"accepted": True}})
 
 
+# Accountaanvragen: staat dit aan (Beheer -> Gebruikers), dan moet de beheerder een nieuw account eerst goedkeuren
+SIGNUP_PENDING_MSG = "Bedankt! Je aanvraag is ontvangen. De beheerder kijkt ernaar. Je krijgt een e-mail zodra je account klaarstaat."
+SIGNUP_WAIT_MSG = "Je aanvraag wacht nog op goedkeuring van de beheerder. Je krijgt een e-mail zodra je account klaarstaat."
+
+
+async def signup_approval_on() -> bool:
+    doc = await db.settings.find_one({"key": "app"}, {"_id": 0, "signup_approval": 1}) or {}
+    return bool(doc.get("signup_approval"))
+
+
+async def _notify_signup_request(doc: dict) -> None:
+    base = (FRONTEND_URL or "").rstrip("/")
+    html = (
+        '<div style="font-family:Arial,sans-serif;color:#1C1B1A">'
+        f'<p>Nieuwe accountaanvraag van <b>{escape(doc.get("name") or "")}</b> ({escape(doc.get("email") or "")}).</p>'
+        + (f'<p><a href="{escape(base)}/admin/users">Bekijk de aanvragen</a></p>' if base else "")
+        + '</div>'
+    )
+    asyncio.create_task(send_email(ADMIN_EMAIL, f"Accountaanvraag: {doc.get('name') or doc.get('email')}", html, allow_unsubscribe=False))
+
+
 def _assert_safe_email(subject: str, html: str) -> None:
     low = html.lower()
     if any(t in low for t in ("<form", "<input", "<textarea", "<select")):
@@ -398,7 +419,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     if ensure_aware(session["expires_at"]) < now_utc():
         raise HTTPException(status_code=401, detail="Sessie verlopen")
     user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
-    if not user or user.get("deleted_at"):
+    if not user or user.get("deleted_at") or user.get("approval") == "pending":
         raise HTTPException(status_code=401, detail="Gebruiker niet gevonden")
     if user.get("premium") and user.get("premium_until") and ensure_aware(user["premium_until"]) < now_utc():
         user = await _premium_expired(user)
@@ -541,6 +562,8 @@ async def register(data: RegisterInput, request: Request):
     if existing:
         if existing.get("deleted_at"):
             raise HTTPException(status_code=400, detail="Dit account is verwijderd. Vraag de beheerder om het terug te zetten")
+        if existing.get("approval") == "pending":
+            raise HTTPException(status_code=400, detail=SIGNUP_WAIT_MSG)
         raise HTTPException(status_code=400, detail="E-mailadres is al in gebruik")
     user_id = new_user_id()
     is_admin = email in ADMIN_SEED_EMAILS
@@ -558,6 +581,11 @@ async def register(data: RegisterInput, request: Request):
         "terms_version": TERMS_VERSION,
         "terms_accepted_at": now_utc(),
     }
+    if not is_admin and await signup_approval_on():
+        doc["approval"] = "pending"
+        await db.users.insert_one(doc)
+        await _notify_signup_request(doc)
+        return {"pending": True, "message": SIGNUP_PENDING_MSG}
     await db.users.insert_one(doc)
     await accept_invitations(doc)
     token = await create_session(user_id)
@@ -576,6 +604,8 @@ async def login(data: LoginInput, request: Request):
         add_attempt(acc_key)
         raise HTTPException(status_code=401, detail="Onjuiste inloggegevens")
     _attempts.pop(acc_key, None)
+    if user.get("approval") == "pending":
+        raise HTTPException(status_code=403, detail=SIGNUP_WAIT_MSG)
     token = await create_session(user["user_id"])
     return {"session_token": token, "user": public_user(user)}
 
@@ -797,6 +827,8 @@ async def auth_session(data: SessionInput, request: Request):
     existing = await db.users.find_one({"email": email})
     if existing and existing.get("deleted_at"):
         raise HTTPException(status_code=403, detail="Dit account is verwijderd. Vraag de beheerder om het terug te zetten")
+    if existing and existing.get("approval") == "pending":
+        raise HTTPException(status_code=403, detail=SIGNUP_WAIT_MSG)
     if existing:
         user_id = existing["user_id"]
         await db.users.update_one(
@@ -818,6 +850,11 @@ async def auth_session(data: SessionInput, request: Request):
             "role": "beheerder" if email in ADMIN_SEED_EMAILS else await default_role(),
             "created_at": now_utc(),
         }
+        if email not in ADMIN_SEED_EMAILS and await signup_approval_on():
+            user["approval"] = "pending"
+            await db.users.insert_one(user)
+            await _notify_signup_request(user)
+            return {"pending": True, "message": SIGNUP_PENDING_MSG}
         await db.users.insert_one(user)
         await accept_invitations(user)
 
@@ -3972,7 +4009,7 @@ async def premium_seen(user: dict = Depends(get_current_user)):
 @api_router.get("/admin/users")
 async def admin_list_users(user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_users")
-    docs = await db.users.find({"deleted_at": None}, {"_id": 0}).sort("created_at", 1).to_list(5000)
+    docs = await db.users.find({"deleted_at": None, "approval": {"$ne": "pending"}}, {"_id": 0}).sort("created_at", 1).to_list(5000)
 
     def iso(v):
         return v.isoformat() if isinstance(v, datetime) else None
@@ -3980,6 +4017,61 @@ async def admin_list_users(user: dict = Depends(get_current_user)):
     # Voor de beheerder: wanneer iemand de voorwaarden en privacyverklaring accepteerde, en welke versie
     return {"users": [{**public_user(d), "terms_version": d.get("terms_version"), "terms_accepted_at": iso(d.get("terms_accepted_at")),
                        "created_at": iso(d.get("created_at")), "last_seen_at": iso(d.get("last_seen_at"))} for d in docs]}
+
+
+@api_router.get("/admin/signup-requests")
+async def list_signup_requests(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    docs = await db.users.find({"approval": "pending", "deleted_at": None}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+    return {"enabled": await signup_approval_on(), "requests": [
+        {"id": d["user_id"], "name": d.get("name"), "email": d.get("email"), "auth_provider": d.get("auth_provider"),
+         "created_at": d["created_at"].isoformat() if isinstance(d.get("created_at"), datetime) else None} for d in docs]}
+
+
+class SignupApprovalInput(BaseModel):
+    enabled: bool
+
+
+@api_router.put("/admin/signup-approval")
+async def set_signup_approval(data: SignupApprovalInput, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    # Uitzetten laat lopende aanvragen staan: die keur je nog gewoon goed of af
+    await db.settings.update_one({"key": "app"}, {"$set": {"signup_approval": data.enabled}}, upsert=True)
+    return {"enabled": data.enabled}
+
+
+@api_router.post("/admin/signup-requests/{target_id}/{action}")
+async def review_signup_request(target_id: str, action: str, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=404, detail="Onbekende actie")
+    target = await db.users.find_one({"user_id": target_id, "approval": "pending"})
+    if not target:
+        raise HTTPException(status_code=404, detail="Aanvraag niet gevonden")
+    base = (FRONTEND_URL or "").rstrip("/")
+    hi = f'<p>Hoi {escape(target.get("name") or "")},</p>'
+    if action == "approve":
+        await db.users.update_one({"user_id": target_id}, {"$unset": {"approval": ""}, "$set": {"approved_at": now_utc(), "approved_by": user["user_id"]}})
+        await accept_invitations(target)
+        html = (
+            '<div style="font-family:Arial,sans-serif;color:#1C1B1A">' + hi
+            + '<p>Goed nieuws: je account bij Slim Boodschappenlijstje is goedgekeurd. Je kunt nu inloggen.</p>'
+            + (f'<p><a href="{escape(base)}" style="color:#2E5E38">Naar de app</a></p>' if base else "")
+            + '</div>'
+        )
+        subject = "Je account is goedgekeurd"
+    else:
+        # Afgewezen: het nieuwe account had nog niets, dus het gaat meteen helemaal weg
+        await db.users.delete_one({"user_id": target_id, "approval": "pending"})
+        html = (
+            '<div style="font-family:Arial,sans-serif;color:#1C1B1A">' + hi
+            + '<p>Bedankt voor je aanvraag. De app is nog in een testfase en we kunnen je account op dit moment niet goedkeuren. '
+            'Je gegevens zijn verwijderd.</p></div>'
+        )
+        subject = "Je accountaanvraag"
+    if target.get("email"):
+        asyncio.create_task(send_email(target["email"], subject, html, allow_unsubscribe=False))
+    return {"ok": True}
 
 
 class AdminUserUpdate(BaseModel):
@@ -9326,6 +9418,7 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
         todo["stores"] = await db.store_requests.count_documents({"status": "pending"})
     if "manage_users" in perms:
         todo["premium"] = await db.premium_requests.count_documents({"status": "pending"})
+        todo["signups"] = await db.users.count_documents({"approval": "pending", "deleted_at": None})
     own_dishes = await db.dishes.count_documents({"owner_id": user["user_id"], "deleted_at": None})
     alerts_hit = await db.price_alerts.count_documents({"user_id": user["user_id"], "notified_mark": {"$exists": True}}) if user.get("premium") else 0
     try:

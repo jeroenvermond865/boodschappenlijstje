@@ -205,3 +205,59 @@ def test_grote_groepen_filter_eruit():
     rest, groep = S._take_group_filter(json.dumps({"groep": ["Voor grote groepen"], "gang": ["soep"]}))
     assert groep and json.loads(rest) == {"gang": ["soep"]}
     assert S._take_group_filter('{"gang": ["soep"]}') == ('{"gang": ["soep"]}', False)
+
+
+# --- Accountaanvragen (beheerder keurt nieuwe accounts goed) ---
+def _req():
+    from starlette.requests import Request
+    return Request({"type": "http", "headers": [], "client": ("1.2.3.4", 1)})
+
+
+async def _geen_mail(*a, **k):
+    return None
+
+
+def _reg(email):
+    return S.RegisterInput(email=email, password="geheim1234", name="Test", accept_terms=True)
+
+
+def test_aanvragen_uit_werkt_zoals_altijd(monkeypatch):
+    monkeypatch.setattr(S, "send_email", _geen_mail)
+    S._attempts.clear()
+    res = run(S.register(_reg("nieuw@voorbeeld.nl"), _req()))
+    assert res.get("session_token") and not res.get("pending")
+
+
+def test_aanvraag_wacht_op_goedkeuring(monkeypatch):
+    monkeypatch.setattr(S, "send_email", _geen_mail)
+    S._attempts.clear()
+
+    async def t():
+        await S.db.settings.insert_one({"key": "app", "signup_approval": True})
+        res = await S.register(_reg("nieuw@voorbeeld.nl"), _req())
+        assert res["pending"] and "session_token" not in res
+        with pytest.raises(HTTPException) as e:
+            await S.login(S.LoginInput(identifier="nieuw@voorbeeld.nl", password="geheim1234"), _req())
+        assert e.value.status_code == 403
+        admin = {"user_id": "a1", "role": "beheerder"}
+        await S.db.roles.insert_one({"name": "beheerder", "permissions": ["manage_users"]})
+        lijst = await S.list_signup_requests(admin)
+        assert lijst["enabled"] and len(lijst["requests"]) == 1
+        assert (await S.admin_list_users(admin))["users"] == []
+        await S.review_signup_request(lijst["requests"][0]["id"], "approve", admin)
+        return await S.login(S.LoginInput(identifier="nieuw@voorbeeld.nl", password="geheim1234"), _req())
+    assert run(t()).get("session_token")
+
+
+def test_aanvraag_afwijzen_wist_account(monkeypatch):
+    monkeypatch.setattr(S, "send_email", _geen_mail)
+    S._attempts.clear()
+
+    async def t():
+        await S.db.settings.insert_one({"key": "app", "signup_approval": True})
+        await S.db.roles.insert_one({"name": "beheerder", "permissions": ["manage_users"]})
+        await S.register(_reg("weg@voorbeeld.nl"), _req())
+        u = await S.db.users.find_one({"email": "weg@voorbeeld.nl"})
+        await S.review_signup_request(u["user_id"], "reject", {"user_id": "a1", "role": "beheerder"})
+        return await S.db.users.count_documents({})
+    assert run(t()) == 0

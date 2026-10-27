@@ -5,6 +5,14 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-j",
+    date: "27 oktober 2026",
+    title: "Nieuwe accounts eerst goedkeuren",
+    changes: [
+      { kind: "nieuw", text: "Beheer > Gebruikers: zet 'Accounts eerst goedkeuren' aan, dan wordt registreren een aanvraag. De beheerder krijgt een e-mail en keurt de aanvraag goed of wijst hem af. Na goedkeuring krijgt de nieuwe gebruiker een e-mail en kan hij inloggen. Zet je het weer uit, dan werkt registreren zoals altijd." },
+    ],
+  },
+  {
     id: "2026-10-27-i",
     date: "27 oktober 2026",
     title: "Gerechten in blokken, logischer zoeken, slim splitsen klopt altijd en de Jumbo-folder van volgende week",

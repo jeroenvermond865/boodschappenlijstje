@@ -17,6 +17,7 @@ type AdminUser = { id: string; name: string; email: string; username?: string | 
 const nlDate = (iso?: string | null) =>
   iso ? new Date(iso).toLocaleString("nl-NL", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : null;
 type Role = { name: string; label: string };
+type SignupReq = { id: string; name?: string; email?: string; auth_provider?: string; created_at?: string | null };
 
 export default function AdminUsersScreen() {
   const styles = useStyles();
@@ -35,6 +36,36 @@ export default function AdminUsersScreen() {
     queryKey: ["roles"],
     queryFn: () => api<{ roles: Role[] }>("/roles"),
   });
+  // Accountaanvragen: staat dit aan, dan moet een nieuw account eerst hier worden goedgekeurd
+  const { data: signupData } = useQuery({
+    queryKey: ["signup-requests"],
+    queryFn: () => api<{ enabled: boolean; requests: SignupReq[] }>("/admin/signup-requests"),
+  });
+  const signupOn = !!signupData?.enabled;
+  const signupReqs = signupData?.requests ?? [];
+  const afterSignup = () => {
+    qc.invalidateQueries({ queryKey: ["signup-requests"] });
+    qc.invalidateQueries({ queryKey: ["admin-users"] });
+    qc.invalidateQueries({ queryKey: ["settings"] });
+    qc.invalidateQueries({ queryKey: ["home"] });
+  };
+  const toggleSignup = useMutation({
+    mutationFn: (enabled: boolean) => api("/admin/signup-approval", { method: "PUT", body: { enabled } }),
+    onSuccess: (_d, enabled) => {
+      afterSignup();
+      toast.show(enabled ? "Nieuwe accounts moeten nu eerst goedgekeurd worden" : "Iedereen kan weer zelf een account aanmaken", "success");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
+  });
+  const reviewSignup = useMutation({
+    mutationFn: (v: { id: string; action: "approve" | "reject" }) => api(`/admin/signup-requests/${v.id}/${v.action}`, { method: "POST" }),
+    onSuccess: (_d, v) => {
+      afterSignup();
+      toast.show(v.action === "approve" ? "Account goedgekeurd, de gebruiker krijgt een e-mail" : "Aanvraag afgewezen", v.action === "approve" ? "success" : "info");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
+  });
+
   // Zoeken op naam, e-mail, gebruikersnaam, telefoon of rol; filter op Premium
   const [q, setQ] = useState("");
   const [onlyPremium, setOnlyPremium] = useState(false);
@@ -133,6 +164,61 @@ export default function AdminUsersScreen() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 24, gap: 12 }} keyboardShouldPersistTaps="handled">
+          <View style={styles.card} testID="signup-approval">
+            <Pressable
+              testID="signup-approval-toggle"
+              onPress={() => toggleSignup.mutate(!signupOn)}
+              disabled={toggleSignup.isPending || !signupData}
+              style={{ flexDirection: "row", alignItems: "center", gap: 12 }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.name}>Accounts eerst goedkeuren</Text>
+                <Text style={styles.email}>
+                  {signupOn
+                    ? "Aan: wie zich registreert, komt hieronder als aanvraag te staan en kan pas inloggen na jouw goedkeuring."
+                    : "Uit: iedereen kan zelf een account aanmaken en meteen beginnen."}
+                </Text>
+              </View>
+              <Icon name={signupOn ? "toggle-switch" : "toggle-switch-off-outline"} size={40} color={signupOn ? colors.brandPrimary : colors.muted} />
+            </Pressable>
+            {signupReqs.length ? (
+              <View style={{ gap: 10, marginTop: 12 }}>
+                <Text style={styles.count}>
+                  {signupReqs.length === 1 ? "1 accountaanvraag" : `${signupReqs.length} accountaanvragen`}
+                </Text>
+                {signupReqs.map((r) => (
+                  <View key={r.id} style={styles.signupRow} testID={`signup-${r.id}`}>
+                    <Text style={styles.name} numberOfLines={1}>{r.name || r.email}</Text>
+                    <Text style={styles.email} numberOfLines={1}>
+                      {r.email}
+                      {r.auth_provider === "google" ? " (Google)" : ""}
+                      {r.created_at ? ` · ${nlDate(r.created_at)}` : ""}
+                    </Text>
+                    <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+                      <Pressable
+                        testID={`signup-reject-${r.id}`}
+                        disabled={reviewSignup.isPending}
+                        onPress={() => reviewSignup.mutate({ id: r.id, action: "reject" })}
+                        style={[styles.signupBtn, { borderWidth: 1.5, borderColor: colors.error }]}
+                      >
+                        <Icon name="close" size={18} color={colors.error} />
+                        <Text style={[styles.signupBtnText, { color: colors.error }]}>Afwijzen</Text>
+                      </Pressable>
+                      <Pressable
+                        testID={`signup-approve-${r.id}`}
+                        disabled={reviewSignup.isPending}
+                        onPress={() => reviewSignup.mutate({ id: r.id, action: "approve" })}
+                        style={[styles.signupBtn, { backgroundColor: colors.brandPrimary }]}
+                      >
+                        <Icon name="check" size={18} color={colors.onBrandPrimary} />
+                        <Text style={[styles.signupBtnText, { color: colors.onBrandPrimary }]}>Goedkeuren</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </View>
           <Field testID="user-search" value={q} onChangeText={setQ} placeholder="Zoek op naam, e-mail, gebruikersnaam of telefoon" autoCapitalize="none" />
           <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
             <Text style={styles.count}>
@@ -305,4 +391,7 @@ const useStyles = makeStyles((colors) => ({
   pwHint: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: -4 },
   deleteBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12 },
   deleteText: { fontSize: 15, fontFamily: fonts.semibold, color: colors.error },
+  signupRow: { borderTopWidth: 1, borderTopColor: colors.divider, paddingTop: 10 },
+  signupBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 12 },
+  signupBtnText: { fontSize: 14, fontFamily: fonts.semibold },
 }));
