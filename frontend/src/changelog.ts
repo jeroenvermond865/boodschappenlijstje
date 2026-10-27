@@ -5,56 +5,21 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
-    id: "2026-10-27-zoeksuggesties",
+    id: "2026-10-27-j",
     date: "27 oktober 2026",
-    title: "Zoekbalken denken mee",
+    title: "Nieuwe uitleg, donkere modus, zoeksuggesties, lijstjes bewaren en nieuwe voorwaarden",
     changes: [
       { kind: "nieuw", text: "Onder elke zoekbalk staan nu suggesties terwijl je typt. Typ je 'tomaten', dan zie je ook tomatensoep en tomatenpuree. Typ je 'soep', dan zie je kippensoep, tomatensoep en groentesoep. Tik erop om meteen daarop te zoeken." },
       { kind: "beter", text: "De app leert van wat mensen kiezen en vaak zoeken, zonder te onthouden wie het was. Zo komen de beste suggesties steeds vaker bovenaan." },
       { kind: "beter", text: "Alleen als de app zelf niets weet, helpt de AI een keer. Dat antwoord wordt onthouden, dus er is steeds minder AI nodig." },
-    ],
-  },
-  {
-    id: "2026-10-27-j",
-    date: "27 oktober 2026",
-    title: "Je ziet alleen de updates die je nog niet kende",
-    changes: [
       { kind: "beter", text: "De melding na een update onthoudt nu per gebruiker wat je al gezien hebt, ook op een ander apparaat. Heb je een paar updates gemist, dan zie je die allemaal, en alleen die." },
       { kind: "beter", text: "Zijn het veel updates, dan krijg je eerst een korte samenvatting op één pagina. Tik op Lees alles voor alle punten." },
-    ],
-  },
-  {
-    id: "2026-10-27-j",
-    date: "27 oktober 2026",
-    title: "Lijstjes bewaren en sneller een nieuw lijstje",
-    changes: [
       { kind: "nieuw", text: "Lijstjes bewaren: tik bij een lijstje op het doosje. Het gaat niet weg, maar staat dan onder Bewaarde lijstjes. Daar zet je het met één tik weer terug. Bij een gedeeld lijstje geldt dit alleen voor jou." },
       { kind: "nieuw", text: "Bij verwijderen kun je nu ook kiezen voor Liever bewaren." },
       { kind: "beter", text: "Een recept of product aan een lijstje toevoegen: je ziet nu altijd al je lijstjes, ook als je er maar één hebt, en je kunt daar meteen een nieuw lijstje maken zonder het scherm te verlaten." },
-    ],
-  },
-  {
-    id: "2026-10-27-j",
-    date: "27 oktober 2026",
-    title: "Nieuwe accounts eerst goedkeuren",
-    changes: [
       { kind: "nieuw", text: "Beheer > Gebruikers: zet 'Accounts eerst goedkeuren' aan, dan wordt registreren een aanvraag. De beheerder krijgt een e-mail en keurt de aanvraag goed of wijst hem af. Na goedkeuring krijgt de nieuwe gebruiker een e-mail en kan hij inloggen. Zet je het weer uit, dan werkt registreren zoals altijd." },
-    ],
-  },
-  {
-    id: "2026-10-27-j",
-    date: "27 oktober 2026",
-    title: "Nieuwe voorwaarden, privacy en cookies",
-    changes: [
       { kind: "beter", text: "De voorwaarden, privacyverklaring en het cookiebeleid zijn bijgewerkt met alles wat nu in de app zit: Premium, Slimme hulp met AI, delen en Premium verdienen, back-ups en e-mails. Je geeft één keer opnieuw akkoord." },
       { kind: "nieuw", text: "Bedenktijd: koop je later Premium, dan heb je 14 dagen om je koop zonder reden ongedaan te maken. Bij Voorwaarden staat daarvoor een tab Herroepen, met een knop en een bevestiging per e-mail." },
-    ],
-  },
-  {
-    id: "2026-10-27-j",
-    date: "27 oktober 2026",
-    title: "Nieuwe uitleg met bewegende voorbeelden, een luxer uiterlijk en donkere modus",
-    changes: [
       { kind: "nieuw", text: "Account > Zo werkt de app is helemaal vernieuwd: bij elke stap een kort bewegend voorbeeld uit de app, met echte aanbiedingen en gerechten. Nu ook over slim splitsen, de voorraadkast en Slimme hulp." },
       { kind: "nieuw", text: "Donkere modus: staat je telefoon op donker, dan wordt de app ook donker." },
       { kind: "nieuw", text: "Alles afgevinkt op je boodschappenlijst? Dan krijg je een klein feestje met confetti." },
