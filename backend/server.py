@@ -5036,9 +5036,8 @@ async def _ai_suggest(q: str, kind: str, known: Dict[str, int]) -> list:
     _ai_suggest_state["n"] += 1
     what = "gerechten en recepten" if kind == "dishes" else "producten in de supermarkt"
     try:
-        from anthropic import AsyncAnthropic
-        msg = await asyncio.wait_for(AsyncAnthropic().beta.messages.create(
-            model=AI_PICK_MODEL, max_tokens=300, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+        msg = await asyncio.wait_for(_claude(
+            "zoeken", None, max_tokens=300,
             output_config={"format": {"type": "json_schema", "schema": {
                 "type": "object", "additionalProperties": False, "required": ["terms"],
                 "properties": {"terms": {"type": "array", "items": {"type": "string"}}}}}},
