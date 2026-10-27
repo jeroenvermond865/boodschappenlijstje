@@ -44,7 +44,11 @@ type AuthContextType = {
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
+  // Melding voor het inlogscherm, bijv. "je aanvraag is ontvangen" als de beheerder nieuwe accounts eerst goedkeurt
+  notice: string | null;
+  setNotice: (n: string | null) => void;
 };
+type AuthResult = { session_token?: string; pending?: boolean; message?: string };
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
@@ -58,6 +62,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<Status>("loading");
   const [user, setUser] = useState<User | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const exchanged = useRef<Set<string>>(new Set());
 
   const loadMe = useCallback(async () => {
@@ -80,10 +85,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (sessionId: string) => {
       if (exchanged.current.has(sessionId)) return;
       exchanged.current.add(sessionId);
-      const res = await api<{ session_token: string }>("/auth/session", {
+      const res = await api<AuthResult>("/auth/session", {
         method: "POST",
         body: { session_id: sessionId },
       });
+      if (res.pending || !res.session_token) {
+        setNotice(res.message ?? "Je aanvraag is ontvangen.");
+        return;
+      }
       await persist(res.session_token);
     },
     [persist],
@@ -122,8 +131,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             url.searchParams.delete("session_id");
             window.history.replaceState(window.history.state, "", url.toString());
             return;
-          } catch {
-            // fall through
+          } catch (e: any) {
+            // Bijv. een aanvraag die nog op goedkeuring wacht: laat zien waarom inloggen niet lukte
+            if (e?.message) setNotice(e.message);
+            const url = new URL(window.location.href);
+            url.hash = "";
+            url.searchParams.delete("session_id");
+            window.history.replaceState(window.history.state, "", url.toString());
           }
         }
       }
@@ -162,10 +176,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const register = useCallback(
     async (name: string, email: string, password: string, acceptTerms: boolean) => {
-      const res = await api<{ session_token: string }>("/auth/register", {
+      const res = await api<AuthResult>("/auth/register", {
         method: "POST",
         body: { name, email, password, accept_terms: acceptTerms },
       });
+      if (res.pending || !res.session_token) {
+        setNotice(res.message ?? "Je aanvraag is ontvangen.");
+        return;
+      }
       await persist(res.session_token);
     },
     [persist],
@@ -223,7 +241,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ status, user, permissions, has, login, register, loginWithGoogle, logout, refresh: loadMe }}
+      value={{ status, user, permissions, has, login, register, loginWithGoogle, logout, refresh: loadMe, notice, setNotice }}
     >
       {children}
     </AuthContext.Provider>

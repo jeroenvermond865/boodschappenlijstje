@@ -50,7 +50,7 @@ type Home = {
     end?: string | null;
   }[];
   recipes: RecipeTile[];
-  todo: { dishes?: number; products?: number; stores?: number; premium?: number };
+  todo: { dishes?: number; products?: number; stores?: number; premium?: number; signups?: number };
   alerts_hit?: number;
   own_dishes: number;
 };
@@ -110,6 +110,7 @@ export default function HomeScreen() {
     todo.products ? { n: todo.products, label: "productvoorstellen wachten op goedkeuring", to: "/admin/submissions" } : null,
     todo.stores ? { n: todo.stores, label: "winkelaanvragen", to: "/admin/store-requests" } : null,
     data?.alerts_hit ? { n: data.alerts_hit, label: data.alerts_hit === 1 ? "prijsalarm: product is goedkoper" : "prijsalarmen: producten zijn goedkoper", to: "/alerts" } : null,
+    todo.signups ? { n: todo.signups, label: todo.signups === 1 ? "accountaanvraag" : "accountaanvragen", to: "/admin/users" } : null,
     todo.premium ? { n: todo.premium, label: todo.premium === 1 ? "premium-aanvraag" : "premium-aanvragen", to: "/admin/premium-requests" } : null,
   ].filter(Boolean) as { n: number; label: string; to: string }[];
 
