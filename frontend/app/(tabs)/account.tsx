@@ -159,6 +159,12 @@ export default function AccountScreen() {
           onPress={() => router.push("/account/profile")}
         />
         <AdminRow
+          testID="history-link"
+          icon="history"
+          label="Mijn geschiedenis"
+          onPress={() => router.push("/account/history")}
+        />
+        <AdminRow
           testID="trash-link"
           icon="delete-restore"
           label="Recent verwijderd"

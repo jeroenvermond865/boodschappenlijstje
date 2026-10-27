@@ -7,8 +7,9 @@ export const CHANGELOG: Release[] = [
   {
     id: "2026-10-27-folder",
     date: "27 oktober 2026",
-    title: "Folder van volgende week en elke nacht een back-up",
+    title: "Je geschiedenis wissen, en elke nacht een back-up",
     changes: [
+      { kind: "nieuw", text: "Account > Mijn geschiedenis: wis wat je bekeek, alles of alleen producten, recepten of geleerde voorraad, en kies de periode (vandaag, week, maand of alles). Je voorstellen beginnen dan opnieuw." },
       { kind: "nieuw", text: "Elke nacht wordt er een back-up gemaakt van alle lijstjes, gerechten en voorraad, zodat er niets kwijt kan raken." },
       { kind: "opgelost", text: "Folders: heb je Volgende week gekozen, dan opent 'Bekijk de echte folder' nu ook de folder van volgende week." },
     ],

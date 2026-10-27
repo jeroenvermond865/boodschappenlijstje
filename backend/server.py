@@ -595,6 +595,7 @@ async def update_profile(data: ProfileUpdate, user: dict = Depends(get_current_u
         if data.no_personal:
             # Uitgezet: wat we over je voorkeuren bijhielden, gaat meteen weg
             await db.user_interest.delete_many({"user_id": user["user_id"]})
+            await db.interest_log.delete_many({"user_id": user["user_id"]})
     if data.picture is not None:
         update["picture"] = data.picture.strip() or None
     if data.username is not None:
@@ -863,6 +864,7 @@ async def _erase_user(user: dict) -> None:
     await _purge_docs("user", [user])
     await db.packages.delete_many({"owner_id": uid})
     await db.user_interest.delete_many({"user_id": uid})
+    await db.interest_log.delete_many({"user_id": uid})
     await db.feedback.delete_many({"user_id": uid})
     await db.store_requests.delete_many({"requested_by": uid})
     await db.premium_requests.delete_many({"user_id": uid})
@@ -4627,7 +4629,7 @@ async def search_products(
         inc = {f"aisles.{_ikey(aisle)}": 1} if aisle else {}
         inc.update({f"brands.{_ikey(_norm_text(b))}": 1 for b in _split_list(brand)})
         inc.update({f"subs.{_ikey(x)}": 1 for x in _split_list(sub)})
-        asyncio.ensure_future(db.user_interest.update_one({"user_id": user["user_id"]}, {"$inc": inc}, upsert=True))
+        asyncio.ensure_future(_interest_inc(user["user_id"], "producten", inc))
 
     offset = max(0, offset)
     limit = max(1, min(limit, 200))
@@ -6829,7 +6831,7 @@ async def _track_recipe(user_id: str, rec: dict, weight: int = 1) -> None:
     if rec.get("store"):
         inc[f"rstores.{_ikey(rec['store'])}"] = weight
     if inc:
-        await db.user_interest.update_one({"user_id": user_id}, {"$inc": inc}, upsert=True)
+        await _interest_inc(user_id, "recepten", inc)
 
 
 def _personal_recipes(recipes: list, interest: dict, seed: str) -> list:
@@ -8285,6 +8287,91 @@ async def camp_compare_swap(camp_id: str, data: CompareSwap, user: dict = Depend
     return {"ok": True}
 
 
+# --- Geschiedenis: wat iemand bekijkt telt mee voor zijn voorstellen. Per dag bewaard, zodat je ook een periode kunt wissen ---
+HISTORY_KINDS = {
+    "producten": ("aisles", "brands", "subs", "stores"),  # bekeken en opgezochte producten -> aanbiedingen op Home
+    "recepten": ("rwords", "rtags", "rstores"),  # bekeken en gekozen recepten -> receptvoorstellen
+}
+HISTORY_PERIODS = {"vandaag": 0, "week": 6, "maand": 29, "alles": None}
+
+
+async def _interest_inc(user_id: str, kind: str, inc: dict) -> None:
+    day = now_utc().strftime("%Y-%m-%d")
+    await db.user_interest.update_one({"user_id": user_id}, {"$inc": inc, "$set": {"at": now_utc()}}, upsert=True)
+    await db.interest_log.update_one({"user_id": user_id, "day": day, "kind": kind},
+                                     {"$inc": {f"inc.{k}": v for k, v in inc.items()}}, upsert=True)
+
+
+def _flat(d: dict, pre: str = "") -> dict:
+    # {"aisles": {"Zuivel": 2}} -> {"aisles.Zuivel": 2}
+    out = {}
+    for k, v in (d or {}).items():
+        if isinstance(v, dict):
+            out.update(_flat(v, f"{pre}{k}."))
+        elif isinstance(v, (int, float)):
+            out[f"{pre}{k}"] = v
+    return out
+
+
+async def _history_delete(user: dict, kinds: list, period: str) -> dict:
+    # Wist wat iemand bekeek: zijn voorstellen beginnen (voor die periode) opnieuw.
+    # Wat de app van iedereen samen leerde (welk product past bij een ingrediënt) blijft.
+    uid = user["user_id"]
+    kinds = [k for k in kinds if k in HISTORY_KINDS or k == "voorraad"]
+    days = HISTORY_PERIODS.get(period, -1)
+    if days == -1 or not kinds:
+        raise HTTPException(status_code=400, detail="Kies wat en welke periode je wilt wissen")
+    since = (now_utc() - timedelta(days=days)).strftime("%Y-%m-%d") if days is not None else None
+    removed = {}
+    for kind in kinds:
+        if kind == "voorraad":
+            # Wat de voorraadkast zelf leerde ("al in huis" bij een recept); wat je zelf invulde blijft
+            q = {"user_id": uid, "learned": True}
+            if since:
+                q["updated_at"] = {"$gte": datetime.fromisoformat(since).replace(tzinfo=timezone.utc)}
+            removed[kind] = (await db.pantry.delete_many(q)).deleted_count
+            continue
+        q = {"user_id": uid, "kind": kind, **({"day": {"$gte": since}} if since else {})}
+        if since is None:
+            await db.user_interest.update_one({"user_id": uid}, {"$unset": {f: "" for f in HISTORY_KINDS[kind]}})
+        else:
+            total: Dict[str, float] = {}
+            async for d in db.interest_log.find(q, {"_id": 0, "inc": 1}):
+                for k, v in _flat(d.get("inc") or {}).items():
+                    total[k] = total.get(k, 0) + v
+            if total:
+                await db.user_interest.update_one({"user_id": uid}, {"$inc": {k: -v for k, v in total.items()}})
+                # Wat op 0 of lager uitkomt helemaal weghalen
+                doc = await db.user_interest.find_one({"user_id": uid}, {"_id": 0}) or {}
+                gone = [k for k, v in _flat({f: doc.get(f) for f in HISTORY_KINDS[kind] if doc.get(f)}).items() if v <= 0]
+                if gone:
+                    await db.user_interest.update_one({"user_id": uid}, {"$unset": {k: "" for k in gone}})
+        removed[kind] = (await db.interest_log.delete_many(q)).deleted_count
+    return removed
+
+
+class HistoryDelete(BaseModel):
+    kinds: List[str]
+    period: str = "alles"
+
+
+@api_router.get("/me/history")
+async def my_history(user: dict = Depends(get_current_user)):
+    uid = user["user_id"]
+    doc = await db.user_interest.find_one({"user_id": uid}, {"_id": 0}) or {}
+    out = {}
+    for kind, fields in HISTORY_KINDS.items():
+        days = await db.interest_log.distinct("day", {"user_id": uid, "kind": kind})
+        out[kind] = {"items": len(_flat({f: doc.get(f) for f in fields if doc.get(f)})), "since": min(days) if days else None}
+    out["voorraad"] = {"items": await db.pantry.count_documents({"user_id": uid, "learned": True}), "since": None}
+    return {"kinds": out, "no_personal": bool(user.get("no_personal"))}
+
+
+@api_router.post("/me/history/delete")
+async def delete_my_history(data: HistoryDelete, user: dict = Depends(get_current_user)):
+    return {"ok": True, "removed": await _history_delete(user, data.kinds, data.period)}
+
+
 def _ikey(x: str) -> str:
     return (x or "").replace(".", "·").replace("$", "")[:60]
 
@@ -8297,7 +8384,7 @@ async def _track_interest(user_id: str, doc: dict) -> None:
         if val:
             inc[f"{field}.{_ikey(val)}"] = 1
     if inc:
-        await db.user_interest.update_one({"user_id": user_id}, {"$inc": inc, "$set": {"at": now_utc()}}, upsert=True)
+        await _interest_inc(user_id, "producten", inc)
 
 
 def _pick_promos(cands: list, interest: dict, fav_store: str, fav_ids: set, used_ids: set, used_stores: dict, n: int = 24,
@@ -11720,7 +11807,7 @@ async def startup():
 _EXTRA_INDEXES = [
     ("camps", "owner_id"), ("camps", "member_ids"), ("dishes", "owner_id"), ("dishes", "basic"),
     ("products", "dirk_id"), ("products", "ah_id"), ("products", "jumbo_id"), ("products", "aisle"),
-    ("user_interest", "user_id"), ("submissions", "status"), ("store_requests", "status"),
+    ("user_interest", "user_id"), ("interest_log", "user_id"), ("submissions", "status"), ("store_requests", "status"),
     ("premium_requests", "status"), ("email_prefs", "email"), ("users", "username"), ("settings", "key"), ("meta", "key"),
 ]
 

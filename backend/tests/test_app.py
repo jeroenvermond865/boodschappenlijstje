@@ -144,3 +144,41 @@ def test_backup_terugzetten_leest_zip(tmp_path):
 def test_foutmelding_pas_na_veel_fouten_en_niet_te_vaak():
     uitkomst = [S._note_error("GET /api/x: 500") for _ in range(S.ALERT_MIN * 2)]
     assert uitkomst.count(True) == 1 and uitkomst.index(True) == S.ALERT_MIN - 1
+
+
+# --- Geschiedenis wissen ---
+def test_geschiedenis_periode_wissen_laat_ouder_staan():
+    async def t():
+        await S._interest_inc("u1", "producten", {"aisles.Zuivel": 3, "brands.ah": 1})
+        # Iets van lang geleden (vóór deze week)
+        await S.db.user_interest.update_one({"user_id": "u1"}, {"$inc": {"aisles.Zuivel": 2}})
+        await S.db.interest_log.insert_one({"user_id": "u1", "day": "2020-01-01", "kind": "producten", "inc": {"aisles": {"Zuivel": 2}}})
+        await S._interest_inc("u1", "recepten", {"rwords.pasta": 2})
+        weg = await S._history_delete(U1, ["producten"], "week")
+        return weg, await S.db.user_interest.find_one({"user_id": "u1"}, {"_id": 0}), await S.db.interest_log.count_documents({})
+    weg, doc, logs = run(t())
+    assert weg == {"producten": 1}
+    assert doc["aisles"] == {"Zuivel": 2}  # alleen wat van deze week was is eraf
+    assert "brands" not in doc or not doc["brands"]  # op 0 uitgekomen: weg
+    assert doc["rwords"] == {"pasta": 2}  # recepten niet gekozen: blijft
+    assert logs == 2
+
+
+def test_geschiedenis_alles_wissen_houdt_geleerde_keuzes():
+    async def t():
+        await S._interest_inc("u1", "recepten", {"rwords.pasta": 2, "rtags.vega": 1})
+        await S.db.learned_picks.insert_one({"key": "Dirk|pasta", "pid": "p1", "users": ["u1"], "score": 1})
+        await S.db.pantry.insert_many([{"user_id": "u1", "name": "zout", "learned": True, "updated_at": S.now_utc()},
+                                       {"user_id": "u1", "name": "rijst", "updated_at": S.now_utc()}])
+        await S._history_delete(U1, ["recepten", "voorraad"], "alles")
+        return (await S.db.user_interest.find_one({"user_id": "u1"}, {"_id": 0}), await S.db.learned_picks.count_documents({}),
+                [p["name"] async for p in S.db.pantry.find({})])
+    doc, picks, pantry = run(t())
+    assert "rwords" not in doc and "rtags" not in doc
+    assert picks == 1  # wat de app van iedereen leerde blijft
+    assert pantry == ["rijst"]  # zelf ingevulde voorraad blijft
+
+
+def test_geschiedenis_verkeerde_keuze():
+    with pytest.raises(HTTPException):
+        run(S._history_delete(U1, ["iets"], "alles"))
