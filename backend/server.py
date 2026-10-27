@@ -2608,6 +2608,9 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
                 it["choose"] = "auto"
             else:
                 it["choose"] = "todo"
+    if _for_compare:
+        # De vergelijking heeft alleen namen, producten en hoeveelheden nodig: prijzen en verpakkingen rekent die zelf
+        return {"by_store": by_store}
     piece_ids = {it.get("product_id") for b in by_store + general for it in b["flat"] if (it.get("unit") or "").lower().strip() in ("", "stuks", "stuk", "st")}
     await _learn_pack_counts([prods[x] for x in piece_ids if x in prods], 4)
 
@@ -11569,6 +11572,7 @@ _EXTRA_INDEXES = [
     ("products", "dirk_id"), ("products", "ah_id"), ("products", "jumbo_id"), ("products", "aisle"),
     ("user_interest", "user_id"), ("submissions", "status"), ("store_requests", "status"),
     ("premium_requests", "status"), ("email_prefs", "email"), ("users", "username"), ("settings", "key"), ("meta", "key"),
+    ("product_submissions", "status"), ("recipe_cost", "id"),
 ]
 
 

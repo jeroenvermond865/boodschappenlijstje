@@ -5,6 +5,14 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-d",
+    date: "27 oktober 2026",
+    title: "Startpagina sneller",
+    changes: [
+      { kind: "beter", text: "De startpagina rekent voor de winkelvergelijking niet meer eerst alle prijzen en verpakkingen van je boodschappenlijst uit, dus hij opent sneller." },
+    ],
+  },
+  {
     id: "2026-10-27-c",
     date: "27 oktober 2026",
     title: "Boodschappenlijst sneller",
