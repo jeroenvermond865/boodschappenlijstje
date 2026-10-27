@@ -12,6 +12,7 @@ export const CHANGELOG: Release[] = [
       { kind: "opgelost", text: "De server liep soms vast doordat het geheugen vol raakte bij het bijwerken van prijzen. Dat gebeurt nu veel zuiniger, zodat de app niet meer even wegvalt." },
       { kind: "beter", text: "Na een update is de app sneller klaar: eerst de productlijst, dan de acties en recepten voor de startpagina; onderhoud gebeurt daarna op de achtergrond." },
       { kind: "beter", text: "Lijstjes, gerechten en producten worden sneller gevonden in de database." },
+      { kind: "beter", text: "De startpagina wacht niet meer tot alle producten binnen zijn: je ziet hem meteen, en vergelijking en acties verschijnen vanzelf zodra ze klaar zijn." },
     ],
   },
   {

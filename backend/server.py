@@ -8770,7 +8770,11 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
                 deals.append({"name": nm, "product_id": pid, "product": p["name"], "store": st, "image": p.get("image"),
                               "label": promo.get("label"), "price": promo.get("price"), "regular": price})
         camp["deals"] = deals[:8]
-        if names:
+        if names and _product_cache.get("at") is None:
+            # Productlijst nog niet binnen (net opgestart): niet wachten, de app vraagt het zo nog eens
+            asyncio.ensure_future(_global_products())
+            compare_pending = True
+        elif names:
             compare, pending = await _camp_compare(c, user)
             compare_pending = pending
     hit = _home_cache.get("inspiration")

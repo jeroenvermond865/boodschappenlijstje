@@ -81,6 +81,7 @@ export default function HomeScreen() {
     },
     staleTime: 60 * 1000,
     // De vergelijking wordt op de achtergrond uitgerekend: even later nog eens vragen
+    refetchInterval: (q) => (q.state.data?.compare_pending && q.state.dataUpdateCount < 24 ? 5000 : false),
   });
 
   useEffect(() => {
