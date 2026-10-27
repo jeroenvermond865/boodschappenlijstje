@@ -5,6 +5,14 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-folder",
+    date: "27 oktober 2026",
+    title: "Folder van volgende week",
+    changes: [
+      { kind: "opgelost", text: "Folders: heb je Volgende week gekozen, dan opent 'Bekijk de echte folder' nu ook de folder van volgende week." },
+    ],
+  },
+  {
     id: "2026-10-27-c",
     date: "27 oktober 2026",
     title: "Boodschappenlijst sneller",

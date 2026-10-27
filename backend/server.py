@@ -4734,6 +4734,9 @@ async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_curr
             counts[x["category"]] = counts.get(x["category"], 0) + 1
         cats = [{"name": k, "count": v} for k, v in counts.items()]
         is_next = (per.get("start") or "") > today
+        if is_next and store == "Dirk":
+            # "Bekijk folder" bij Volgende week opent ook de folder van volgende week
+            per = {**per, "folder_url": "https://www.dirk.nl/folder/volgende-week"}
         periods.append({"key": "next" if is_next else "current", "title": "Volgende week" if is_next else "Deze week",
                         "start": per.get("start"), "end": per.get("end"),
                         "period": f"{_nice_day(per.get('start'))} t/m {_nice_day(per.get('end'))}" if per.get("start") and per.get("end") else None,
@@ -5931,7 +5934,7 @@ async def _dirk_folder() -> list:
         nxt = [i for k, v in periods.items() if (k[0] or "") > (main[0] or "") and (k[0] or "") > _iso_day(datetime.now(timezone.utc).isoformat()) for i in v]
         out.append({"start": main[0], "end": main[1], "folder_url": "https://www.dirk.nl/folder", "items": cur})
         if nxt:
-            out.append({"start": min(i["start"] for i in nxt), "end": max(i["end"] or "" for i in nxt), "folder_url": "https://www.dirk.nl/folder", "items": nxt})
+            out.append({"start": min(i["start"] for i in nxt), "end": max(i["end"] or "" for i in nxt), "folder_url": "https://www.dirk.nl/folder/volgende-week", "items": nxt})
     return out
 
 
