@@ -2580,7 +2580,12 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
             if it.get("product_id") in swaps:
                 it["product_id"] = swaps[it["product_id"]]
     pids = {it.get("product_id") for b in by_store + general + [x for d in per_day for x in d["by_store"]] for it in b["flat"] if it.get("product_id")}
-    prods = {p["product_id"]: p for p in await db.products.find(_live({"product_id": {"$in": list(pids)}}), {"_id": 0}).to_list(5000)} if pids else {}
+    # Producten uit de lijst in het geheugen (scheelt een grote vraag aan de database); alleen eigen producten nog ophalen
+    by_pid = _product_cache.get("by_pid") or {}
+    prods = {pid: {k: v for k, v in by_pid[pid].items() if not k.startswith("_")} for pid in pids if pid in by_pid}
+    rest = [pid for pid in pids if pid not in prods]
+    if rest:
+        prods.update({p["product_id"]: p for p in await db.products.find(_live({"product_id": {"$in": rest}}), {"_id": 0}).to_list(5000)})
     # Ingrediënten zonder product (bijv. uit een recept van een andere winkel): zelf het best passende product zoeken
     if any(not it.get("product_id") for b in by_store + general for it in b["flat"]):
         docs = await _global_products()
@@ -4068,7 +4073,7 @@ def product_public(doc: dict, store: str, user_id: str, favorites: Optional[set]
 # Productlijst in het geheugen, zodat niet bij elke aanvraag ~30.000 producten uit de database komen.
 # De server heeft weinig rekenkracht: verversen gebeurt op de achtergrond en ondertussen blijft
 # de vorige lijst gewoon werken.
-PRODUCT_CACHE_SECONDS = 3 * 3600  # wijzigingen (prijsupdate, beheer) verversen de lijst toch al meteen
+PRODUCT_CACHE_SECONDS = 24 * 3600  # wijzigingen (prijsupdate, beheer) verversen de lijst toch al meteen
 _product_cache: dict = {"at": None, "docs": [], "stale": True, "task": None}
 _search_cache: dict = {}
 
@@ -4151,7 +4156,7 @@ async def _merge_products(old: dict, query: dict) -> list:
     known = _known_brands(old.values())
     docs = []
     i = 0
-    async for raw in db.products.find(query, _PRODUCT_CACHE_PROJ, batch_size=1000):
+    async for raw in db.products.find(query, _PRODUCT_CACHE_PROJ):
         _intern_product(raw)
         _prep_product(raw, known)
         cur = old.get(raw["product_id"])
@@ -11087,6 +11092,17 @@ async def security_headers(request, call_next):
     h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
         h.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
+@app.middleware("http")
+async def log_slow(request, call_next):
+    # Trage aanvragen in de logs, zodat we zien wat er traag is (en hoe lang)
+    t = time.monotonic()
+    response = await call_next(request)
+    ms = (time.monotonic() - t) * 1000
+    if ms > 1000 and request.url.path.startswith("/api/"):
+        logger.info("TRAAG %dms %s %s", ms, request.method, request.url.path)
     return response
 
 
