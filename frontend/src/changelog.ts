@@ -7,9 +7,10 @@ export const CHANGELOG: Release[] = [
   {
     id: "2026-10-27-i",
     date: "27 oktober 2026",
-    title: "Slim splitsen klopt altijd, logischer zoeken",
+    title: "Slim splitsen klopt altijd, logischer zoeken en de Jumbo-folder van volgende week",
     changes: [
       { kind: "beter", text: "Zoeken zet eerst de producten die je bedoelt: bij 'brood' eerst echte broden, niet broodbeleg, paneermeel of broodjes kroket. De AI bepaalt per zoekwoord de volgorde. Kies je zelf een filter of sortering, dan geldt die." },
+      { kind: "opgelost", text: "Folders: bij Jumbo opent 'Bekijk de echte folder' nu ook de aanbiedingen van volgende week als je Volgende week hebt gekozen." },
       { kind: "opgelost", text: "Slim splitsen over bijvoorbeeld AH en Jumbo kon duurder uitkomen dan alles bij Jumbo. Wat een winkel niet heeft, telt nu bij splitsen op dezelfde manier mee als bij één winkel, dus splitsen is nooit duurder dan een van de gekozen winkels." },
     ],
   },
