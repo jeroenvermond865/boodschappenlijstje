@@ -511,6 +511,12 @@ export default function ShoppingScreen() {
               <Text style={styles.pantryLinkText}>Al iets in huis? Zet het in je voorraadkast</Text>
             </Pressable>
           ) : null}
+          {premium ? (
+            <Pressable style={styles.pantryLink} onPress={() => router.push({ pathname: "/slim", params: { tab: "tips", camp: id } })} testID="shopping-ai-tips">
+              <Icon name="piggy-bank-outline" size={16} color={colors.brandPrimary} />
+              <Text style={styles.pantryLinkText}>Slimme bespaartips voor deze lijst</Text>
+            </Pressable>
+          ) : null}
           {data?.has_pantry && covered.length ? (
             <Pressable style={styles.multiBanner} onPress={() => setPantryPick(new Set(covered.map((x) => key(x.store, x.item))))} testID="pantry-check">
               <Icon name="fridge-outline" size={18} color={colors.onBrandTertiary} />

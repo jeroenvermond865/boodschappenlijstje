@@ -5,6 +5,19 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-e",
+    date: "27 oktober 2026",
+    title: "Nieuw voor Premium: Slimme hulp",
+    changes: [
+      { kind: "nieuw", text: "Menu maken uit één zin: typ bijvoorbeeld '5 dagen avondeten voor 2 personen, vega, max 40 euro' en de app maakt een lijstje met gerechten en je boodschappenlijst." },
+      { kind: "nieuw", text: "Restjes koken: de app bedenkt gerechten met wat je nog in huis hebt (uit je voorraadkast of wat je zelf typt), zodat je weinig weggooit en weinig bijkoopt." },
+      { kind: "nieuw", text: "Recept overnemen: plak een recept of een link naar een receptensite, of maak een foto van een kookboek. Je krijgt een gerecht met producten uit jouw winkel." },
+      { kind: "nieuw", text: "Je boodschappen typen of inspreken in gewone taal, zoals '2 pakken melk, brood en iets voor bij de koffie'. De app zoekt de producten en zet ze op je lijstje." },
+      { kind: "nieuw", text: "Slimme bespaartips bij je boodschappenlijst: een grotere verpakking die goedkoper is, een goedkoper merk van hetzelfde, acties op je boodschappendag en slim splitsen. Met één tik wissel je het product." },
+      { kind: "nieuw", text: "Je vindt alles op Home onder 'Slimme hulp'. Dit zijn Premium-functies." },
+    ],
+  },
+  {
     id: "2026-10-27-d",
     date: "27 oktober 2026",
     title: "Startpagina sneller, betere tips en foto's",
