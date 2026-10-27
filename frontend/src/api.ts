@@ -58,6 +58,11 @@ export async function apiBlob(path: string, body?: any): Promise<Blob> {
   return res.blob();
 }
 
+// Productfoto's van winkels via onze eigen server (als de winkel ze niet direct laat zien)
+export function imageProxyUrl(url: string): string | null {
+  return url.startsWith("https://") ? `${BASE}/api/img?u=${encodeURIComponent(url)}` : null;
+}
+
 export function mediaUrl(url?: string | null): string | undefined {
   if (!url) return undefined;
   if (url.startsWith("http")) return url;

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Image, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";

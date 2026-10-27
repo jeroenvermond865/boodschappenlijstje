@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Image, Linking, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -105,12 +106,22 @@ export default function RecipeScreen() {
     },
   });
 
+  // Via een tip erbij gezet ("Serveer met rijst"): staat ook gewoon bij de ingrediënten, en is daar weer weg te halen
+  const added = Object.entries(swaps)
+    .filter(([k]) => k.startsWith("add-"))
+    .map(([slot, product]) => ({ slot, product, name: q.data?.alt_swaps?.find((s) => slotOf(s) === slot)?.to ?? product.name }));
+  const removeAdded = (slot: string) =>
+    setSwaps((x) => {
+      const { [slot]: _, ...rest } = x;
+      return rest;
+    });
+
   // Wat kost het gerecht: alles wat op je lijst komt (dus niet wat je al in huis hebt, tenzij je het aanzet)
   const total = (r?.ingredients ?? []).reduce((sum, i, idx) => {
     if ((i.pantry && !include.includes(idx)) || i.alt_for != null) return sum;
     const plan = plans.data?.[idx];
     return sum + (plan?.cost ?? (i.product && i.qty == null && !i.site_packs ? i.product.price ?? 0 : 0));
-  }, 0);
+  }, 0) + added.reduce((sum, a) => sum + (a.product.promo?.price ?? a.product.price ?? 0), 0);
 
   const fav = useMutation({
     mutationFn: (on: boolean) =>
@@ -202,6 +213,26 @@ export default function RecipeScreen() {
               <View style={styles.card}>
                 {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => !x.i.pantry && x.i.alt_for == null).map(({ i, idx }, k) => (
                   <IngRow key={idx} i={i} first={k === 0} label={amount(i)} plan={plans.data?.[idx]} onSwap={(b) => swapTo(idx, b)} />
+                ))}
+                {added.map((a) => (
+                  <View key={a.slot} style={[styles.ingRow, styles.ingBorder]} testID={`recipe-added-${a.slot}`}>
+                    {a.product.image ? (
+                      <Image source={{ uri: a.product.image }} style={styles.ingImg} resizeMode="contain" />
+                    ) : (
+                      <View style={[styles.ingImg, styles.ingDot]}>
+                        <Icon name="circle-small" size={22} color={colors.muted} />
+                      </View>
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.ingText}>{a.name}</Text>
+                      <Text style={styles.ingProd} numberOfLines={1}>
+                        Toegevoegd via tip · {a.product.name} · {euro(a.product.promo?.price ?? a.product.price)}
+                      </Text>
+                    </View>
+                    <Pressable onPress={() => removeAdded(a.slot)} hitSlop={8} style={[styles.addBtn, styles.addBtnOn]} testID={`recipe-added-remove-${a.slot}`}>
+                      <Icon name="close" size={18} color={colors.onBrandPrimary} />
+                    </Pressable>
+                  </View>
                 ))}
               </View>
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Image, Platform, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from "react-native";
+import { Platform, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from "react-native";
+import Image from "@/src/components/SafeImage";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -206,6 +207,20 @@ export default function HomeScreen() {
             </Pressable>
           </>
         ) : null}
+      </View>
+
+      {/* Slimme hulp (Premium): menu uit één zin, restjes, recept overnemen, lijst inspreken, bespaartips */}
+      <View style={styles.pad}>
+        <Pressable testID="home-slim" onPress={() => router.push("/slim")} style={styles.slim}>
+          <Icon name="auto-fix" size={26} color={GOLD.icon} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.premTileText, { fontSize: 15, textAlign: "left", fontFamily: fonts.bold }]}>Slimme hulp{premium ? "" : " (Premium)"}</Text>
+            <Text style={[styles.premTileText, { textAlign: "left", fontFamily: fonts.regular }]}>
+              Menu uit één zin, koken met restjes, recept of foto overnemen, je lijst inspreken en bespaartips
+            </Text>
+          </View>
+          <Icon name="chevron-right" size={22} color={GOLD.icon} />
+        </Pressable>
       </View>
 
       {/* Admin-taken */}
@@ -446,6 +461,7 @@ const useStyles = makeStyles((colors) => ({
   actions: { flexDirection: "row", gap: 10 },
   stdTile: { backgroundColor: colors.surface, borderColor: colors.border },
   premTile: { flex: 1, alignItems: "center", gap: 6, paddingVertical: 12, borderRadius: 14, backgroundColor: GOLD.bg, borderWidth: 1, borderColor: GOLD.border },
+  slim: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 16, backgroundColor: GOLD.bg, borderWidth: 1, borderColor: GOLD.border },
   premTileText: { fontSize: 12, fontFamily: fonts.semibold, color: GOLD.text, textAlign: "center" },
   action: { flex: 1, alignItems: "center", gap: 6, paddingVertical: 12, paddingHorizontal: 4, borderRadius: 16, borderWidth: 1, borderColor: colors.border },
   actionIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },

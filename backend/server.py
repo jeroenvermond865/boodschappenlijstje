@@ -1156,7 +1156,7 @@ async def get_dish(dish_id: str, user: dict = Depends(get_current_user)):
 # Bereiding bij een gerecht: van het recept op de site, aangepast als je andere producten gebruikt,
 # of een voorstel als er geen bereiding is (app-gerechten). Met AI (en zoeken op internet) als die er is,
 # anders uit de bereidingstekst die de winkel bij het product zet.
-PREP_V = 1
+PREP_V = 2
 
 
 async def _product_usage(p: dict) -> Optional[str]:
@@ -1189,6 +1189,42 @@ def _ing_changed(i: dict, prod: Optional[dict]) -> bool:
     return bool(ww) and not any(w in have or (len(w) > 5 and w[:-1] in have) for w in ww)
 
 
+# Zonder AI een logische bereiding: per soort product wat je ermee doet, in een vaste volgorde (snijden, koken, bakken, opdienen)
+_PREP_KINDS = [
+    ("skip", r"\b(water|zout|peper|ijsblokjes|limonade|frisdrank|cola|sap|melk|koffie|thee|bier|wijn)\b"),
+    ("side", r"ketchup|mayo|mosterd|curry(saus)?\b|saus|dressing|sambal|chilisaus|ketjap|sojasaus|piccalilly|augurk|zilverui|jam\b|hagelslag|pindakaas|"
+             r"appelmoes|stroop|honing|chocopasta|boter\b|margarine|halvarine|smeerkaas|zuivelspread"),
+    ("starch", r"rijst|pasta|spaghetti|macaroni|penne|fusilli|tagliatelle|noedels|mie\b|couscous|bulgur|quinoa|aardappel|krieltjes|gnocchi|tortellini|ravioli"),
+    ("oven", r"friet|patat|frites|wedges|kroket|frikandel|bitterbal|loempia|pizza|ovenschotel|lasagne|vissticks|kipnuggets|nuggets|schnitzel"),
+    ("bread", r"brood|broodje|bolletje|bol\b|pistolet|stokbrood|wrap|tortilla|pita|naan|hamburgerbroodje|bun\b|croissant|beschuit|cracker|knackebrod|toast"),
+    ("meat", r"hamburger|burger|gehakt|kip|kipfilet|kipdij|drumstick|worst|braadworst|rookworst|slavink|speklap|spek|karbonade|biefstuk|steak|shoarma|gyros|"
+             r"vis\b|zalm|kabeljauw|tilapia|pangasius|garnaal|tofu|tempeh|vegaburger|vegetarische|schijf|balletje|gehaktbal|frikadel"),
+    ("cheese", r"kaas|mozzarella|feta|parmezaan|plakken\s+kaas|cheddar"),
+    ("egg", r"\beieren\b|\bei\b"),
+    ("raw", r"sla\b|ijsberg|rucola|veldsla|tomaat|tomaten|komkommer|paprika|ui\b|uien|rode ui|radijs|wortel|avocado|lente-?ui|bosui|augurk"),
+    ("cookveg", r"broccoli|bloemkool|sperziebonen|boontjes|spinazie|andijvie|boerenkool|zuurkool|spruit|courgette|champignon|paddenstoel|prei|erwt|doperwt|mais|wokgroente|groente"),
+    ("fruit", r"appel|peer|banaan|sinaasappel|mandarijn|druif|druiven|aardbei|framboos|blauwe bes|meloen|ananas|kiwi|mango|fruit"),
+    ("dairy", r"yoghurt|kwark|vla|pudding|skyr"),
+]
+
+
+def _prep_kind(name: str) -> str:
+    n = _norm_text(name)
+    for kind, rx in _PREP_KINDS:
+        if re.search(rx, n):
+            return kind
+    return "other"
+
+
+def _usage_short(u: Optional[str]) -> Optional[str]:
+    # Van de verpakking alleen de eerste zin of twee: "Pan: 3-4 min. per kant op middelhoog vuur."
+    if not u:
+        return None
+    parts = re.split(r"(?<=[.!])\s+", re.sub(r"\s+", " ", u).strip())
+    out = " ".join(parts[:2])[:220].strip()
+    return out or None
+
+
 def _prep_basic(base: List[str], items: list) -> List[str]:
     # Zonder AI: de stappen van het recept met de nieuwe producten erin, plus wat er op de verpakking staat
     steps = list(base)
@@ -1197,18 +1233,56 @@ def _prep_basic(base: List[str], items: list) -> List[str]:
             continue
         new = re.sub(r"^(dirk|ah|jumbo|1 de beste|g'woon)\s+", "", it["name"], flags=re.I)
         steps = [re.sub(re.escape(it["was"]), new, st, flags=re.I) for st in steps]
-    tips = [f"{it['name']}: {it['usage'].strip()}" for it in items if it.get("usage") and (it["changed"] or not base)]
-    if not base:
-        if not items:
-            return []
-        steps = [f"Zet alles klaar: {', '.join(it['name'] for it in items)}."]
-        steps += tips
-        rest = [it["name"] for it in items if not it.get("usage")]
-        if rest:
-            steps.append(f"Maak {', '.join(rest)} klaar zoals je gewend bent.")
-        steps.append("Verdeel alles over de borden en eet smakelijk.")
-        return [t[:500] for t in steps]
-    return steps + [t[:500] for t in tips]
+    if base:
+        tips = [f"{it['name']}: {_usage_short(it['usage'])}" for it in items if it.get("usage") and it["changed"]]
+        return steps + [t[:500] for t in tips]
+    if not items:
+        return []
+    def short(it):
+        n = re.sub(r"^(dirk|ah|jumbo|1 de beste|g'woon|ah biologisch)\s+", "", it["name"], flags=re.I)
+        return n[:1].lower() + n[1:] if n[1:2].islower() else n  # midden in een zin met een kleine letter
+
+    def cap(t: str) -> str:
+        return t[:1].upper() + t[1:]
+    by: Dict[str, list] = {}
+    for it in items:
+        by.setdefault(_prep_kind(it["name"]), []).append(it)
+    names = lambda k: ", ".join(short(it) for it in by.get(k, []))  # noqa: E731
+    out: List[str] = []
+    if by.get("raw"):
+        out.append(f"Was en snijd {names('raw')}.")
+    for it in by.get("starch", []):
+        u = _usage_short(it.get("usage"))
+        out.append(f"{cap(short(it))}: {u}" if u else f"Kook {short(it)} volgens de verpakking en giet af.")
+    for it in by.get("oven", []):
+        u = _usage_short(it.get("usage"))
+        out.append(f"{cap(short(it))}: {u}" if u else f"Bak {short(it)} in de oven of airfryer volgens de verpakking.")
+    for it in by.get("meat", []):
+        u = _usage_short(it.get("usage"))
+        out.append(f"{cap(short(it))}: {u}" if u else f"Bak {short(it)} in een koekenpan met een beetje olie of boter tot het gaar en goudbruin is.")
+    if by.get("egg"):
+        out.append("Bak of kook de eieren zoals je ze het lekkerst vindt.")
+    for it in by.get("cookveg", []):
+        u = _usage_short(it.get("usage"))
+        out.append(f"{cap(short(it))}: {u}" if u else f"Kook of roerbak {short(it)} een paar minuten tot het beetgaar is.")
+    for it in by.get("other", []):
+        u = _usage_short(it.get("usage"))
+        if u:
+            out.append(f"{cap(short(it))}: {u}")
+    if by.get("bread"):
+        filling = [short(it) for k in ("meat", "cheese", "raw", "egg") for it in by.get(k, [])]
+        if filling:
+            out.append(f"Snijd {names('bread')} open (eventueel even warm in de oven) en beleg met {', '.join(filling)}.")
+        else:
+            out.append(f"Snijd {names('bread')} en leg het op tafel.")
+    elif by.get("cheese"):
+        out.append(f"Snijd of rasp {names('cheese')}.")
+    if by.get("fruit"):
+        out.append(f"Was {names('fruit')} en snijd het in stukjes als dat nodig is.")
+    if by.get("side") or by.get("dairy"):
+        out.append(f"Zet {', '.join(x for x in (names('side'), names('dairy')) if x)} op tafel.")
+    out.append("Verdeel alles over de borden en eet smakelijk.")
+    return [t[:500] for t in out]
 
 
 async def _prep_ai(name: str, base: List[str], items: list) -> Optional[List[str]]:
@@ -1254,7 +1328,8 @@ async def dish_preparation(dish_id: str, camp_id: Optional[str] = None, user: di
         swaps = (camp or {}).get("product_swaps") or {}
     await _global_products()
     by_pid = _product_cache.get("by_pid") or {}
-    base: List[str] = []
+    # Overgenomen met de slimme hulp (geplakt recept, restjes): de stappen staan bij het gerecht
+    base: List[str] = list((doc.get("source") or {}).get("steps") or [])
     rid = (doc.get("source") or {}).get("recipe_id")
     if rid:
         try:
@@ -2621,6 +2696,9 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
                 it["choose"] = "auto"
             else:
                 it["choose"] = "todo"
+    if _for_compare:
+        # De vergelijking heeft alleen namen, producten en hoeveelheden nodig: prijzen en verpakkingen rekent die zelf
+        return {"by_store": by_store}
     piece_ids = {it.get("product_id") for b in by_store + general for it in b["flat"] if (it.get("unit") or "").lower().strip() in ("", "stuks", "stuk", "st")}
     await _learn_pack_counts([prods[x] for x in piece_ids if x in prods], 4)
 
@@ -4623,8 +4701,16 @@ async def search_products(
     hit = _search_cache.get(key)
     if hit is None:
         # In een aparte thread: zo blijft de rest van de app bereikbaar terwijl er gezocht wordt
-        hit = await asyncio.to_thread(_run_search, own + (await _global_products()) if own else await _global_products(),
-                                      q, source, aisle, favs if favorites else None, sub, brand, offer, bio, sort, store)
+        pool = own + (await _global_products()) if own else await _global_products()
+        hit = await asyncio.to_thread(_run_search, pool, q, source, aisle, favs if favorites else None, sub, brand, offer, bio, sort, store)
+        if len(hit[0]) < 3 and 2 <= len(q.strip()) <= 60:
+            # Weinig of niets gevonden (tikfout, ander woord, gewone taal)? De AI bedenkt betere zoekwoorden
+            for t in await _ai_search_terms(q):
+                more = await asyncio.to_thread(_run_search, pool, t, source, aisle, favs if favorites else None, sub, brand, offer, bio, sort, store)
+                if more[0]:
+                    seen = {d["product_id"] for d in hit[0]}
+                    docs_all = hit[0] + [d for d in more[0] if d["product_id"] not in seen]
+                    hit = (docs_all, more[1] if len(more[0]) > len(hit[0]) else hit[1], more[2] if len(more[0]) > len(hit[0]) else hit[2])
         if len(_search_cache) > 150:
             _search_cache.pop(next(iter(_search_cache)))
         _search_cache[key] = hit
@@ -4647,6 +4733,53 @@ async def search_products(
         "aisle_images": await asyncio.to_thread(_aisle_images, await _global_products()) if offset == 0 else None,
         "facets": facets,
     }
+
+
+AI_SEARCH_DAILY = 1500  # zoveel nieuwe zoekopdrachten per dag laten verbeteren; eerder gevraagde komen uit het geheugen
+_ai_search_mem: Dict[str, list] = {}
+_ai_search_state = {"day": "", "n": 0}
+
+
+async def _ai_search_terms(q: str) -> list:
+    # "iets voor bij de koffie" -> koekjes; "courgete" -> courgette. Eén keer vragen, daarna onthouden
+    key = _norm_text(q)
+    if not key:
+        return []
+    if key in _ai_search_mem:
+        return _ai_search_mem[key]
+    doc = await db.ai_search.find_one({"q": key}, {"_id": 0, "terms": 1})
+    if doc is not None:
+        _ai_search_mem[key] = doc.get("terms") or []
+        return _ai_search_mem[key]
+    day = now_utc().date().isoformat()
+    if _ai_search_state["day"] != day:
+        _ai_search_state.update(day=day, n=0)
+    if not os.environ.get("ANTHROPIC_API_KEY") or _ai_search_state["n"] >= AI_SEARCH_DAILY:
+        return []
+    _ai_search_state["n"] += 1
+    try:
+        from anthropic import AsyncAnthropic
+        msg = await asyncio.wait_for(AsyncAnthropic().beta.messages.create(
+            model=AI_PICK_MODEL, max_tokens=300, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"format": {"type": "json_schema", "schema": {
+                "type": "object", "additionalProperties": False, "required": ["terms"],
+                "properties": {"terms": {"type": "array", "items": {"type": "string"}}}}}},
+            messages=[{"role": "user", "content": (
+                f"Iemand zoekt in een Nederlandse supermarkt-app (Albert Heijn, Jumbo, Dirk) op: \"{q[:60]}\". Dat geeft bijna niets. "
+                "Geef maximaal 3 korte zoekwoorden zoals ze in de winkel op het product staan: verbeter tikfouten, gebruik het gewone Nederlandse woord "
+                "(ook bij Engelse woorden of merknamen die niet bestaan), of bij gewone taal de producten die bedoeld worden. "
+                "Geen uitleg. Weet je het echt niet, geef dan een lege lijst.")}]), 8)
+        text = next((b.text for b in msg.content if b.type == "text"), "")
+        terms = (json.loads(text) if text and msg.stop_reason not in ("refusal", "max_tokens") else {}).get("terms") or []
+    except Exception as e:
+        logger.info("Slimmer zoeken %r: %r", q, e)
+        return []
+    terms = [t.strip()[:40] for t in terms if isinstance(t, str) and t.strip() and _norm_text(t) != key][:3]
+    _ai_search_mem[key] = terms
+    if len(_ai_search_mem) > 5000:
+        _ai_search_mem.pop(next(iter(_ai_search_mem)))
+    await db.ai_search.update_one({"q": key}, {"$set": {"q": key, "terms": terms, "at": now_utc()}}, upsert=True)
+    return terms
 
 
 # Een herkenbaar plaatje per hoofdafdeling, zoals ijsblokjes bij diepvries
@@ -4879,7 +5012,7 @@ def _bigger_pack(p: dict, need: float, unit: str, store: str, packs: int, cost: 
         pool = [d for d in _product_cache.get("docs") or [] if d.get("_src") == store and d.get("is_global")]
         hits = _best_matches(pool, _alt_terms(p["name"], p) or p["name"], 20)
         sub = p.get("subcategory")
-        alts = [d for d in hits if d["product_id"] != p["product_id"] and (not sub or d.get("subcategory") in (sub, None)) and _same_kind(p, d)]
+        alts = [d for d in hits if d["product_id"] != p["product_id"] and (not sub or d.get("subcategory") in (sub, None)) and _same_kind(p, d) and _ai_ok(p["name"], d)]
         if len(_size_alts) > 3000:
             _size_alts.clear()
         _size_alts[(p["product_id"], store)] = alts
@@ -7306,9 +7439,105 @@ def _learned_product(store: str, name: str = "", d: Optional[dict] = None) -> Op
     return d
 
 
+# AI-controle op productvoorstellen: past dit product echt bij wat er gevraagd wordt ("melk" is geen chocolademelk)?
+# Elk paar wordt één keer op de achtergrond aan de AI gevraagd en onthouden; tot dan blijft het voorstel staan.
+AI_CHECK_DAILY = 4000  # zoveel paren per dag nakijken (kost een fractie van een cent per stuk)
+_ai_checked: Dict[str, bool] = {}
+_ai_bad: Dict[str, set] = {}  # gevraagd (genormaliseerd) -> producten die niet passen
+_ai_check_todo: Dict[str, tuple] = {}
+_ai_check_state = {"day": "", "n": 0, "loaded": False}
+
+
+def _ai_ok(want: str, d: Optional[dict]) -> bool:
+    if not d or not want:
+        return True
+    w = _norm_text(want)
+    k = f"{w}|{d['product_id']}"
+    v = _ai_checked.get(k)
+    if v is None:
+        if _ai_check_state["loaded"] and len(_ai_check_todo) < 2000:
+            _ai_check_todo.setdefault(k, (want, d.get("name") or "", d.get("aisle") or "", d.get("unit") or ""))
+        return True
+    return v
+
+
+def _ai_remember(k: str, ok: bool) -> None:
+    _ai_checked[k] = ok
+    if not ok:
+        w, _, pid = k.rpartition("|")
+        _ai_bad.setdefault(w, set()).add(pid)
+
+
+async def _ai_check_loop() -> None:
+    # Eerst onthouden antwoorden inladen, dan steeds een stapeltje nieuwe paren nakijken
+    try:
+        async for c in db.ai_checks.find({}, {"_id": 0, "key": 1, "ok": 1}):
+            _ai_remember(c["key"], bool(c.get("ok", True)))
+    except Exception as e:
+        logger.warning("AI-controle inladen: %r", e)
+    _ai_check_state["loaded"] = True
+    while True:
+        await asyncio.sleep(20)
+        if not _ai_check_todo or not os.environ.get("ANTHROPIC_API_KEY"):
+            continue
+        day = now_utc().date().isoformat()
+        if _ai_check_state["day"] != day:
+            _ai_check_state.update(day=day, n=0)
+        if _ai_check_state["n"] >= AI_CHECK_DAILY:
+            continue
+        batch = list(_ai_check_todo.items())[:40]
+        for k, _ in batch:
+            _ai_check_todo.pop(k, None)
+        _ai_check_state["n"] += len(batch)
+        lines = [f"{n}. Gevraagd: {v[0]}  ->  Product: {v[1]} ({v[3]}, {v[2]})" for n, (k, v) in enumerate(batch, 1)]
+        try:
+            from anthropic import AsyncAnthropic
+            msg = await AsyncAnthropic().beta.messages.create(
+                model=AI_PICK_MODEL, max_tokens=1500, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+                output_config={"format": {"type": "json_schema", "schema": {
+                    "type": "object", "additionalProperties": False, "required": ["checks"],
+                    "properties": {"checks": {"type": "array", "items": {
+                        "type": "object", "additionalProperties": False, "required": ["n", "ok"],
+                        "properties": {"n": {"type": "integer"}, "ok": {"type": "boolean"}}}}}}}},
+                messages=[{"role": "user", "content": (
+                    "Een boodschappen-app stelt bij een gevraagd ingrediënt of product een product uit de supermarkt voor. "
+                    "Zeg per regel of het voorstel klopt: ok=true als je dit product gewoon zou kopen voor wat er gevraagd wordt "
+                    "(een ander merk, andere verpakkingsgrootte of huismerk is prima; een gewone variant ook). "
+                    "ok=false als het iets anders is: een ander soort product, iets waar het alleen in zit (chocolademelk voor melk, "
+                    "citroenkoek voor citroen, bloemen voor rozemarijn), een andere smaak of variant die niet gevraagd is (volkoren voor gewoon, vega voor vlees), of geen eten.\n\n"
+                    + "\n".join(lines))}])
+            text = next((b.text for b in msg.content if b.type == "text"), "")
+            checks = (json.loads(text) if text and msg.stop_reason not in ("refusal", "max_tokens") else {}).get("checks") or []
+        except Exception as e:
+            logger.warning("AI-controle producten: %r", e)
+            continue
+        bad = 0
+        for c in checks:
+            n = c.get("n")
+            if not isinstance(n, int) or not 1 <= n <= len(batch):
+                continue
+            k = batch[n - 1][0]
+            ok = bool(c.get("ok", True))
+            _ai_remember(k, ok)
+            bad += not ok
+            await db.ai_checks.update_one({"key": k}, {"$set": {"key": k, "ok": ok, "at": now_utc()}}, upsert=True)
+        if bad:
+            logger.info("AI-controle: %d van %d productvoorstellen klopten niet", bad, len(batch))
+            _forget_matches()  # recepten opnieuw koppelen, zonder de afgekeurde producten
+            _size_alts.clear()
+
+
 def _cheapest_good(pool: list, name: str, store: str) -> Optional[dict]:
     hit = _learned_product(store, name)
-    return hit or _learned_product(store, "", _cheapest_good_raw(pool, name, store))
+    if hit:
+        return hit  # door gebruikers zelf gekozen: niet nakijken
+    d = _learned_product(store, "", _cheapest_good_raw(pool, name, store))
+    if _ai_ok(name, d):
+        return d
+    # De AI vond dit voorstel niet kloppen: het beste product zonder de afgekeurde
+    bad = _ai_bad.get(_norm_text(name)) or set()
+    d = _learned_product(store, "", _cheapest_good_raw([x for x in pool if x["product_id"] not in bad], name, store))
+    return d if _ai_ok(name, d) else None
 
 
 def _cheapest_good_raw(pool: list, name: str, store: str) -> Optional[dict]:
@@ -7760,8 +7989,22 @@ _TIP_FILLER = re.compile(r"^(?:de|het|een|wat|nog|extra|eventueel|beetje|paar|ha
 _TIP_TAIL = re.compile(r"\s+(?:erbij|erover|ernaast|eroverheen|als\s+bijgerecht|voor\s+erbij|bij\s+het\s+\w+|naar\s+smaak|voor\s+\w+)\b.*$", re.I)
 
 
+_TIP_GENERIC = {"maaltijd", "gerecht", "volledige", "voedzame", "voedzaam", "gezonde", "gezond", "lekkere", "extra", "smaak", "bijgerecht",
+                "variatie", "afwisseling", "kleur", "frisse", "fris", "knapperige", "romige", "hartige", "zoete", "makkelijk", "snel"}
+_TIP_CUT = re.compile(r"\s+(?:voor|als|om|zodat|dan)\s+(?:een|de|het|je|jij|meer|nog|extra)\b.*$", re.I)
+
+
+def _tip_words_in(name: str, d: dict) -> bool:
+    # Het product moet echt over de tip gaan: elk woord uit de tip zit in de productnaam ("rijst" -> geen Tutku-koekjes)
+    n = d.get("_norm") or _norm_text(d.get("name") or "")
+    words = [w for w in _norm_text(name).split() if len(w) >= 3]
+    return bool(words) and all(w in n or (len(w) > 4 and w[:-1] in n) or (len(w) > 5 and w[:-2] in n) for w in words)
+
+
 def _tip_names(x: str) -> list:
     out = []
+    # "rijst voor een volledige en voedzame maaltijd": alleen "rijst"
+    x = _TIP_CUT.sub("", x)
     for part in re.split(r",|\s+of\s+|\s+en\s+|\s+met\s+", x):
         n = _TIP_TAIL.sub("", part.strip())
         while True:
@@ -7770,7 +8013,8 @@ def _tip_names(x: str) -> list:
                 break
             n = m
         n = re.sub(r"\([^)]*\)", "", n).strip(" -")
-        if 2 < len(n) <= 40 and len(n.split()) <= 4 and not re.search(r"\b(je|jij|het\s+gerecht|dit|deze|die|zelf|smaak)\b", n, re.I):
+        if 2 < len(n) <= 40 and len(n.split()) <= 4 and not re.search(r"\b(je|jij|het\s+gerecht|dit|deze|die|zelf|smaak)\b", n, re.I) \
+                and not all(w in _TIP_GENERIC for w in _norm_text(n).split()):
             out.append(n)
     return out
 
@@ -7803,6 +8047,8 @@ def _recipe_tip_actions(rec: dict, user: dict, used: list) -> list:
                 d = _cheapest_good(pool, name, store)
                 if not d or d.get("product_id") in have or any(o["product"]["id"] == d.get("product_id") for o in out):
                     continue
+                if not _tip_words_in(name, d) and not _learned_product(store, name):
+                    continue  # geen product dat echt bij de tip past: liever geen voorstel dan een gek voorstel
                 index, frm = -1, ""
                 if kind == "swap":
                     # Wat vervang je: het ingrediënt uit dezelfde afdeling (spinazie voor andijvie, kip voor gehakt)
@@ -8109,6 +8355,8 @@ def _variant_miss(want: set, d: dict) -> int:
 
 def _compare_hit(st: str, cands: list, by_ean: dict, name: str, base: Optional[dict]) -> tuple:
     hit, alt = _compare_hit_raw(st, cands, by_ean, name, base)
+    if hit is not None and alt and not _ai_ok((base or {}).get("name") or name, hit):
+        return None, False  # vervangend product klopt niet (AI-controle): liever geschat dan iets anders
     if hit is None or not alt or not base:
         return hit, alt
     # Zelfde soort gevonden maar een andere variant (volkoren i.p.v. gewoon)? Kijk of er een betere in dezelfde afdeling is
@@ -8924,6 +9172,34 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
             "recipes": await _with_costs(recipes), "todo": todo, "own_dishes": own_dishes, "alerts_hit": alerts_hit}
 
 
+# --- Foto's via onze eigen server: sommige winkels laten hun productfoto's niet zomaar in een andere site zien ---
+_IMG_HOSTS = ("dirk.nl", "ah.nl", "jumbo.com", "wikimedia.org", "unsplash.com", "plus.nl", "lidl.nl", "aldi.nl", "coop.nl", "spar.nl", "hoogvliet.com", "vomar.nl", "dekamarkt.nl", "poiesz-supermarkten.nl")
+_img_cache: Dict[str, tuple] = {}  # url -> (inhoud, soort); klein gehouden, de browser bewaart ze daarna zelf
+_IMG_CACHE_MAX = 300
+
+
+@api_router.get("/img")
+async def image_proxy(u: str):
+    host = (urlparse(u).hostname or "").lower()
+    if not u.startswith("https://") or not any(host == h or host.endswith("." + h) for h in _IMG_HOSTS):
+        raise HTTPException(status_code=400, detail="Onbekende foto")
+    hit = _img_cache.get(u)
+    if hit is None:
+        try:
+            async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers={"User-Agent": DIRK_HEADERS["User-Agent"], "Accept": "image/*"}) as c:
+                r = await c.get(u)
+        except Exception:
+            raise HTTPException(status_code=502, detail="Foto niet op te halen")
+        kind = r.headers.get("content-type", "").split(";")[0]
+        if r.status_code != 200 or not kind.startswith("image/") or len(r.content) > 3_000_000:
+            raise HTTPException(status_code=404, detail="Foto niet gevonden")
+        hit = (r.content, kind)
+        if len(_img_cache) >= _IMG_CACHE_MAX:
+            _img_cache.pop(next(iter(_img_cache)), None)
+        _img_cache[u] = hit
+    return Response(hit[0], media_type=hit[1], headers={"Cache-Control": "public, max-age=604800, immutable"})
+
+
 # --- Andere producten voor een ingrediënt: logische voorstellen per winkel, goedkoper of in de aanbieding ---
 ALT_STORES = ["Albert Heijn", "Jumbo", "Dirk"]
 
@@ -9149,7 +9425,7 @@ async def dish_suggestions(data: SuggestIn, user: dict = Depends(get_current_use
             best = None
             for s, items in res["by_store"].items():
                 for d in items:
-                    if not _same_kind(base, d):
+                    if not _same_kind(base, d) or not _ai_ok(base["name"], d):
                         continue
                     up, bup = d.get("_up"), res["base_up"]
                     if up and bup and up[1] == bup[1] and up[0] < bup[0] * 0.2:
@@ -11316,6 +11592,539 @@ async def error_alert(request, call_next):
     return response
 
 
+# --- Slimme hulp (Premium): menu uit één zin, restjes koken, recept plakken of fotograferen, lijst typen of inspreken, bespaartips ---
+AI_DAILY_LIMIT = 60  # zoveel AI-vragen per persoon per dag; daarna morgen weer
+AI_IMAGE_MAX = 4_500_000  # bytes; groter kan de AI niet lezen
+
+
+async def _ai_ready(user: dict) -> None:
+    # Premium, een AI-sleutel, en niet eindeloos veel vragen per dag (elke vraag kost geld)
+    await require_premium(user)
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=503, detail="De slimme hulp is nog niet beschikbaar. Probeer het later nog eens.")
+    day = now_utc().date().isoformat()
+    doc = await db.ai_usage.find_one_and_update({"user_id": user["user_id"], "day": day}, {"$inc": {"n": 1}}, upsert=True, return_document=True)
+    if (doc or {}).get("n", 0) > AI_DAILY_LIMIT:
+        raise HTTPException(status_code=429, detail="Je hebt vandaag al heel veel aan de slimme hulp gevraagd. Morgen kan het weer.")
+
+
+async def _ai_json(content, schema: dict, model: str = DIRK_AI_MODEL, max_tokens: int = 4000, effort: str = "low") -> dict:
+    from anthropic import AsyncAnthropic
+    try:
+        msg = await AsyncAnthropic().beta.messages.create(
+            model=model, max_tokens=max_tokens, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
+            messages=[{"role": "user", "content": content}])
+    except Exception as e:
+        logger.warning("Slimme hulp: %r", e)
+        raise HTTPException(status_code=502, detail="De slimme hulp lukte even niet. Probeer het zo nog eens.")
+    text = next((b.text for b in msg.content if b.type == "text"), "")
+    if not text or msg.stop_reason in ("refusal", "max_tokens"):
+        raise HTTPException(status_code=502, detail="De slimme hulp kwam er niet uit. Probeer het anders te zeggen.")
+    return json.loads(text)
+
+
+def _obj(props: dict) -> dict:
+    return {"type": "object", "additionalProperties": False, "required": list(props), "properties": props}
+
+
+_NUM_OR_NULL = {"anyOf": [{"type": "number"}, {"type": "null"}]}
+_AI_DISH_SCHEMA = _obj({
+    "name": {"type": "string"}, "category": {"type": "string", "enum": MEAL_CATEGORIES}, "servings": {"type": "integer"},
+    "ingredients": {"type": "array", "items": _obj({"name": {"type": "string"}, "qty": _NUM_OR_NULL, "unit": {"type": "string"},
+                                                     "text": {"type": "string"}, "have": {"type": "boolean"}})},
+    "steps": {"type": "array", "items": {"type": "string"}}, "note": {"type": "string"}})
+_AI_DISH_RULES = ("Ingrediënten: name is de gewone naam zoals in de supermarkt (\"ui\", \"kipfilet\", \"geraspte kaas\"), zonder hoeveelheid; "
+                  "qty is het getal voor het hele gerecht (of null), unit is een van: gram, kg, ml, liter, el, tl, stuks, teen, plak, blik, pot, zak, bos, pak, takje, snuf; "
+                  "text is de regel zoals in een recept (\"2 uien, gesnipperd\"). "
+                  "Zout, peper, olie en water zet je erbij met have=true. "
+                  "Stappen: kort, in eenvoudig Nederlands, maximaal 10. Categorie: ontbijt, lunch, avondeten of snacks. Schrijf alles in het Nederlands.")
+
+
+def _user_store(user: dict) -> str:
+    return user.get("store") if user.get("store") in COMPARE_STORES else DEFAULT_STORE
+
+
+async def _match_names(names: list, user: dict) -> list:
+    # Per naam het best passende product in jouw winkel (zoals bij een gerecht), met de AI als het twijfelachtig is
+    store = _user_store(user)
+    docs = await _global_products()
+
+    def run():
+        pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
+        return [_cheapest_good(pool, n, store) if n.strip() and pool else None for n in names]
+    hits = await asyncio.to_thread(run)
+    try:
+        ai = await asyncio.wait_for(_ai_pick_products([n for n in names if n.strip()], store, docs), 25)
+        hits = [ai.get(n) or h for n, h in zip(names, hits)]
+    except Exception as e:
+        logger.info("Slimme hulp producten: %r", e)
+    return hits
+
+
+def _ai_unit(u: str) -> str:
+    return _UNIT_WORDS.get((u or "").lower().strip().rstrip("."), "stuks")
+
+
+async def _dish_preview(d: dict, user: dict) -> dict:
+    # Wat de AI bedacht, met de producten uit jouw winkel erbij (nog niets opgeslagen)
+    ings = [i for i in d.get("ingredients") or [] if (i.get("name") or "").strip()][:40]
+    buy = [i for i in ings if not i.get("have")]
+    hits = await _match_names([i["name"] for i in buy], user)
+    favs = set(user.get("favorite_products") or [])
+    store = _user_store(user)
+    by = {id(i): h for i, h in zip(buy, hits)}
+    out = []
+    for i in ings:
+        h = by.get(id(i))
+        out.append({"name": i["name"].strip()[:80], "qty": i.get("qty"), "unit": _ai_unit(i.get("unit") or ""), "text": (i.get("text") or "")[:160],
+                    "have": bool(i.get("have")), "product": product_public(_clean(h), store, user["user_id"], favs) if h else None})
+    return {"name": (d.get("name") or "Gerecht").strip()[:80], "category": d.get("category") if d.get("category") in MEAL_CATEGORIES else "avondeten",
+            "servings": max(1, min(int(d.get("servings") or 4), 20)), "ingredients": out,
+            "steps": [s.strip()[:500] for s in d.get("steps") or [] if s.strip()][:12], "note": (d.get("note") or "")[:400]}
+
+
+# 1. Menu uit één zin: de AI begrijpt je zin, de app maakt het lijstje en vult het menu (zoals "Menu automatisch invullen")
+class AiMenuInput(BaseModel):
+    text: str
+
+
+@api_router.post("/ai/menu")
+async def ai_menu(data: AiMenuInput, user: dict = Depends(get_current_user)):
+    text = data.text.strip()[:600]
+    if len(text) < 4:
+        raise HTTPException(status_code=400, detail="Vertel in een zin wat je wilt, bijvoorbeeld: 5 dagen avondeten voor 2 personen, vega, max 40 euro.")
+    await _ai_ready(user)
+    today = now_utc().date()
+    schema = _obj({
+        "name": {"type": "string"}, "days": {"type": "integer"}, "adults": {"type": "integer"}, "children": {"type": "integer"},
+        "start_date": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "categories": {"type": "array", "items": {"type": "string", "enum": MEAL_CATEGORIES}},
+        "diet": {"type": "array", "items": {"type": "string", "enum": ["vega", "vegan", "vlees", "vis"]}},
+        "prefer": {"type": "array", "items": {"type": "string"}}, "avoid": {"type": "array", "items": {"type": "string"}},
+        "cheap": {"type": "boolean"}, "budget": _NUM_OR_NULL, "style": {"type": "string", "enum": ["vertrouwd", "mix", "nieuw"]}})
+    p = await _ai_json(
+        f"Vandaag is het {today.isoformat()} ({['maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag', 'zondag'][today.weekday()]}).\n"
+        f"Iemand vraagt in een boodschappen-app: \"{text}\"\n\n"
+        "Haal eruit: een korte naam voor het lijstje (bijv. \"Week vega\"), aantal dagen (standaard 7), volwassenen (standaard 2) en kinderen (standaard 0), "
+        "startdatum als JJJJ-MM-DD (of null als niet genoemd), welke maaltijden (standaard alleen avondeten), dieet (leeg als niets gezegd), "
+        "woorden van gerechten of ingrediënten waar ze zin in hebben (prefer) en wat ze niet willen of niet mogen (avoid, ook allergieën), "
+        "goedkoop (true bij budget of zuinig), het budget in euro voor alles (of null), en stijl: vertrouwd, mix of nieuw (iets nieuws proberen).",
+        schema, model=AI_PICK_MODEL, max_tokens=800)
+    days = max(1, min(int(p.get("days") or 7), 21))
+    adults, children = max(0, min(int(p.get("adults") or 0), 60)), max(0, min(int(p.get("children") or 0), 60))
+    if adults + children == 0:
+        adults = 2
+    start = None
+    try:
+        start = _iso_day(p["start_date"]) if p.get("start_date") else None
+    except Exception:
+        start = None
+    cats = [c for c in MEAL_CATEGORIES if c in (p.get("categories") or [])] or ["avondeten"]
+    budget = max(0.0, float(p.get("budget") or 0))
+    # Eén keer per week boodschappen doen
+    day_inputs = [DayInput(adults=adults, children=children, is_shopping_day=(k % 7 == 0)) for k in range(days)]
+    camp_id = f"camp_{uuid.uuid4().hex[:12]}"
+    await db.camps.insert_one({"camp_id": camp_id, "owner_id": user["user_id"], "member_ids": [], "name": (p.get("name") or "Menu").strip()[:60] or "Menu",
+                               "days": _build_days(day_inputs), "vega_adults": 0, "vega_children": 0, "general": [], "budget_target": budget,
+                               "start_date": start, "deleted_at": None, "created_at": now_utc(), "ai_text": text})
+    diet = ",".join(x for x in p.get("diet") or [] if x in ("vega", "vegan", "vlees", "vis"))
+    menu = AutoMenuInput(categories=cats, diet=diet, prefer=[x[:40] for x in p.get("prefer") or []][:10], avoid=[x[:40] for x in p.get("avoid") or []][:10],
+                         cheap=bool(p.get("cheap") or budget), style=p.get("style") if p.get("style") in ("vertrouwd", "mix", "nieuw") else "mix",
+                         remember=False)
+    res = await auto_menu(camp_id, menu, user)
+    return {"camp": res["camp"], "filled": res["filled"], "understood": {
+        "days": days, "adults": adults, "children": children, "start_date": start, "categories": cats, "diet": diet,
+        "prefer": menu.prefer, "avoid": menu.avoid, "budget": budget or None, "cheap": menu.cheap}}
+
+
+# 2. Restjes koken: gerechten met wat je nog in huis hebt (voorraadkast en/of wat je typt)
+class AiLeftoversInput(BaseModel):
+    text: str = ""
+    use_pantry: bool = True
+
+
+@api_router.post("/ai/leftovers")
+async def ai_leftovers(data: AiLeftoversInput, user: dict = Depends(get_current_user)):
+    have: List[str] = []
+    if data.use_pantry:
+        async for it in db.pantry.find({"user_id": user["user_id"]}, {"_id": 0, "name": 1, "qty": 1, "unit": 1}).limit(150):
+            q = f" ({_fmt_qty(it['qty'])} {it.get('unit') or ''})".rstrip() if it.get("qty") else ""
+            have.append(f"- {it.get('name')}{q}")
+    text = data.text.strip()[:600]
+    if not have and not text:
+        raise HTTPException(status_code=400, detail="Typ wat je nog hebt, of zet eerst iets in je voorraadkast.")
+    await _ai_ready(user)
+    ask = ("Bedenk 3 verschillende, eenvoudige gerechten die zoveel mogelijk opmaken van wat iemand nog in huis heeft, "
+           "zodat er weinig weggegooid hoeft te worden en er weinig bij gekocht hoeft te worden.\n\n" +
+           (f"Wat er nog is (eigen woorden): {text}\n\n" if text else "") +
+           ("Voorraadkast:\n" + "\n".join(have[:150]) + "\n\n" if have else "") +
+           "Zet bij elk ingrediënt have=true als het al in huis is, have=false als het erbij gekocht moet worden (zo min mogelijk). "
+           "In note leg je in één zin uit wat je ermee opmaakt. Gerechten voor 2 personen, tenzij anders gezegd.\n" + _AI_DISH_RULES)
+    res = await _ai_json(ask, _obj({"dishes": {"type": "array", "items": _AI_DISH_SCHEMA}}), max_tokens=6000)
+    dishes = (res.get("dishes") or [])[:3]
+    return {"dishes": [await _dish_preview(d, user) for d in dishes]}
+
+
+# 3. Recept plakken (tekst of link) of fotograferen: een gerecht met producten uit jouw winkel
+class AiRecipeInput(BaseModel):
+    text: str = ""
+    url: str = ""
+    image: str = ""  # base64 (mag met "data:image/jpeg;base64," ervoor)
+
+
+def _public_url(url: str) -> bool:
+    # Alleen gewone websites ophalen, niets op het eigen netwerk van de server
+    import socket
+    try:
+        u = urlparse(url)
+        if u.scheme not in ("http", "https") or not u.hostname:
+            return False
+        for info in socket.getaddrinfo(u.hostname, u.port or (443 if u.scheme == "https" else 80)):
+            ip = ipaddress.ip_address(info[4][0])
+            if not ip.is_global:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _ld_recipe(html: str) -> Optional[dict]:
+    # De meeste receptensites zetten het recept netjes in de pagina (schema.org Recipe)
+    for m in re.finditer(r"<script[^>]+application/ld\+json[^>]*>(.*?)</script>", html, re.S | re.I):
+        try:
+            data = json.loads(m.group(1).strip())
+        except Exception:
+            continue
+        todo = data if isinstance(data, list) else [data]
+        while todo:
+            x = todo.pop(0)
+            if not isinstance(x, dict):
+                continue
+            t = x.get("@type")
+            if t == "Recipe" or (isinstance(t, list) and "Recipe" in t):
+                return x
+            todo += [v for v in (x.get("@graph") or []) if isinstance(v, dict)]
+    return None
+
+
+def _ld_text(r: dict) -> str:
+    def steps(v):
+        if isinstance(v, str):
+            return [v]
+        out = []
+        for s in v or []:
+            if isinstance(s, str):
+                out.append(s)
+            elif isinstance(s, dict):
+                out += steps(s.get("itemListElement")) if s.get("itemListElement") else [s.get("text") or s.get("name") or ""]
+        return out
+    y = r.get("recipeYield")
+    y = y[0] if isinstance(y, list) and y else y
+    return (f"Titel: {r.get('name') or ''}\nPersonen: {y or '?'}\nIngrediënten:\n" +
+            "\n".join(f"- {i}" for i in r.get("recipeIngredient") or [] if isinstance(i, str)) +
+            "\nBereiding:\n" + "\n".join(f"{k + 1}. {s}" for k, s in enumerate(x for x in steps(r.get("recipeInstructions")) if x)))
+
+
+async def _page_recipe(url: str) -> tuple:
+    # (tekst voor de AI, foto)
+    if not await asyncio.to_thread(_public_url, url):
+        raise HTTPException(status_code=400, detail="Deze link kan de app niet openen.")
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as c:
+            for _ in range(4):
+                r = await c.get(url, headers=_PAGE_HEADERS)
+                if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                    url = str(r.url.join(r.headers["location"]))
+                    if not await asyncio.to_thread(_public_url, url):
+                        raise HTTPException(status_code=400, detail="Deze link kan de app niet openen.")
+                    continue
+                break
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.info("Recept ophalen %s: %r", url, e)
+        raise HTTPException(status_code=400, detail="De pagina kon niet worden geopend. Plak anders de tekst van het recept.")
+    if r.status_code != 200:
+        raise HTTPException(status_code=400, detail="De pagina kon niet worden geopend. Plak anders de tekst van het recept.")
+    html = r.text[:3_000_000]
+    ld = _ld_recipe(html)
+    if ld:
+        img = ld.get("image")
+        img = (img[0] if isinstance(img, list) and img else img) or None
+        img = img.get("url") if isinstance(img, dict) else img
+        return _ld_text(ld)[:12000], img if isinstance(img, str) and img.startswith("https://") else None
+    body = re.sub(r"<(script|style|noscript|svg|header|footer|nav)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
+    body = re.sub(r"<br\s*/?>|</(p|li|h\d|div|tr)>", "\n", body, flags=re.I)
+    body = re.sub(r"<[^>]+>", " ", body)
+    from html import unescape
+    body = re.sub(r"[ \t]+", " ", unescape(body))
+    body = re.sub(r"\n\s*\n+", "\n", body).strip()
+    return body[:12000], None
+
+
+@api_router.post("/ai/recipe")
+async def ai_recipe(data: AiRecipeInput, user: dict = Depends(get_current_user)):
+    text, url = data.text.strip()[:12000], data.url.strip()[:1000]
+    if not url and re.match(r"^https?://\S+$", text):
+        url, text = text, ""  # link in het tekstvak geplakt
+    raw = data.image.split(",", 1)[-1].strip() if data.image else ""
+    if not (text or url or raw):
+        raise HTTPException(status_code=400, detail="Plak een recept of een link, of maak een foto.")
+    image = None
+    if raw:
+        try:
+            image = base64.b64decode(raw, validate=False)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Deze foto kan de app niet lezen.")
+        if len(image) > AI_IMAGE_MAX:
+            raise HTTPException(status_code=400, detail="Deze foto is te groot. Maak een foto van alleen het recept.")
+    await _ai_ready(user)
+    photo = None
+    if url:
+        page, photo = await _page_recipe(url)
+        text = (text + "\n\n" if text else "") + page
+    content: list = []
+    if image:
+        kind = "image/png" if image[:4] == b"\x89PNG" else "image/webp" if image[8:12] == b"WEBP" else "image/jpeg"
+        content.append({"type": "image", "source": {"type": "base64", "media_type": kind, "data": base64.b64encode(image).decode()}})
+    content.append({"type": "text", "text": (
+        "Zet dit recept om voor een boodschappen-app" + (" (de foto hierboven)" if image else "") + ". "
+        "Neem de ingrediënten en stappen over zoals ze in het recept staan; staat er geen bereiding, bedenk dan een korte, logische bereiding. "
+        "Is het geen recept, geef dan een lege lijst ingrediënten. Zet in note eventueel een korte tip uit het recept.\n" + _AI_DISH_RULES +
+        (f"\n\nHet recept:\n{text}" if text else ""))})
+    d = await _ai_json(content, _AI_DISH_SCHEMA, max_tokens=6000)
+    if not d.get("ingredients"):
+        raise HTTPException(status_code=400, detail="Er is geen recept gevonden. Plak de ingrediënten en de bereiding, of maak een scherpere foto.")
+    out = await _dish_preview(d, user)
+    return {"dish": {**out, "url": url or None, "image": photo}}
+
+
+# Bewaren als eigen gerecht, en meteen op een lijstje als je dat kiest (restjes en recepten)
+class AiDishIngredient(BaseModel):
+    name: str
+    qty: Optional[float] = None
+    unit: str = "stuks"
+    text: str = ""
+    have: bool = False
+    product_id: Optional[str] = None
+
+
+class AiDishSave(BaseModel):
+    name: str
+    category: str = "avondeten"
+    servings: int = 4
+    ingredients: List[AiDishIngredient] = []
+    steps: List[str] = []
+    url: Optional[str] = None
+    image: Optional[str] = None
+    kind: str = "recept"  # recept of restjes
+    camp_id: Optional[str] = None
+    day_index: Optional[int] = None
+
+
+@api_router.post("/ai/dish")
+async def ai_dish_save(data: AiDishSave, user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    if data.category not in MEAL_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Ongeldige categorie")
+    camp = None
+    if data.camp_id:
+        camp = await db.camps.find_one({"camp_id": data.camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
+        if not camp:
+            raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
+        if not 0 <= (data.day_index or 0) < len(camp.get("days") or []):
+            raise HTTPException(status_code=400, detail="Die dag bestaat niet in dit lijstje")
+    await _global_products()
+    by_pid = _product_cache.get("by_pid") or {}
+    persons = max(1, min(data.servings, 20))
+    ings, pantry = [], []
+    for i in data.ingredients[:40]:
+        p = by_pid.get(i.product_id or "") if not i.have else None
+        unit = _ai_unit(i.unit)
+        per = round((i.qty or 1) / persons, 3)
+        (pantry if i.have else ings).append(Ingredient(
+            name=(p or {}).get("name") or i.name[:80], unit=unit, qty_adult=per, qty_child=round(per / 2, 3),
+            aisle=(p or {}).get("aisle") or "Overig", price=_doc_price(p) if p else 0, product_id=p["product_id"] if p else None,
+            store=product_source(p) if p else None, recipe_text=(i.text or i.name)[:160]).model_dump())
+    dish_id = f"dish_{uuid.uuid4().hex[:12]}"
+    image = data.image if data.image and data.image.startswith("https://") else None
+    doc = {"dish_id": dish_id, "name": data.name.strip()[:80] or "Gerecht", "category": data.category, "is_standard": False, "owner_id": user["user_id"],
+           "ingredients": ings, "pantry": pantry, "deleted_at": None, "created_at": now_utc(),
+           "source": {"ai": data.kind if data.kind in ("recept", "restjes") else "recept", "url": (data.url or "")[:1000] or None, "image": image,
+                      "steps": [s.strip()[:500] for s in data.steps if s.strip()][:12], "servings": persons}}
+    await db.dishes.insert_one(doc)
+    if not image:
+        _photo_later(doc)
+    if camp:
+        days = camp.get("days") or []
+        lst = days[data.day_index or 0].setdefault("meals", {}).setdefault(data.category, [])
+        lst.append(dish_id)
+        await db.camps.update_one({"camp_id": camp["camp_id"]}, {"$set": {"days": days}})
+    return {"dish": dish_public(doc)}
+
+
+# 4. Boodschappen typen of inspreken in gewone taal: de AI maakt er producten van
+class AiItemsInput(BaseModel):
+    text: str
+
+
+@api_router.post("/ai/items")
+async def ai_items(data: AiItemsInput, user: dict = Depends(get_current_user)):
+    text = data.text.strip()[:1500]
+    if len(text) < 2:
+        raise HTTPException(status_code=400, detail="Typ of spreek in wat je nodig hebt.")
+    await _ai_ready(user)
+    res = await _ai_json(
+        f"Iemand typt of spreekt in een boodschappen-app in wat er gekocht moet worden: \"{text}\"\n\n"
+        "Maak er een lijst producten van. name is de productnaam zoals je die in de supermarkt zoekt (\"halfvolle melk\", \"bruin brood\", \"bananen\"), "
+        "qty en unit: het aantal verpakkingen of stuks (unit stuks), of het gewicht als dat genoemd is (gram, kg, liter, ml). "
+        "Is iets vaag (\"iets voor bij de koffie\"), kies dan een gewoon product dat erbij past. Laat weg wat geen boodschap is. Maximaal 40 producten.",
+        _obj({"items": {"type": "array", "items": _obj({"name": {"type": "string"}, "qty": {"type": "number"}, "unit": {"type": "string"}})}}),
+        model=AI_PICK_MODEL, max_tokens=2000)
+    items = [i for i in res.get("items") or [] if (i.get("name") or "").strip()][:40]
+    hits = await _match_names([i["name"].strip() for i in items], user)
+    favs = set(user.get("favorite_products") or [])
+    store = _user_store(user)
+    return {"items": [{"name": i["name"].strip()[:80], "qty": max(0.1, min(float(i.get("qty") or 1), 5000)), "unit": _ai_unit(i.get("unit") or ""),
+                       "product": product_public(_clean(h), store, user["user_id"], favs) if h else None} for i, h in zip(items, hits)]}
+
+
+class AiItem(BaseModel):
+    name: str
+    qty: float = 1
+    unit: str = "stuks"
+    product_id: Optional[str] = None
+
+
+class AiItemsAdd(BaseModel):
+    camp_id: str
+    day_index: Optional[int] = None  # leeg = algemene boodschappen
+    items: List[AiItem] = []
+
+
+@api_router.post("/ai/items/add")
+async def ai_items_add(data: AiItemsAdd, user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    camp = await db.camps.find_one({"camp_id": data.camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
+    if not camp:
+        raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
+    await _global_products()
+    by_pid = _product_cache.get("by_pid") or {}
+    new = []
+    for i in data.items[:40]:
+        p = by_pid.get(i.product_id or "")
+        if not (p or i.name.strip()):
+            continue
+        new.append(ExtraItem(name=(p or {}).get("name") or i.name.strip()[:80], unit=_ai_unit(i.unit), qty=max(0.1, min(i.qty, 5000)),
+                             aisle=(p or {}).get("aisle") or "Overig", product_id=p["product_id"] if p else None,
+                             store=product_source(p) if p else None).model_dump())
+    if data.day_index is None:
+        await db.camps.update_one({"camp_id": data.camp_id}, {"$push": {"general": {"$each": new}}})
+    else:
+        days = camp.get("days") or []
+        day = next((d for d in days if d.get("index") == data.day_index), None)
+        if not day:
+            raise HTTPException(status_code=400, detail="Die dag bestaat niet")
+        day.setdefault("extras", []).extend(new)
+        await db.camps.update_one({"camp_id": data.camp_id}, {"$set": {"days": days}})
+    return {"ok": True, "added": len(new)}
+
+
+# 5. Slimme bespaartips voor een boodschappenlijst: de app zoekt de besparingen, de AI zet de beste op een rij
+def _cheaper_same(p: dict, pool: list) -> Optional[dict]:
+    # Hetzelfde soort product in dezelfde winkel dat per kilo of liter duidelijk goedkoper is (vaak het huismerk)
+    up = p.get("_up")
+    if not up or not up[0]:
+        return None
+    best = None
+    for d in _best_matches(pool, _alt_terms(p["name"], p) or p["name"], 20):
+        du = d.get("_up")
+        if d["product_id"] == p["product_id"] or not du or du[1] != up[1] or du[0] >= up[0] * 0.85 or not _same_kind(p, d):
+            continue
+        if _variants(p.get("name") or "") != _variants(d.get("name") or "") or not _ai_ok(p["name"], d):
+            continue  # geen gewone pasta voor volkorenpasta
+        if not best or du[0] < best["_up"][0]:
+            best = d
+    return best
+
+
+def _saving_facts(sl: dict) -> list:
+    by_pid = _product_cache.get("by_pid") or {}
+    pools: dict = {}
+    facts = []
+    rows = [(b["store"], it) for b in sl.get("by_store") or [] for it in b.get("flat") or [] if it.get("price")]
+    rows.sort(key=lambda r: -(r[1].get("price") or 0))
+    for st, it in rows[:30]:
+        p = by_pid.get(it.get("product_id") or "")
+        bt = it.get("better")
+        if bt and (bt.get("saving") or 0) >= 0.2:
+            facts.append({"kind": "groter", "item": it.get("name"), "saving": bt["saving"], "from_id": it.get("product_id"), "to_id": bt["product_id"],
+                          "text": f"{it.get('product')}: {bt['packs']}x {bt['name']} ({bt['pack_unit']}) in plaats van {it.get('packs')}x {it.get('pack_unit')}"})
+            continue
+        if p:
+            if st not in pools:
+                pools[st] = [d for d in _product_cache.get("docs") or [] if d.get("_src") == st and d.get("is_global")]
+            d = _cheaper_same(p, pools[st])
+            if d:
+                plan = _pack_plan(d, float(it.get("qty") or 1), it.get("unit") or "stuks", st)
+                sav = round((it.get("price") or 0) - (plan or {}).get("cost", 999), 2)
+                if sav >= 0.3:
+                    facts.append({"kind": "huismerk", "item": it.get("name"), "saving": sav, "from_id": it.get("product_id"), "to_id": d["product_id"],
+                                  "text": f"{it.get('product')} vervangen door {d['name']} ({d.get('unit') or ''}), zelfde soort, goedkoper per {'kilo' if d['_up'][1] == 'kilo' else 'liter'}"})
+        if it.get("promo_then"):
+            facts.append({"kind": "actie", "item": it.get("name"), "saving": 0, "text": f"{it.get('product')} is op je boodschappendag in de aanbieding: {it['promo_then'].get('label')}"})
+    split = float((sl.get("savings") or {}).get("split_can") or 0)
+    if split >= 1:
+        facts.append({"kind": "splitsen", "item": None, "saving": round(split, 2), "text": f"De lijst bij meerdere winkels halen (slim splitsen) scheelt {_euro(split)}"})
+    facts.sort(key=lambda f: -(f.get("saving") or 0))
+    return facts[:12]
+
+
+@api_router.get("/ai/savings-tips")
+async def ai_savings_tips(camp_id: str, user: dict = Depends(get_current_user)):
+    await require_premium(user)
+    sl = await shopping_list(camp_id, user)
+    camp = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0, "savings": 1, "name": 1})
+    sl = {**sl, "savings": (camp or {}).get("savings") or {}}
+    facts = await asyncio.to_thread(_saving_facts, sl)
+    names = [it.get("product") or it.get("name") for b in sl.get("by_store") or [] for it in b.get("flat") or []][:80]
+    if not names:
+        return {"tips": [], "total": 0}
+    sig = hashlib.sha1(json.dumps([facts, names], ensure_ascii=False, default=str).encode()).hexdigest()
+    hit = await db.ai_tips.find_one({"sig": sig}, {"_id": 0})
+    if hit:
+        texts = hit["texts"]
+    else:
+        texts = {}
+        try:
+            await _ai_ready(user)
+            res = await _ai_json(
+                "Je helpt in een boodschappen-app met besparen. Schrijf voor elk feit hieronder één korte tip in eenvoudig Nederlands (één zin, met het bedrag als dat er is). "
+                "Voeg daarna maximaal 2 eigen slimme tips toe die echt bij dit lijstje passen (bijv. iets dubbel, iets duurs dat je kunt vervangen, invriezen), met fact null.\n\n"
+                "Feiten (nummer: feit, besparing):\n" + "\n".join(f"{k + 1}: {f['text']} (€ {f['saving']:.2f})" for k, f in enumerate(facts)) +
+                "\n\nHet lijstje:\n" + ", ".join(n for n in names if n),
+                _obj({"tips": {"type": "array", "items": _obj({"text": {"type": "string"}, "fact": {"anyOf": [{"type": "integer"}, {"type": "null"}]}})}}),
+                model=AI_PICK_MODEL, max_tokens=1500)
+            for t in (res.get("tips") or [])[:len(facts) + 2]:
+                k = t.get("fact")
+                texts[str(k - 1) if isinstance(k, int) and 1 <= k <= len(facts) else f"x{len(texts)}"] = (t.get("text") or "").strip()[:300]
+            await db.ai_tips.update_one({"sig": sig}, {"$set": {"sig": sig, "texts": texts, "at": now_utc()}}, upsert=True)
+        except HTTPException as e:
+            # Geen AI (geen sleutel, te veel vragen, storing)? Dan de tips zoals de app ze zelf vond
+            logger.info("Bespaartips zonder AI: %s", e.detail)
+    by_pid = _product_cache.get("by_pid") or {}
+    store = _user_store(user)
+    favs = set(user.get("favorite_products") or [])
+    tips = []
+    for k, f in enumerate(facts):
+        to = by_pid.get(f.get("to_id") or "")
+        tips.append({"kind": f["kind"], "text": texts.get(str(k)) or f["text"], "saving": f["saving"] or None, "from_id": f.get("from_id"),
+                     "to": product_public(_clean(to), to.get("_src") or store, user["user_id"], favs) if to else None})
+    tips += [{"kind": "idee", "text": v, "saving": None, "from_id": None, "to": None} for k, v in texts.items() if k.startswith("x") and v]
+    return {"tips": tips, "total": round(sum(f["saving"] or 0 for f in facts if f["kind"] in ("groter", "huismerk")), 2)}
+
+
 app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
@@ -11593,6 +12402,7 @@ STARTER_PRODUCTS = [
 async def startup():
     asyncio.create_task(_global_products())  # productlijst meteen laden: de rest van het opstarten heeft hem niet nodig
     asyncio.create_task(_warm_home())  # daarna de startpagina (acties en recepten) klaarzetten
+    asyncio.create_task(_ai_check_loop())  # productvoorstellen op de achtergrond laten nakijken door de AI
     try:
         await _init_storage()
         logger.info("Object storage initialised")
@@ -11606,6 +12416,10 @@ async def startup():
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.dishes.create_index("dish_id", unique=True)
     await db.dish_preps.create_index("sig", unique=True)
+    await db.ai_tips.create_index("sig", unique=True)
+    await db.ai_checks.create_index("key", unique=True)
+    await db.ai_search.create_index("q", unique=True)
+    await db.ai_usage.create_index([("user_id", 1), ("day", 1)], unique=True)
     await db.camps.create_index("camp_id", unique=True)
     await db.invitations.create_index([("email", 1), ("camp_id", 1)], unique=True)
     await db.google_logins.create_index("expires_at", expireAfterSeconds=0)
@@ -11814,6 +12628,7 @@ _EXTRA_INDEXES = [
     ("products", "dirk_id"), ("products", "ah_id"), ("products", "jumbo_id"), ("products", "aisle"),
     ("user_interest", "user_id"), ("interest_log", "user_id"), ("submissions", "status"), ("store_requests", "status"),
     ("premium_requests", "status"), ("email_prefs", "email"), ("users", "username"), ("settings", "key"), ("meta", "key"),
+    ("product_submissions", "status"), ("recipe_cost", "id"),
 ]
 
 

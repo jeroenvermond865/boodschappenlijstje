@@ -15,6 +15,7 @@ export const PREMIUM_FEATURES: { icon: string; title: string; text: string; to?:
   { icon: "call-split", title: "Slim splitsen", text: "Haal elk product bij de winkel waar het het goedkoopst is. Wat je daarmee bespaart, telt mee in je bespaaroverzicht.", to: "/", where: "Op Home bij de prijsvergelijking" },
   { icon: "calendar-star", title: "Automatisch weekmenu", text: "Een weekmenu met gerechten waarvan de ingrediënten nu in de aanbieding zijn.", to: "/camps", where: "Bovenaan in je planning" },
   { icon: "fridge-outline", title: "Voorraadkast", text: "Houd bij wat je al in huis hebt, dan gaat dat van je boodschappenlijst af.", to: "/pantry", where: "Op Home en bij je boodschappenlijst" },
+  { icon: "auto-fix", title: "Slimme hulp", text: "Een menu uit één zin, koken met restjes, een recept of foto overnemen, je lijst inspreken en slimme bespaartips.", to: "/slim", where: "Op Home: Slimme hulp" },
   { icon: "cancel", title: "Geen advertenties", text: "Als er later advertenties komen, zie jij ze niet." },
 ];
 

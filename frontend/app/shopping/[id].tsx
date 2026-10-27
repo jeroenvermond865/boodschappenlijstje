@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Animated, Image, Linking, Platform, Pressable, RefreshControl, ScrollView, Share, Text, View } from "react-native";
+import { ActivityIndicator, Animated, Linking, Platform, Pressable, RefreshControl, ScrollView, Share, Text, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { useHideOnScroll } from "@/src/hideOnScroll";
 import { RestockCard } from "@/src/RestockCard";
@@ -508,6 +509,12 @@ export default function ShoppingScreen() {
             <Pressable style={styles.pantryLink} onPress={() => router.push("/pantry")} testID="shopping-pantry-link">
               <Icon name="fridge-outline" size={16} color={colors.brandPrimary} />
               <Text style={styles.pantryLinkText}>Al iets in huis? Zet het in je voorraadkast</Text>
+            </Pressable>
+          ) : null}
+          {premium ? (
+            <Pressable style={styles.pantryLink} onPress={() => router.push({ pathname: "/slim", params: { tab: "tips", camp: id } })} testID="shopping-ai-tips">
+              <Icon name="piggy-bank-outline" size={16} color={colors.brandPrimary} />
+              <Text style={styles.pantryLinkText}>Slimme bespaartips voor deze lijst</Text>
             </Pressable>
           ) : null}
           {data?.has_pantry && covered.length ? (

@@ -1,6 +1,7 @@
 // Een gerecht of online recept als venster: foto, wat erin zit en de bereiding, met knoppen eronder
 // (bijv. "Toevoegen" en "Terug" bij het kiezen, of "Gerecht openen" en "Aanpassen" in je lijstje).
-import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
@@ -14,6 +15,7 @@ import type { Dish } from "@/app/(tabs)/dishes";
 import type { RecipeTile } from "@/src/OnlineRecipes";
 import type { Product } from "@/src/ProductBrowser";
 import { ShopSwapSheet } from "@/src/ShopSwap";
+import { ProductPopup } from "@/src/ProductPopup";
 
 export type PreviewAction = { label: string; icon?: string; onPress: () => void; primary?: boolean; testID?: string };
 export type PreviewTarget = { dish: Dish } | { recipe: RecipeTile };
@@ -60,6 +62,8 @@ export function AltSwapList({
   // Zelf een ander product gekozen bij een tip (geldt hier; de app leert ervan)
   const [own, setOwn] = useState<Record<string, Product>>({});
   const [pickFor, setPickFor] = useState<AltSwap | null>(null);
+  // Op het product tikken: eerst het product zelf bekijken, met daar de knop om te wisselen
+  const [viewFor, setViewFor] = useState<AltSwap | null>(null);
   if (!swaps.length) return null;
   const withOwn = (s: AltSwap): AltSwap => (own[slotOf(s)] ? { ...s, product: own[slotOf(s)] } : s);
   const pick = async (p: Product) => {
@@ -81,14 +85,24 @@ export function AltSwapList({
         const add = s.kind === "add";
         return (
           <View key={`${slotOf(s)}-${raw.to}`} style={styles.swap}>
-            {s.product.image ? <Image source={{ uri: s.product.image }} style={styles.swapImg} resizeMode="contain" /> : null}
+            <Pressable onPress={() => setViewFor(raw)} hitSlop={4} testID={`alt-swap-view-${slotOf(s)}`}>
+              {s.product.image ? (
+                <Image source={{ uri: s.product.image }} style={styles.swapImg} resizeMode="contain" />
+              ) : (
+                <View style={[styles.swapImg, { alignItems: "center", justifyContent: "center" }]}>
+                  <Icon name="basket-outline" size={20} color={colors.muted} />
+                </View>
+              )}
+            </Pressable>
             <View style={{ flex: 1, gap: 2 }}>
               <Text style={styles.swapTitle} numberOfLines={s.label === "Tip" ? 3 : 1}>
                 {s.label === "Tip" ? `Tip: ${s.text}` : `${s.label}?`}
               </Text>
-              <Text style={styles.meta} numberOfLines={2}>
-                {add ? `${s.product.name} erbij` : `${s.from} vervangen door ${s.product.name}`}
-              </Text>
+              <Pressable onPress={() => setViewFor(raw)} hitSlop={4}>
+                <Text style={styles.meta} numberOfLines={2}>
+                  {add ? `${s.product.name} erbij` : `${s.from} vervangen door ${s.product.name}`}
+                </Text>
+              </Pressable>
               <Pressable onPress={() => setPickFor(raw)} hitSlop={6} testID={`alt-swap-other-${slotOf(s)}`}>
                 <Text style={styles.swapOther}>Ander product</Text>
               </Pressable>
@@ -101,6 +115,16 @@ export function AltSwapList({
           </View>
         );
       })}
+      <ProductPopup
+        productId={viewFor ? withOwn(viewFor).product.id : null}
+        onClose={() => setViewFor(null)}
+        swapLabel="Ander product"
+        onSwap={() => {
+          const v = viewFor;
+          setViewFor(null);
+          setPickFor(v);
+        }}
+      />
       <ShopSwapSheet
         item={pickFor ? { name: pickFor.to || pickFor.from, product: withOwn(pickFor).product.name, product_id: withOwn(pickFor).product.id } : null}
         store={pickFor?.product.source ?? ""}

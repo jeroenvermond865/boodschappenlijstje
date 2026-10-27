@@ -1,6 +1,7 @@
 // "Bij Dirk € 2,49, hier € 1,99" aantikken: beide producten naast elkaar, en daaronder wat je nog meer kunt kiezen.
 // Bij deze winkel kun je meteen wisselen (bijv. een grotere verpakking die per kilo goedkoper is); de andere winkels zijn ter vergelijking.
-import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";

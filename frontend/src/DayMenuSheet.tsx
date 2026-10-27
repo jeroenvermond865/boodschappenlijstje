@@ -1,7 +1,8 @@
 // "Op het menu" op Home: één dag in een venster. Tik een gerecht voor de ingrediënten en de bereiding,
 // en ga in één keer naar het lijstje van die dag (op looproute, klaar om af te vinken).
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";

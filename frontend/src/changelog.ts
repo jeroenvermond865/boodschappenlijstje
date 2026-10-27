@@ -5,13 +5,48 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
-    id: "2026-10-27-folder",
+    id: "2026-10-27-g",
     date: "27 oktober 2026",
     title: "Je geschiedenis wissen, en elke nacht een back-up",
     changes: [
       { kind: "nieuw", text: "Account > Mijn geschiedenis: wis wat je bekeek, alles of alleen producten, recepten of geleerde voorraad, en kies de periode (vandaag, week, maand of alles). Je voorstellen beginnen dan opnieuw." },
       { kind: "nieuw", text: "Elke nacht wordt er een back-up gemaakt van alle lijstjes, gerechten en voorraad, zodat er niets kwijt kan raken." },
       { kind: "opgelost", text: "Folders: heb je Volgende week gekozen, dan opent 'Bekijk de echte folder' nu ook de folder van volgende week." },
+    ],
+  },
+  {
+    id: "2026-10-27-f",
+    date: "27 oktober 2026",
+    title: "Minder gekke productvoorstellen, slimmer zoeken",
+    changes: [
+      { kind: "beter", text: "De AI kijkt productvoorstellen na (bij recepten, gerechten, de winkelvergelijking en bespaartips). Past een product niet, zoals chocolademelk bij melk, dan stelt de app het niet meer voor." },
+      { kind: "beter", text: "Zoeken vindt bijna niets, bijvoorbeeld door een tikfout of een ander woord? Dan bedenkt de AI betere zoekwoorden, zoals 'courgette' bij 'courgete'." },
+    ],
+  },
+  {
+    id: "2026-10-27-e",
+    date: "27 oktober 2026",
+    title: "Nieuw voor Premium: Slimme hulp",
+    changes: [
+      { kind: "nieuw", text: "Menu maken uit één zin: typ bijvoorbeeld '5 dagen avondeten voor 2 personen, vega, max 40 euro' en de app maakt een lijstje met gerechten en je boodschappenlijst." },
+      { kind: "nieuw", text: "Restjes koken: de app bedenkt gerechten met wat je nog in huis hebt (uit je voorraadkast of wat je zelf typt), zodat je weinig weggooit en weinig bijkoopt." },
+      { kind: "nieuw", text: "Recept overnemen: plak een recept of een link naar een receptensite, of maak een foto van een kookboek. Je krijgt een gerecht met producten uit jouw winkel." },
+      { kind: "nieuw", text: "Je boodschappen typen of inspreken in gewone taal, zoals '2 pakken melk, brood en iets voor bij de koffie'. De app zoekt de producten en zet ze op je lijstje." },
+      { kind: "nieuw", text: "Slimme bespaartips bij je boodschappenlijst: een grotere verpakking die goedkoper is, een goedkoper merk van hetzelfde, acties op je boodschappendag en slim splitsen. Met één tik wissel je het product." },
+      { kind: "nieuw", text: "Je vindt alles op Home onder 'Slimme hulp'. Dit zijn Premium-functies." },
+    ],
+  },
+  {
+    id: "2026-10-27-d",
+    date: "27 oktober 2026",
+    title: "Startpagina sneller, betere tips en foto's",
+    changes: [
+      { kind: "beter", text: "De startpagina rekent voor de winkelvergelijking niet meer eerst alle prijzen en verpakkingen van je boodschappenlijst uit, dus hij opent sneller." },
+      { kind: "nieuw", text: "Tik bij een tip onder een recept op het product om het te bekijken; daar kun je ook een ander product kiezen." },
+      { kind: "nieuw", text: "Een product dat je via een tip toevoegt, staat meteen bij de ingrediënten (en telt mee in de prijs). Met het kruisje haal je het weer weg." },
+      { kind: "opgelost", text: "Geen gekke productvoorstellen meer bij tips: bij 'Serveer met rijst voor een volledige maaltijd' krijg je alleen rijst." },
+      { kind: "opgelost", text: "Productfoto's die niet laadden, worden nu via onze eigen server opgehaald. Lukt het echt niet, dan zie je een rustig vlak." },
+      { kind: "beter", text: "De bereiding die de app zelf voorstelt is logischer: eerst snijden, dan koken en bakken, sauzen gewoon op tafel." },
     ],
   },
   {

@@ -1,6 +1,7 @@
 // Bovenaan de boodschappenlijst: wat in je voorraadkast bijna op is. Met één tik zet je het op deze lijst.
 import { useState } from "react";
-import { Image, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Icon } from "@/src/components/ui";

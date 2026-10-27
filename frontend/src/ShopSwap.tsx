@@ -2,7 +2,8 @@
 // Lukt scannen niet (geen camera of geen toestemming), dan typ je de cijfers. Is de barcode onbekend, dan zoek je het product
 // zelf in alle winkels; de barcode wordt dan voorgesteld voor dat product (een beheerder keurt het goed).
 import { useState } from "react";
-import { ActivityIndicator, Image, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";

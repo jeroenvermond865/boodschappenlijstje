@@ -1,7 +1,8 @@
 // "Waar is je lijst het goedkoopst?": op de startpagina en bij je boodschappenlijst.
 // Per winkel wat je lijst kost (met de echte hoeveelheden), zelf producten wisselen, en alles bij één winkel halen.
 import { useState } from "react";
-import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
