@@ -274,8 +274,9 @@ async def accept_invitations(user: dict) -> None:
 
 
 # Accountaanvragen: staat dit aan (Beheer -> Gebruikers), dan moet de beheerder een nieuw account eerst goedkeuren
-SIGNUP_PENDING_MSG = "Bedankt! Je aanvraag is ontvangen. De beheerder kijkt ernaar. Je krijgt een e-mail zodra je account klaarstaat."
-SIGNUP_WAIT_MSG = "Je aanvraag wacht nog op goedkeuring van de beheerder. Je krijgt een e-mail zodra je account klaarstaat."
+SIGNUP_PENDING_MSG = ("Bedankt, je account is aangemaakt! De app is nog in een testfase, daarom keurt de beheerder nieuwe accounts eerst goed. "
+                      "Je krijgt een e-mail zodra je kunt inloggen.")
+SIGNUP_WAIT_MSG = "De app is nog in een testfase. Je account wacht nog op goedkeuring van de beheerder. Je krijgt een e-mail zodra je kunt inloggen."
 
 
 async def signup_approval_on() -> bool:
