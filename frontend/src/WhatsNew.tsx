@@ -17,12 +17,10 @@ const KEY = "whatsnew_seen"; // oude plek (per apparaat), nog gebruikt als de se
 const MAX_FULL = 8; // tot zoveel punten tonen we alles; meer = samenvatting, zodat het op één pagina past
 const MAX_RELEASES = 6; // in de samenvatting hooguit zoveel updates los, de rest als "en nog ..."
 
-// Welke updates heeft deze gebruiker nog niet gezien? Onbekend (nieuw account of te oud): alleen de nieuwste.
+// Welke updates heeft deze gebruiker nog niet gezien? Onbekend (nieuw account): niets, pas bij de volgende update.
 function unseenSince(seen: string | null | undefined): Release[] {
   const idx = seen ? CHANGELOG.findIndex((r) => r.id === seen) : -1;
-  if (idx === 0) return [];
-  if (idx > 0) return CHANGELOG.slice(0, idx);
-  return CHANGELOG.slice(0, 1);
+  return idx > 0 ? CHANGELOG.slice(0, idx) : [];
 }
 
 const KIND: Record<Change["kind"], { label: string; icon: string }> = {
@@ -50,8 +48,12 @@ export function WhatsNew() {
     let t: ReturnType<typeof setTimeout> | undefined;
     AsyncStorage.getItem(KEY)
       .then((local) => {
-        const list = unseenSince(user?.whatsnew_seen ?? local);
-        if (!list.length) return;
+        const seen = user?.whatsnew_seen ?? local;
+        const list = unseenSince(seen);
+        if (!list.length) {
+          if (seen !== latest.id) markSeen(); // eerste keer: stil onthouden, melding pas bij de volgende update
+          return;
+        }
         setUnseen(list);
         setShow(true);
         Animated.timing(y, { toValue: 0, duration: 380, easing: Easing.out(Easing.back(1.2)), useNativeDriver: true }).start();
