@@ -182,3 +182,26 @@ def test_geschiedenis_alles_wissen_houdt_geleerde_keuzes():
 def test_geschiedenis_verkeerde_keuze():
     with pytest.raises(HTTPException):
         run(S._history_delete(U1, ["iets"], "alles"))
+
+
+@pytest.mark.parametrize("naam,cat,verwacht", [
+    ("Stamppot boerenkool", "avondeten", ["hoofdgerecht", "groep"]),
+    ("Tomatensoep", "avondeten", ["soep", "groep"]),
+    ("Broodje kaas", "lunch", ["lunch", "groep"]),
+    ("Vanillevla", "avondeten", ["dessert"]),
+    ("Yoghurt met muesli", "ontbijt", ["ontbijt"]),
+])
+def test_hoofdcategorieen_vanzelf(naam, cat, verwacht):
+    assert S._dish_groups({"name": naam, "category": cat}) == verwacht
+
+
+def test_hoofdcategorieen_zelf_gekozen():
+    d = {"name": "Stamppot", "category": "avondeten", "groups": ["groep", "onzin", "soep"]}
+    assert S._dish_groups(d) == ["soep", "groep"]
+    assert S._clean_groups(["onzin", "dessert"]) == ["dessert"]
+
+
+def test_grote_groepen_filter_eruit():
+    rest, groep = S._take_group_filter(json.dumps({"groep": ["Voor grote groepen"], "gang": ["soep"]}))
+    assert groep and json.loads(rest) == {"gang": ["soep"]}
+    assert S._take_group_filter('{"gang": ["soep"]}') == ('{"gang": ["soep"]}', False)

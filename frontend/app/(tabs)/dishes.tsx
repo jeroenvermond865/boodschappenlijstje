@@ -13,7 +13,8 @@ import { smartFilter } from "@/src/smartSearch";
 import { api } from "@/src/api";
 import { dietConflicts, useDiet } from "@/src/diet";
 import { useAuth } from "@/src/auth";
-import { CATEGORY_ICONS, CATEGORY_LABELS, MEAL_CATEGORIES, MealCategory } from "@/src/constants";
+import { CATEGORY_ICONS, CATEGORY_LABELS, DISH_GROUPS, DishGroup, MealCategory } from "@/src/constants";
+import { GroupTiles } from "@/src/GroupTiles";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings } from "@/src/settings";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
@@ -22,6 +23,8 @@ export type Dish = {
   id: string;
   name: string;
   category: MealCategory;
+  groups?: DishGroup[]; // hoofdcategorieën, zoals "Soep" of "Voor grote groepen"
+  groups_set?: boolean; // zelf gekozen; anders kiest de app
   is_standard: boolean;
   ingredients: { name: string; unit: string; qty_adult: number; qty_child: number; aisle: string; price?: number; product_id?: string | null; store?: string | null; recipe_text?: string | null }[];
   pantry?: Dish["ingredients"];
@@ -44,6 +47,25 @@ const TABS = [
   { key: "packages", label: "Pakketten" },
 ] as const;
 
+const PACKAGES_INTRO =
+  "Vaste spullen die je elke keer nodig hebt, zoals een afwasborstel of vuilniszakken. Zet een pakket in één keer bij de algemene boodschappen van een activiteit.";
+
+const nDishes = (n: number) => `${n} ${n === 1 ? "gerecht" : "gerechten"}`;
+
+// Een passend plaatje bij een pakket, op naam
+function packageIcon(name: string) {
+  const n = name.toLowerCase();
+  if (/afwas/.test(n)) return "dishwasher";
+  if (/schoonma|poets/.test(n)) return "spray-bottle";
+  if (/keuken/.test(n)) return "chef-hat";
+  if (/voorraad/.test(n)) return "archive-outline";
+  if (/ontbijt|lunch|brood/.test(n)) return "baguette";
+  if (/toilet|verzorg|hygi/.test(n)) return "toilet";
+  if (/wegwerp|groep|feest/.test(n)) return "party-popper";
+  if (/ehbo|pleister|medic/.test(n)) return "medical-bag";
+  return "package-variant-closed";
+}
+
 export default function DishesScreen() {
   const { user } = useAuth();
   const styles = useStyles();
@@ -54,7 +76,9 @@ export default function DishesScreen() {
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
 
   const [search, setSearch] = useState("");
-  const [cat, setCat] = useState<MealCategory | "all">("all");
+  const [group, setGroup] = useState<DishGroup | "all">("all");
+  // Bladeren zoals bij Producten: eerst de hoofdcategorieën als blokken, dan de gerechten. Zoeken toont meteen de lijst.
+  const [allDishes, setAllDishes] = useState(false);
   const { selected: diet } = useDiet();
   const [fitsOnly, setFitsOnly] = useState(false);
   const params = useLocalSearchParams<{ tab?: string }>();
@@ -75,23 +99,37 @@ export default function DishesScreen() {
     queryFn: () => api<{ dishes: Dish[] }>("/dishes"),
   });
 
-  const filtered = useMemo(() => {
+  const base = useMemo(() => {
     // App-gerechten (standaard voor iedereen) of je eigen gerechten; online gerechten en kampversies horen hier niet
     let list = (data?.dishes ?? []).filter((d) => isOwnDish(d, user?.id) && (tab === "app" ? d.is_standard : !d.is_standard));
-    if (cat !== "all") list = list.filter((d) => d.category === cat);
     if (search.trim()) list = smartFilter(list, search, (d) => [d.name, d.name, ...(d.ingredients ?? []).map((i) => i.name)]);
     if (fitsOnly && diet.length) list = list.filter((d) => !dietConflicts(d.ingredients, diet).length);
     return list;
-  }, [data, cat, search, fitsOnly, diet, tab]);
+  }, [data, search, fitsOnly, diet, tab, user?.id]);
+  const filtered = useMemo(() => (group === "all" ? base : base.filter((d) => d.groups?.includes(group))), [base, group]);
+  const inGroup = (g: DishGroup) => base.filter((d) => d.groups?.includes(g));
+  const browsing = !search.trim();
+  const showTiles = browsing && group === "all" && !allDishes && base.length > 0;
+  const groupLabel = DISH_GROUPS.find((g) => g.key === group)?.label;
+  const dishTiles = [
+    { key: "all", label: tab === "app" ? "Alle app-gerechten" : "Alle eigen gerechten", icon: "view-grid-outline", sub: nDishes(base.length) },
+    ...DISH_GROUPS.map((g) => ({ ...g, list: inGroup(g.key) }))
+      .filter((g) => g.list.length)
+      .map((g) => ({ key: g.key, label: g.label, icon: g.icon, sub: nDishes(g.list.length), image: g.list.find((d) => d.image)?.image })),
+  ];
 
-  const chips: ({ key: MealCategory | "all"; label: string })[] = [
+  const chips: ({ key: DishGroup | "all"; label: string })[] = [
     { key: "all", label: "Alle" },
-    ...MEAL_CATEGORIES.map((c) => ({ key: c, label: CATEGORY_LABELS[c] })),
+    ...DISH_GROUPS.filter((g) => inGroup(g.key).length).map((g) => ({ key: g.key, label: g.label })),
   ];
 
   const hide = useHideOnScroll();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => hide.reset(), [tab]);
+  useEffect(() => {
+    hide.reset();
+    setGroup("all");
+    setAllDishes(false);
+  }, [tab]);
   const listProps = {
     ...hide.scrollProps,
     refreshControl: (
@@ -150,6 +188,19 @@ export default function DishesScreen() {
             <Text style={styles.rowSub}>Alleen gerechten die passen bij mijn voorkeuren</Text>
           </Pressable>
         ) : null}
+        {browsing ? (
+          <View style={styles.crumbs}>
+            <Pressable testID="crumb-all" onPress={() => { setGroup("all"); setAllDishes(false); }} hitSlop={6}>
+              <Text style={[styles.crumb, showTiles && styles.crumbActive]}>Alle soorten</Text>
+            </Pressable>
+            {!showTiles && base.length ? (
+              <>
+                <Icon name="chevron-right" size={16} color={colors.muted} />
+                <Text style={[styles.crumb, styles.crumbActive, { flexShrink: 1 }]} numberOfLines={1}>{groupLabel ?? "Alles"}</Text>
+              </>
+            ) : null}
+          </View>
+        ) : (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -157,12 +208,12 @@ export default function DishesScreen() {
           style={styles.chipScroll}
         >
           {chips.map((c) => {
-            const active = cat === c.key;
+            const active = group === c.key;
             return (
               <Pressable
                 key={c.key}
                 testID={`cat-chip-${c.key}`}
-                onPress={() => setCat(c.key)}
+                onPress={() => setGroup(c.key)}
                 style={[styles.chip, active && styles.chipActive]}
               >
                 <Text style={[styles.chipText, active && styles.chipTextActive]}>{c.label}</Text>
@@ -170,6 +221,7 @@ export default function DishesScreen() {
             );
           })}
         </ScrollView>
+        )}
           </>
         ) : null}
       </Animated.View>
@@ -177,48 +229,44 @@ export default function DishesScreen() {
       {tab === "online" ? (
         <OnlineRecipes bottomPadding={bottomChrome + 24} outer={hide} />
       ) : tab === "packages" ? (
-        <FlatList
-          {...listProps}
-          data={packages.data?.packages ?? []}
-          keyExtractor={(p) => p.id}
-          contentContainerStyle={{ padding: 16, paddingTop: 8 + hide.padTop, paddingBottom: bottomChrome + 96, gap: 10 }}
-          ListHeaderComponent={
-            <Text style={[styles.rowSub, { marginBottom: 4 }]}>
-              Vaste spullen die je elke keer nodig hebt, zoals een afwasborstel of vuilniszakken. Zet een pakket in één keer bij de algemene
-              boodschappen van een activiteit.
-            </Text>
-          }
-          renderItem={({ item }) => (
-            <Pressable
-              testID={`package-row-${item.id}`}
-              onPress={() => router.push({ pathname: "/package/edit", params: { id: item.id } })}
-              style={({ pressed }) => [styles.row, pressed && { opacity: 0.9 }]}
-            >
-              <View style={styles.rowIcon}>
-                <Icon name="package-variant-closed" size={20} color={colors.brandPrimary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.rowTitle} numberOfLines={1}>{item.name}</Text>
-                <Text style={styles.rowSub} numberOfLines={1}>
-                  {item.items.length} {item.items.length === 1 ? "product" : "producten"}
-                  {item.items.length ? ` · ${item.items.slice(0, 3).map((i) => i.name).join(", ")}` : ""}
-                </Text>
-              </View>
-              <Icon name="chevron-right" size={22} color={colors.muted} />
-            </Pressable>
-          )}
-          ListEmptyComponent={
-            packages.isLoading ? (
-              <ActivityIndicator color={colors.brandPrimary} />
-            ) : (
-              <EmptyState icon="package-variant" title="Nog geen pakketten" subtitle="Maak een pakket met de knop hieronder, bijvoorbeeld 'Schoonmaak'." />
-            )
-          }
-        />
+        packages.isLoading ? (
+          <View style={[styles.center, { paddingTop: hide.padTop }]}>
+            <ActivityIndicator size="large" color={colors.brandPrimary} />
+          </View>
+        ) : (packages.data?.packages ?? []).length ? (
+          <GroupTiles
+            listProps={listProps}
+            testPrefix="package-row"
+            padTop={hide.padTop}
+            bottomPadding={bottomChrome + 96}
+            header={<Text style={[styles.rowSub, { marginBottom: 4 }]}>{PACKAGES_INTRO}</Text>}
+            tiles={(packages.data?.packages ?? []).map((p) => ({
+              key: p.id,
+              label: p.name,
+              icon: packageIcon(p.name),
+              sub: `${p.items.length} ${p.items.length === 1 ? "product" : "producten"}`,
+            }))}
+            onPress={(id) => router.push({ pathname: "/package/edit", params: { id } })}
+          />
+        ) : (
+          <View style={{ padding: 16, paddingTop: 8 + hide.padTop, gap: 10 }}>
+            <Text style={styles.rowSub}>{PACKAGES_INTRO}</Text>
+            <EmptyState icon="package-variant" title="Nog geen pakketten" subtitle="Maak een pakket met de knop hieronder, bijvoorbeeld 'Schoonmaak'." />
+          </View>
+        )
       ) : isLoading ? (
         <View style={[styles.center, { paddingTop: hide.padTop }]}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
+      ) : showTiles ? (
+        <GroupTiles
+          listProps={listProps}
+          testPrefix="dish-group"
+          padTop={hide.padTop}
+          bottomPadding={bottomChrome + 96}
+          tiles={dishTiles}
+          onPress={(k) => (k === "all" ? setAllDishes(true) : setGroup(k as DishGroup))}
+        />
       ) : (
         <FlatList
           {...listProps}
@@ -361,6 +409,9 @@ const useStyles = makeStyles((colors) => ({
   },
   rowTitle: { fontSize: 16, fontFamily: fonts.semibold, color: colors.onSurface },
   rowSub: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },
+  crumbs: { flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap", minHeight: 34 },
+  crumb: { fontSize: 14, fontFamily: fonts.medium, color: colors.brandPrimary },
+  crumbActive: { color: colors.onSurface, fontFamily: fonts.bold },
   ownBadge: { backgroundColor: colors.brandSecondary, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
   ownBadgeText: { fontSize: 11, fontFamily: fonts.semibold, color: colors.onBrandSecondary },
   fab: {

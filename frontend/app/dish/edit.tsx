@@ -19,6 +19,8 @@ import { ProductBrowser } from "@/src/ProductBrowser";
 import {
   AISLES,
   CATEGORY_LABELS,
+  DISH_GROUPS,
+  DishGroup,
   MEAL_CATEGORIES,
   MealCategory,
   UNITS,
@@ -98,6 +100,11 @@ export default function DishEditScreen() {
   const [category, setCategory] = useState<MealCategory>(
     existing?.category ?? ((params.category as MealCategory) || "avondeten"),
   );
+  // Hoofdcategorieën: zolang je niets kiest, bepaalt de app ze (op naam en maaltijd)
+  const [groups, setGroups] = useState<DishGroup[] | null>(existing?.groups_set ? existing.groups ?? [] : null);
+  const shownGroups = groups ?? existing?.groups ?? [];
+  const toggleGroup = (g: DishGroup) =>
+    setGroups(shownGroups.includes(g) ? shownGroups.filter((x) => x !== g) : [...shownGroups, g]);
   const toIng = (i: Dish["ingredients"][number]): Ing => ({
     name: i.name,
     unit: i.unit,
@@ -192,6 +199,7 @@ export default function DishEditScreen() {
   const buildBody = () => ({
     name: name.trim(),
     category,
+    ...(groups ? { groups } : {}),
     is_standard: asStandard,
     pantry: pantry.map(toBody),
     ingredients: ings
@@ -390,6 +398,32 @@ export default function DishEditScreen() {
               );
             })}
           </ScrollView>
+        </View>
+
+        <View style={{ gap: 8 }}>
+          <Text style={styles.label}>Hoofdcategorie</Text>
+          {!readOnly ? (
+            <Text style={styles.groupHint}>
+              {groups ? "Tik om aan of uit te zetten. Meer dan één mag." : "Kiest de app zelf. Tik om aan te passen, meer dan één mag."}
+            </Text>
+          ) : null}
+          <View style={styles.groupWrap}>
+            {DISH_GROUPS.map((g) => {
+              const active = shownGroups.includes(g.key);
+              if (readOnly && !active) return null;
+              return (
+                <Pressable
+                  key={g.key}
+                  testID={`dish-group-${g.key}`}
+                  disabled={readOnly}
+                  onPress={() => toggleGroup(g.key)}
+                  style={[styles.chip, active && styles.chipActive]}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{g.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
 
         <View style={styles.ingHeaderRow}>
@@ -950,6 +984,8 @@ const useStyles = makeStyles((colors) => ({
   bannerText: { flex: 1, fontSize: 13, fontFamily: fonts.medium, color: colors.onBrandTertiary },
   label: { fontSize: 13, fontFamily: fonts.semibold, color: colors.onSurfaceSecondary },
   chipRow: { gap: 8, paddingVertical: 2 },
+  groupWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  groupHint: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
   chip: {
     height: 36,
     flexShrink: 0,

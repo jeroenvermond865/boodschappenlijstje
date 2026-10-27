@@ -16,6 +16,21 @@ export const CATEGORY_ICONS: Record<MealCategory, string> = {
   snacks: "cookie-outline",
 };
 
+// Hoofdcategorieën voor gerechten en online recepten (zelfde als de gangen bij online recepten, plus grote groepen)
+export type DishGroup = "ontbijt" | "lunch" | "hoofdgerecht" | "bijgerecht" | "soep" | "dessert" | "borrel" | "groep";
+export const DISH_GROUPS: { key: DishGroup; label: string; icon: string }[] = [
+  { key: "groep", label: "Voor grote groepen", icon: "account-group-outline" },
+  { key: "ontbijt", label: "Ontbijt", icon: "coffee-outline" },
+  { key: "lunch", label: "Lunch", icon: "food-apple-outline" },
+  { key: "hoofdgerecht", label: "Hoofdgerecht / avondeten", icon: "silverware-fork-knife" },
+  { key: "bijgerecht", label: "Bijgerecht", icon: "food-variant" },
+  { key: "soep", label: "Soep", icon: "pot-steam-outline" },
+  { key: "dessert", label: "Dessert / toetje", icon: "cupcake" },
+  { key: "borrel", label: "Borrel & snack", icon: "cookie-outline" },
+];
+// Wat de server bij "Voor grote groepen" als filter verwacht (de winkels zelf kennen dit niet)
+export const GROUP_FILTER = { groep: ["Voor grote groepen"] };
+
 export const UNITS = ["stuks", "gram", "kg", "ml", "liter", "plak", "pak", "blik", "pot", "fles", "zak", "krat", "bak", "bos"];
 
 export const STORES = ["Albert Heijn", "Jumbo", "Lidl", "Aldi", "Plus", "Dirk", "Overig"];

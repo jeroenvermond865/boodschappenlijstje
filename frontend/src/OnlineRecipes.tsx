@@ -13,6 +13,8 @@ import { api } from "@/src/api";
 import { euro } from "@/src/search";
 import { useGrid } from "@/src/layout";
 import { useAuth } from "@/src/auth";
+import { DISH_GROUPS, GROUP_FILTER } from "@/src/constants";
+import { GroupTiles } from "@/src/GroupTiles";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 export type RecipeTile = {
@@ -77,6 +79,8 @@ export function OnlineRecipes({
   const [store, setStore] = useState<string>(favKey ?? "all");
   const [filters, setFilters] = useState<Filters>(favKey ? {} : initialFilters ?? {});
   const [open, setOpen] = useState(false);
+  // Bladeren zoals bij Producten: eerst de hoofdcategorieën als blokken
+  const [browseAll, setBrowseAll] = useState(false);
 
   // Even wachten met zoeken tot je klaar bent met typen
   useEffect(() => {
@@ -120,8 +124,10 @@ export function OnlineRecipes({
     if (!carry || !first || query.isFetching) return;
     const norm = (x: string) => x.toLowerCase().replace(/[^a-z]/g, "");
     const alias: Record<string, string[]> = { hoofdgerecht: ["avondeten", "hoofdgerecht"], avondeten: ["hoofdgerecht", "avondeten"], dessert: ["toetjes", "nagerecht", "dessert"], toetjes: ["dessert", "nagerecht"] };
-    const out: Filters = {};
+    const out: Filters = carry.groep ? { groep: carry.groep } : {};
+    let missed = "";
     for (const [key, vals] of Object.entries(carry)) {
+      if (key === "groep") continue;
       for (const v of vals) {
         const want = [norm(v), ...(alias[norm(v)] ?? [])];
         for (const f of first.facets) {
@@ -131,10 +137,12 @@ export function OnlineRecipes({
             break;
           }
         }
+        if (key === "gang" && !Object.values(out).flat().length) missed = DISH_GROUPS.find((g) => g.key === v)?.label.split(" ")[0] ?? v;
       }
     }
     setCarry(null);
     if (Object.keys(out).length) setFilters(out);
+    else if (missed) setInput(missed.toLowerCase()); // deze winkel heeft geen filter voor deze soort: dan zoeken op het woord
   }, [carry, first, query.isFetching]);
 
   const toggle = (f: RecipeFacet, value: string) =>
@@ -150,6 +158,19 @@ export function OnlineRecipes({
   // In een kies-venster blijft de zoekbalk gewoon staan: meeschuiven maakt het venster daar onrustig
   const hideOn = !onPick;
   const padTop = hideOn ? hide.padTop : 0;
+  const showTiles = store !== "fav" && !q && !input && active === 0 && !browseAll;
+  const pickGroup = (k: string) => {
+    if (k === "all") return setBrowseAll(true);
+    if (k === "groep") return setFilters((x) => ({ ...x, ...GROUP_FILTER }));
+    // Bij alle winkels samen heten de soorten overal hetzelfde; bij één winkel zoeken we het filter met dezelfde naam
+    if (store === "all") setFilters({ gang: [k] });
+    else setCarry({ gang: [k] });
+  };
+  const crumbLabel = filters.groep?.length
+    ? "Voor grote groepen"
+    : filters.gang?.length === 1 && store === "all"
+      ? DISH_GROUPS.find((g) => g.key === filters.gang[0])?.label
+      : null;
 
   return (
     <View style={{ flex: 1 }}>
@@ -189,6 +210,19 @@ export function OnlineRecipes({
             </Pressable>
           ))}
         </ScrollView>
+        {store !== "fav" && !q && !input ? (
+          <View style={styles.crumbs}>
+            <Pressable testID="recipe-crumb-all" onPress={() => { setFilters({}); setBrowseAll(false); }} hitSlop={6}>
+              <Text style={[styles.crumb, showTiles && styles.crumbActive]}>Alle soorten</Text>
+            </Pressable>
+            {!showTiles ? (
+              <>
+                <Icon name="chevron-right" size={16} color={colors.muted} />
+                <Text style={[styles.crumb, styles.crumbActive, { flexShrink: 1 }]} numberOfLines={1}>{crumbLabel ?? (active ? "Gefilterd" : "Alle recepten")}</Text>
+              </>
+            ) : null}
+          </View>
+        ) : null}
         {active > 0 ? (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScroll} contentContainerStyle={styles.chipRow}>
             {facets.flatMap((f) =>
@@ -201,7 +235,7 @@ export function OnlineRecipes({
             )}
           </ScrollView>
         ) : null}
-        {first ? (
+        {first && !showTiles ? (
           <Text style={styles.count}>
             {first.total ? `${first.total.toLocaleString("nl-NL")} recepten` : ""}
             {first.errors?.length ? `  ·  ${first.errors.join(", ")} nu niet bereikbaar` : ""}
@@ -209,7 +243,19 @@ export function OnlineRecipes({
         ) : null}
       </Animated.View>
 
-      {query.isLoading ? (
+      {showTiles ? (
+        <GroupTiles
+          testPrefix="recipe-group"
+          padTop={padTop}
+          bottomPadding={bottomPadding}
+          listProps={{ scrollEventThrottle: 16, onScroll: hideOn ? hide.scrollProps.onScroll : undefined }}
+          tiles={[
+            { key: "all", label: "Alle recepten", icon: "view-grid-outline", sub: first?.total ? `${first.total.toLocaleString("nl-NL")} recepten` : undefined },
+            ...DISH_GROUPS.map((g) => ({ key: g.key, label: g.label, icon: g.icon, sub: g.key === "groep" ? "Makkelijk in een grote pan" : undefined })),
+          ]}
+          onPress={pickGroup}
+        />
+      ) : query.isLoading ? (
         <View style={[styles.center, { paddingTop: padTop }]}>
           <ActivityIndicator size="large" color={colors.brandPrimary} />
         </View>
@@ -415,6 +461,9 @@ const useStyles = makeStyles((colors) => ({
     backgroundColor: colors.brandTertiary,
   },
   smallChipText: { fontSize: 12, fontFamily: fonts.medium, color: colors.onSurface },
+  crumbs: { flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap", minHeight: 30 },
+  crumb: { fontSize: 14, fontFamily: fonts.medium, color: colors.brandPrimary },
+  crumbActive: { color: colors.onSurface, fontFamily: fonts.bold },
   count: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   card: { flex: 1, backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
