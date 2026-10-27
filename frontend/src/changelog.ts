@@ -5,6 +5,15 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-f",
+    date: "27 oktober 2026",
+    title: "Minder gekke productvoorstellen, slimmer zoeken",
+    changes: [
+      { kind: "beter", text: "De AI kijkt productvoorstellen na (bij recepten, gerechten, de winkelvergelijking en bespaartips). Past een product niet, zoals chocolademelk bij melk, dan stelt de app het niet meer voor." },
+      { kind: "beter", text: "Zoeken vindt bijna niets, bijvoorbeeld door een tikfout of een ander woord? Dan bedenkt de AI betere zoekwoorden, zoals 'courgette' bij 'courgete'." },
+    ],
+  },
+  {
     id: "2026-10-27-e",
     date: "27 oktober 2026",
     title: "Nieuw voor Premium: Slimme hulp",

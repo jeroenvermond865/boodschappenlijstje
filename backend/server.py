@@ -4689,8 +4689,16 @@ async def search_products(
     hit = _search_cache.get(key)
     if hit is None:
         # In een aparte thread: zo blijft de rest van de app bereikbaar terwijl er gezocht wordt
-        hit = await asyncio.to_thread(_run_search, own + (await _global_products()) if own else await _global_products(),
-                                      q, source, aisle, favs if favorites else None, sub, brand, offer, bio, sort, store)
+        pool = own + (await _global_products()) if own else await _global_products()
+        hit = await asyncio.to_thread(_run_search, pool, q, source, aisle, favs if favorites else None, sub, brand, offer, bio, sort, store)
+        if len(hit[0]) < 3 and 2 <= len(q.strip()) <= 60:
+            # Weinig of niets gevonden (tikfout, ander woord, gewone taal)? De AI bedenkt betere zoekwoorden
+            for t in await _ai_search_terms(q):
+                more = await asyncio.to_thread(_run_search, pool, t, source, aisle, favs if favorites else None, sub, brand, offer, bio, sort, store)
+                if more[0]:
+                    seen = {d["product_id"] for d in hit[0]}
+                    docs_all = hit[0] + [d for d in more[0] if d["product_id"] not in seen]
+                    hit = (docs_all, more[1] if len(more[0]) > len(hit[0]) else hit[1], more[2] if len(more[0]) > len(hit[0]) else hit[2])
         if len(_search_cache) > 150:
             _search_cache.pop(next(iter(_search_cache)))
         _search_cache[key] = hit
@@ -4713,6 +4721,53 @@ async def search_products(
         "aisle_images": await asyncio.to_thread(_aisle_images, await _global_products()) if offset == 0 else None,
         "facets": facets,
     }
+
+
+AI_SEARCH_DAILY = 1500  # zoveel nieuwe zoekopdrachten per dag laten verbeteren; eerder gevraagde komen uit het geheugen
+_ai_search_mem: Dict[str, list] = {}
+_ai_search_state = {"day": "", "n": 0}
+
+
+async def _ai_search_terms(q: str) -> list:
+    # "iets voor bij de koffie" -> koekjes; "courgete" -> courgette. Eén keer vragen, daarna onthouden
+    key = _norm_text(q)
+    if not key:
+        return []
+    if key in _ai_search_mem:
+        return _ai_search_mem[key]
+    doc = await db.ai_search.find_one({"q": key}, {"_id": 0, "terms": 1})
+    if doc is not None:
+        _ai_search_mem[key] = doc.get("terms") or []
+        return _ai_search_mem[key]
+    day = now_utc().date().isoformat()
+    if _ai_search_state["day"] != day:
+        _ai_search_state.update(day=day, n=0)
+    if not os.environ.get("ANTHROPIC_API_KEY") or _ai_search_state["n"] >= AI_SEARCH_DAILY:
+        return []
+    _ai_search_state["n"] += 1
+    try:
+        from anthropic import AsyncAnthropic
+        msg = await asyncio.wait_for(AsyncAnthropic().beta.messages.create(
+            model=AI_PICK_MODEL, max_tokens=300, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            output_config={"format": {"type": "json_schema", "schema": {
+                "type": "object", "additionalProperties": False, "required": ["terms"],
+                "properties": {"terms": {"type": "array", "items": {"type": "string"}}}}}},
+            messages=[{"role": "user", "content": (
+                f"Iemand zoekt in een Nederlandse supermarkt-app (Albert Heijn, Jumbo, Dirk) op: \"{q[:60]}\". Dat geeft bijna niets. "
+                "Geef maximaal 3 korte zoekwoorden zoals ze in de winkel op het product staan: verbeter tikfouten, gebruik het gewone Nederlandse woord "
+                "(ook bij Engelse woorden of merknamen die niet bestaan), of bij gewone taal de producten die bedoeld worden. "
+                "Geen uitleg. Weet je het echt niet, geef dan een lege lijst.")}]), 8)
+        text = next((b.text for b in msg.content if b.type == "text"), "")
+        terms = (json.loads(text) if text and msg.stop_reason not in ("refusal", "max_tokens") else {}).get("terms") or []
+    except Exception as e:
+        logger.info("Slimmer zoeken %r: %r", q, e)
+        return []
+    terms = [t.strip()[:40] for t in terms if isinstance(t, str) and t.strip() and _norm_text(t) != key][:3]
+    _ai_search_mem[key] = terms
+    if len(_ai_search_mem) > 5000:
+        _ai_search_mem.pop(next(iter(_ai_search_mem)))
+    await db.ai_search.update_one({"q": key}, {"$set": {"q": key, "terms": terms, "at": now_utc()}}, upsert=True)
+    return terms
 
 
 # Een herkenbaar plaatje per hoofdafdeling, zoals ijsblokjes bij diepvries
@@ -4942,7 +4997,7 @@ def _bigger_pack(p: dict, need: float, unit: str, store: str, packs: int, cost: 
         pool = [d for d in _product_cache.get("docs") or [] if d.get("_src") == store and d.get("is_global")]
         hits = _best_matches(pool, _alt_terms(p["name"], p) or p["name"], 20)
         sub = p.get("subcategory")
-        alts = [d for d in hits if d["product_id"] != p["product_id"] and (not sub or d.get("subcategory") in (sub, None)) and _same_kind(p, d)]
+        alts = [d for d in hits if d["product_id"] != p["product_id"] and (not sub or d.get("subcategory") in (sub, None)) and _same_kind(p, d) and _ai_ok(p["name"], d)]
         if len(_size_alts) > 3000:
             _size_alts.clear()
         _size_alts[(p["product_id"], store)] = alts
@@ -7369,9 +7424,105 @@ def _learned_product(store: str, name: str = "", d: Optional[dict] = None) -> Op
     return d
 
 
+# AI-controle op productvoorstellen: past dit product echt bij wat er gevraagd wordt ("melk" is geen chocolademelk)?
+# Elk paar wordt één keer op de achtergrond aan de AI gevraagd en onthouden; tot dan blijft het voorstel staan.
+AI_CHECK_DAILY = 4000  # zoveel paren per dag nakijken (kost een fractie van een cent per stuk)
+_ai_checked: Dict[str, bool] = {}
+_ai_bad: Dict[str, set] = {}  # gevraagd (genormaliseerd) -> producten die niet passen
+_ai_check_todo: Dict[str, tuple] = {}
+_ai_check_state = {"day": "", "n": 0, "loaded": False}
+
+
+def _ai_ok(want: str, d: Optional[dict]) -> bool:
+    if not d or not want:
+        return True
+    w = _norm_text(want)
+    k = f"{w}|{d['product_id']}"
+    v = _ai_checked.get(k)
+    if v is None:
+        if _ai_check_state["loaded"] and len(_ai_check_todo) < 2000:
+            _ai_check_todo.setdefault(k, (want, d.get("name") or "", d.get("aisle") or "", d.get("unit") or ""))
+        return True
+    return v
+
+
+def _ai_remember(k: str, ok: bool) -> None:
+    _ai_checked[k] = ok
+    if not ok:
+        w, _, pid = k.rpartition("|")
+        _ai_bad.setdefault(w, set()).add(pid)
+
+
+async def _ai_check_loop() -> None:
+    # Eerst onthouden antwoorden inladen, dan steeds een stapeltje nieuwe paren nakijken
+    try:
+        async for c in db.ai_checks.find({}, {"_id": 0, "key": 1, "ok": 1}):
+            _ai_remember(c["key"], bool(c.get("ok", True)))
+    except Exception as e:
+        logger.warning("AI-controle inladen: %r", e)
+    _ai_check_state["loaded"] = True
+    while True:
+        await asyncio.sleep(20)
+        if not _ai_check_todo or not os.environ.get("ANTHROPIC_API_KEY"):
+            continue
+        day = now_utc().date().isoformat()
+        if _ai_check_state["day"] != day:
+            _ai_check_state.update(day=day, n=0)
+        if _ai_check_state["n"] >= AI_CHECK_DAILY:
+            continue
+        batch = list(_ai_check_todo.items())[:40]
+        for k, _ in batch:
+            _ai_check_todo.pop(k, None)
+        _ai_check_state["n"] += len(batch)
+        lines = [f"{n}. Gevraagd: {v[0]}  ->  Product: {v[1]} ({v[3]}, {v[2]})" for n, (k, v) in enumerate(batch, 1)]
+        try:
+            from anthropic import AsyncAnthropic
+            msg = await AsyncAnthropic().beta.messages.create(
+                model=AI_PICK_MODEL, max_tokens=1500, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+                output_config={"format": {"type": "json_schema", "schema": {
+                    "type": "object", "additionalProperties": False, "required": ["checks"],
+                    "properties": {"checks": {"type": "array", "items": {
+                        "type": "object", "additionalProperties": False, "required": ["n", "ok"],
+                        "properties": {"n": {"type": "integer"}, "ok": {"type": "boolean"}}}}}}}},
+                messages=[{"role": "user", "content": (
+                    "Een boodschappen-app stelt bij een gevraagd ingrediënt of product een product uit de supermarkt voor. "
+                    "Zeg per regel of het voorstel klopt: ok=true als je dit product gewoon zou kopen voor wat er gevraagd wordt "
+                    "(een ander merk, andere verpakkingsgrootte of huismerk is prima; een gewone variant ook). "
+                    "ok=false als het iets anders is: een ander soort product, iets waar het alleen in zit (chocolademelk voor melk, "
+                    "citroenkoek voor citroen, bloemen voor rozemarijn), een andere smaak of variant die niet gevraagd is (volkoren voor gewoon, vega voor vlees), of geen eten.\n\n"
+                    + "\n".join(lines))}])
+            text = next((b.text for b in msg.content if b.type == "text"), "")
+            checks = (json.loads(text) if text and msg.stop_reason not in ("refusal", "max_tokens") else {}).get("checks") or []
+        except Exception as e:
+            logger.warning("AI-controle producten: %r", e)
+            continue
+        bad = 0
+        for c in checks:
+            n = c.get("n")
+            if not isinstance(n, int) or not 1 <= n <= len(batch):
+                continue
+            k = batch[n - 1][0]
+            ok = bool(c.get("ok", True))
+            _ai_remember(k, ok)
+            bad += not ok
+            await db.ai_checks.update_one({"key": k}, {"$set": {"key": k, "ok": ok, "at": now_utc()}}, upsert=True)
+        if bad:
+            logger.info("AI-controle: %d van %d productvoorstellen klopten niet", bad, len(batch))
+            _forget_matches()  # recepten opnieuw koppelen, zonder de afgekeurde producten
+            _size_alts.clear()
+
+
 def _cheapest_good(pool: list, name: str, store: str) -> Optional[dict]:
     hit = _learned_product(store, name)
-    return hit or _learned_product(store, "", _cheapest_good_raw(pool, name, store))
+    if hit:
+        return hit  # door gebruikers zelf gekozen: niet nakijken
+    d = _learned_product(store, "", _cheapest_good_raw(pool, name, store))
+    if _ai_ok(name, d):
+        return d
+    # De AI vond dit voorstel niet kloppen: het beste product zonder de afgekeurde
+    bad = _ai_bad.get(_norm_text(name)) or set()
+    d = _learned_product(store, "", _cheapest_good_raw([x for x in pool if x["product_id"] not in bad], name, store))
+    return d if _ai_ok(name, d) else None
 
 
 def _cheapest_good_raw(pool: list, name: str, store: str) -> Optional[dict]:
@@ -8189,6 +8340,8 @@ def _variant_miss(want: set, d: dict) -> int:
 
 def _compare_hit(st: str, cands: list, by_ean: dict, name: str, base: Optional[dict]) -> tuple:
     hit, alt = _compare_hit_raw(st, cands, by_ean, name, base)
+    if hit is not None and alt and not _ai_ok((base or {}).get("name") or name, hit):
+        return None, False  # vervangend product klopt niet (AI-controle): liever geschat dan iets anders
     if hit is None or not alt or not base:
         return hit, alt
     # Zelfde soort gevonden maar een andere variant (volkoren i.p.v. gewoon)? Kijk of er een betere in dezelfde afdeling is
@@ -9172,7 +9325,7 @@ async def dish_suggestions(data: SuggestIn, user: dict = Depends(get_current_use
             best = None
             for s, items in res["by_store"].items():
                 for d in items:
-                    if not _same_kind(base, d):
+                    if not _same_kind(base, d) or not _ai_ok(base["name"], d):
                         continue
                     up, bup = d.get("_up"), res["base_up"]
                     if up and bup and up[1] == bup[1] and up[0] < bup[0] * 0.2:
@@ -11644,7 +11797,7 @@ def _cheaper_same(p: dict, pool: list) -> Optional[dict]:
         du = d.get("_up")
         if d["product_id"] == p["product_id"] or not du or du[1] != up[1] or du[0] >= up[0] * 0.85 or not _same_kind(p, d):
             continue
-        if _variants(p.get("name") or "") != _variants(d.get("name") or ""):
+        if _variants(p.get("name") or "") != _variants(d.get("name") or "") or not _ai_ok(p["name"], d):
             continue  # geen gewone pasta voor volkorenpasta
         if not best or du[0] < best["_up"][0]:
             best = d
@@ -12004,6 +12157,7 @@ STARTER_PRODUCTS = [
 async def startup():
     asyncio.create_task(_global_products())  # productlijst meteen laden: de rest van het opstarten heeft hem niet nodig
     asyncio.create_task(_warm_home())  # daarna de startpagina (acties en recepten) klaarzetten
+    asyncio.create_task(_ai_check_loop())  # productvoorstellen op de achtergrond laten nakijken door de AI
     try:
         await _init_storage()
         logger.info("Object storage initialised")
@@ -12018,6 +12172,8 @@ async def startup():
     await db.dishes.create_index("dish_id", unique=True)
     await db.dish_preps.create_index("sig", unique=True)
     await db.ai_tips.create_index("sig", unique=True)
+    await db.ai_checks.create_index("key", unique=True)
+    await db.ai_search.create_index("q", unique=True)
     await db.ai_usage.create_index([("user_id", 1), ("day", 1)], unique=True)
     await db.camps.create_index("camp_id", unique=True)
     await db.invitations.create_index([("email", 1), ("camp_id", 1)], unique=True)
