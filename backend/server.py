@@ -4879,9 +4879,9 @@ async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_curr
             counts[x["category"]] = counts.get(x["category"], 0) + 1
         cats = [{"name": k, "count": v} for k, v in counts.items()]
         is_next = (per.get("start") or "") > today
-        if is_next and store == "Dirk":
-            # "Bekijk folder" bij Volgende week opent ook de folder van volgende week
-            per = {**per, "folder_url": "https://www.dirk.nl/folder/volgende-week"}
+        # "Bekijk folder" bij Volgende week opent ook de folder van volgende week (en bij Deze week die van nu)
+        if store in NEXT_FOLDER_URL:
+            per = {**per, "folder_url": NEXT_FOLDER_URL[store][is_next]}
         periods.append({"key": "next" if is_next else "current", "title": "Volgende week" if is_next else "Deze week",
                         "start": per.get("start"), "end": per.get("end"),
                         "period": f"{_nice_day(per.get('start'))} t/m {_nice_day(per.get('end'))}" if per.get("start") and per.get("end") else None,
@@ -6238,6 +6238,11 @@ JUMBO_PROMO_QUERY = """query($id: String!) { promotionTab(id: $id) { runtimes { 
 fragment P on Promotion { id title subtitle start { iso } end { iso } tags { text } isKiesAndMix image products { id } }"""
 
 
+# Folder op de site van de winkel: (deze week, volgende week)
+NEXT_FOLDER_URL = {"Dirk": ("https://www.dirk.nl/folder", "https://www.dirk.nl/folder/volgende-week"),
+                   "Jumbo": ("https://www.jumbo.com/aanbiedingen/nu", "https://www.jumbo.com/aanbiedingen/volgende-week")}
+
+
 async def _jumbo_folder() -> list:
     # Jumbo: de aanbiedingenpagina van jumbo.com, met deze week en (vanaf zondag) volgende week als losse acties
     try:
@@ -6263,7 +6268,8 @@ async def _jumbo_folder() -> list:
             if its:
                 ends = sorted(i["end"] or "" for i in its)
                 start = _iso_day((rt.get("start") or {}).get("iso")) or min(i["start"] or "" for i in its)
-                nxt = "woensdag" in (rt.get("title") or "").lower() or "volgende" in (rt.get("title") or "").lower()
+                # Volgende week: begint na vandaag (de titel zegt niet altijd "volgende")
+                nxt = (start or "") > _iso_day(datetime.now(timezone.utc).isoformat()) or "volgende" in (rt.get("title") or "").lower()
                 out.append({"start": start, "end": ends[len(ends) // 2],
                             "folder_url": "https://www.jumbo.com/aanbiedingen/" + ("volgende-week" if nxt else "nu"), "items": its})
         if out:
