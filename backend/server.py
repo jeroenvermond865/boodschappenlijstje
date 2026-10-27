@@ -221,6 +221,8 @@ def public_user(doc: dict) -> dict:
         "email_opt_out": doc.get("email_opt_out", False),
         "terms_ok": doc.get("terms_version") == TERMS_VERSION,
         "onboarded": bool(doc.get("onboarded_at")),
+        # Laatste update-melding die deze gebruiker zag (id uit frontend/src/changelog.ts), op elk apparaat gelijk
+        "whatsnew_seen": doc.get("whatsnew_seen"),
         "has_password": bool(doc.get("password_hash")),
         "no_personal": doc.get("no_personal", False),
         "premium": bool(doc.get("premium")),
@@ -8781,6 +8783,17 @@ async def _history_delete(user: dict, kinds: list, period: str) -> dict:
                     await db.user_interest.update_one({"user_id": uid}, {"$unset": {k: "" for k in gone}})
         removed[kind] = (await db.interest_log.delete_many(q)).deleted_count
     return removed
+
+
+class WhatsNewSeen(BaseModel):
+    id: str
+
+
+@api_router.post("/auth/whatsnew-seen")
+async def mark_whatsnew_seen(data: WhatsNewSeen, user: dict = Depends(get_current_user)):
+    # Onthoud per gebruiker tot welke update de melding gezien is, zodat je alleen nieuwe updates te zien krijgt
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"whatsnew_seen": data.id[:40]}})
+    return {"ok": True}
 
 
 class HistoryDelete(BaseModel):
