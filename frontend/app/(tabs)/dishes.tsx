@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Animated, FlatList, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
+import { Animated, FlatList, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from "react-native";
 import Image from "@/src/components/SafeImage";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 
+import Reanimated, { FadeInDown } from "react-native-reanimated";
+import { PressScale, SkeletonList } from "@/src/components/motion";
 import { EmptyState, Icon } from "@/src/components/ui";
 import type { Package } from "@/app/package/edit";
 import { OnlineRecipes } from "@/src/OnlineRecipes";
@@ -17,7 +19,7 @@ import { CATEGORY_ICONS, CATEGORY_LABELS, DISH_GROUPS, DishGroup, MealCategory }
 import { GroupTiles } from "@/src/GroupTiles";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings } from "@/src/settings";
-import { fonts, makeStyles, useTheme } from "@/src/theme";
+import { fonts, makeStyles, softShadow, useTheme } from "@/src/theme";
 
 export type Dish = {
   id: string;
@@ -230,8 +232,8 @@ export default function DishesScreen() {
         <OnlineRecipes bottomPadding={bottomChrome + 24} outer={hide} />
       ) : tab === "packages" ? (
         packages.isLoading ? (
-          <View style={[styles.center, { paddingTop: hide.padTop }]}>
-            <ActivityIndicator size="large" color={colors.brandPrimary} />
+          <View style={{ paddingTop: hide.padTop }}>
+            <SkeletonList rows={5} />
           </View>
         ) : (packages.data?.packages ?? []).length ? (
           <GroupTiles
@@ -255,8 +257,8 @@ export default function DishesScreen() {
           </View>
         )
       ) : isLoading ? (
-        <View style={[styles.center, { paddingTop: hide.padTop }]}>
-          <ActivityIndicator size="large" color={colors.brandPrimary} />
+        <View style={{ paddingTop: hide.padTop }}>
+          <SkeletonList rows={6} />
         </View>
       ) : showTiles ? (
         <GroupTiles
@@ -273,13 +275,14 @@ export default function DishesScreen() {
           data={filtered}
           keyExtractor={(d) => d.id}
           contentContainerStyle={{ padding: 16, paddingTop: 8 + hide.padTop, paddingBottom: bottomChrome + 96, gap: 10 }}
-          renderItem={({ item }) => {
+          renderItem={({ item, index }) => {
             const warn = dietConflicts(item.ingredients, diet);
             return (
-            <Pressable
+            <Reanimated.View entering={index < 8 ? FadeInDown.delay(index * 35).duration(240) : undefined}>
+            <PressScale
               testID={`dish-row-${item.id}`}
               onPress={() => router.push({ pathname: "/dish/edit", params: { id: item.id } })}
-              style={({ pressed }) => [styles.row, pressed && { opacity: 0.9 }]}
+              style={styles.row}
             >
               {item.image ? (
                 <Image source={{ uri: item.image }} style={[styles.rowIcon, { backgroundColor: "#fff" }]} resizeMode="contain" />
@@ -310,7 +313,8 @@ export default function DishesScreen() {
                 </View>
               ) : null}
               <Icon name="chevron-right" size={22} color={colors.muted} />
-            </Pressable>
+            </PressScale>
+            </Reanimated.View>
             );
           }}
           ListEmptyComponent={
@@ -398,6 +402,7 @@ const useStyles = makeStyles((colors) => ({
     borderWidth: 1,
     borderColor: colors.border,
     padding: 12,
+    ...softShadow(colors, 1),
   },
   rowIcon: {
     width: 44,

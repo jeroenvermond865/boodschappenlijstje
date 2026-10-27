@@ -110,7 +110,7 @@ export default function RootLayout() {
             <KeyboardProvider>
               <ToastProvider>
                 <AuthProvider>
-                  <StatusBar style="dark" />
+                  <StatusBar style="auto" />
                   <Gate />
                 </AuthProvider>
               </ToastProvider>

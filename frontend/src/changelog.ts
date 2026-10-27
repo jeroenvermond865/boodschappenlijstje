@@ -5,6 +5,20 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-27-j",
+    date: "27 oktober 2026",
+    title: "Nieuwe uitleg met bewegende voorbeelden, een luxer uiterlijk en donkere modus",
+    changes: [
+      { kind: "nieuw", text: "Account > Zo werkt de app is helemaal vernieuwd: bij elke stap een kort bewegend voorbeeld uit de app, met echte aanbiedingen en gerechten. Nu ook over slim splitsen, de voorraadkast en Slimme hulp." },
+      { kind: "nieuw", text: "Donkere modus: staat je telefoon op donker, dan wordt de app ook donker." },
+      { kind: "nieuw", text: "Alles afgevinkt op je boodschappenlijst? Dan krijg je een klein feestje met confetti." },
+      { kind: "beter", text: "Afvinken voelt beter: het vinkje plopt en het product schuift rustig naar beneden." },
+      { kind: "beter", text: "Knoppen en kaarten veren even mee als je erop tikt, en lijsten komen rustig binnenglijden." },
+      { kind: "beter", text: "Tijdens het laden zie je de vorm van wat eraan komt in plaats van een draaiend rondje." },
+      { kind: "beter", text: "Totalen en besparingen tellen op naar het juiste bedrag. Kaarten hebben een zachte schaduw en rondere hoeken." },
+    ],
+  },
+  {
     id: "2026-10-27-i",
     date: "27 oktober 2026",
     title: "Gerechten in blokken, logischer zoeken, slim splitsen klopt altijd en de Jumbo-folder van volgende week",

@@ -5,6 +5,7 @@ import { useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { CountUp } from "@/src/components/motion";
 import { Button, EmptyState, Field, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
@@ -91,7 +92,7 @@ export default function BudgetScreen() {
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 24, gap: 16 }}>
           <View style={styles.totalCard}>
             <Text style={styles.totalLabel}>Geschatte kosten tot nu toe</Text>
-            <Text style={styles.totalValue}>{euro(data.total_cost)}</Text>
+            <CountUp style={styles.totalValue} value={data.total_cost} format={euro} />
             {data.budget_target > 0 ? (
               <>
                 <View style={styles.barTrack}>
