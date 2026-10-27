@@ -24,6 +24,7 @@ export type User = {
   email_opt_out?: boolean;
   terms_ok?: boolean;
   onboarded?: boolean;
+  whatsnew_seen?: string | null;
   has_password?: boolean;
   no_personal?: boolean;
   premium?: boolean;

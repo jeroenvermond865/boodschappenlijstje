@@ -1,5 +1,5 @@
 // Wat er nieuw is in de app. Bij elke update die online gaat: bovenaan een nieuw blok met een nieuwe id.
-// Iedereen ziet het nieuwste blok één keer kort bovenin; tik erop voor alles.
+// Iedereen ziet bovenin één keer kort wat er nieuw is sinds zijn of haar vorige bezoek; tik erop voor alles.
 export type Change = { kind: "nieuw" | "beter" | "opgelost"; text: string };
 export type Release = { id: string; date: string; title: string; changes: Change[] };
 
@@ -12,6 +12,15 @@ export const CHANGELOG: Release[] = [
       { kind: "nieuw", text: "Onder elke zoekbalk staan nu suggesties terwijl je typt. Typ je 'tomaten', dan zie je ook tomatensoep en tomatenpuree. Typ je 'soep', dan zie je kippensoep, tomatensoep en groentesoep. Tik erop om meteen daarop te zoeken." },
       { kind: "beter", text: "De app leert van wat mensen kiezen en vaak zoeken, zonder te onthouden wie het was. Zo komen de beste suggesties steeds vaker bovenaan." },
       { kind: "beter", text: "Alleen als de app zelf niets weet, helpt de AI een keer. Dat antwoord wordt onthouden, dus er is steeds minder AI nodig." },
+    ],
+  },
+  {
+    id: "2026-10-27-j",
+    date: "27 oktober 2026",
+    title: "Je ziet alleen de updates die je nog niet kende",
+    changes: [
+      { kind: "beter", text: "De melding na een update onthoudt nu per gebruiker wat je al gezien hebt, ook op een ander apparaat. Heb je een paar updates gemist, dan zie je die allemaal, en alleen die." },
+      { kind: "beter", text: "Zijn het veel updates, dan krijg je eerst een korte samenvatting op één pagina. Tik op Lees alles voor alle punten." },
     ],
   },
   {
