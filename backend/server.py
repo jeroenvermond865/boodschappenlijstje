@@ -9202,6 +9202,40 @@ _img_cache: Dict[str, tuple] = {}  # url -> (inhoud, soort); klein gehouden, de 
 _IMG_CACHE_MAX = 300
 
 
+_dirk_img_tried: set = set()
+
+
+async def _dirk_fresh_image(old: str) -> Optional[str]:
+    # Het product met deze (verlopen) foto opnieuw bij Dirk ophalen en de nieuwe foto opslaan
+    if old in _dirk_img_tried:
+        return None
+    _dirk_img_tried.add(old)
+    await _global_products()
+    docs = [d for d in _product_cache.get("docs") or [] if d.get("image") == old and d.get("dirk_id")]
+    if not docs:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15, headers=DIRK_HEADERS) as c:
+            prods = await _dirk_fetch_products(c, [int(d["dirk_id"]) for d in docs[:5] if str(d["dirk_id"]).isdigit()])
+    except Exception as e:
+        logger.info("Dirk-foto vernieuwen: %r", e)
+        return None
+    new = None
+    for p in prods:
+        nrm = _dirk_normalize(p)
+        img = (nrm or {}).get("image")
+        if not img:
+            continue
+        for d in docs:
+            if str(d["dirk_id"]) == str(nrm.get("dirk_id")):
+                d["image"] = img  # ook in het geheugen, zodat de app meteen de nieuwe ziet
+                await db.products.update_one({"product_id": d["product_id"]}, {"$set": {"image": img}})
+                new = new or img
+    if new:
+        logger.info("Dirk-foto vernieuwd: %s -> %s", old, new)
+    return new
+
+
 @api_router.get("/img")
 async def image_proxy(u: str):
     host = (urlparse(u).hostname or "").lower()
@@ -9212,9 +9246,15 @@ async def image_proxy(u: str):
         try:
             async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers={"User-Agent": DIRK_HEADERS["User-Agent"], "Accept": "image/*"}) as c:
                 r = await c.get(u)
+                kind = r.headers.get("content-type", "").split(";")[0]
+                if r.status_code == 404 and host.endswith("dirk.nl"):
+                    # Dirk geeft een foto een nieuwe naam als hij vernieuwd wordt: de nieuwe opvragen en onthouden
+                    new = await _dirk_fresh_image(u)
+                    if new and new != u:
+                        r = await c.get(new)
+                        kind = r.headers.get("content-type", "").split(";")[0]
         except Exception:
             raise HTTPException(status_code=502, detail="Foto niet op te halen")
-        kind = r.headers.get("content-type", "").split(";")[0]
         if r.status_code != 200 or not kind.startswith("image/") or len(r.content) > 3_000_000:
             raise HTTPException(status_code=404, detail="Foto niet gevonden")
         hit = (r.content, kind)

@@ -10,6 +10,7 @@ export const CHANGELOG: Release[] = [
     title: "Weer snel",
     changes: [
       { kind: "opgelost", text: "Na de vorige update was de app soms erg traag, omdat de AI bij veel recepten tegelijk producten zocht. Dat gebeurt nu rustig op de achtergrond, één voor één, en je hoeft er nooit meer op te wachten." },
+      { kind: "opgelost", text: "Foto's van Dirk-producten die Dirk een nieuwe naam had gegeven, worden nu vanzelf opnieuw opgehaald." },
     ],
   },
   {
