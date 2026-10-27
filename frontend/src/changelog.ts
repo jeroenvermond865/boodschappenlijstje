@@ -7,7 +7,7 @@ export const CHANGELOG: Release[] = [
   {
     id: "2026-10-27-j",
     date: "27 oktober 2026",
-    title: "Nieuwe uitleg, donkere modus, zoeksuggesties, lijstjes bewaren en nieuwe voorwaarden",
+    title: "Vandaag op Home, Premium en Ultra, nieuwe uitleg, donkere modus en zoeksuggesties",
     changes: [
       { kind: "nieuw", text: "Onder elke zoekbalk staan nu suggesties terwijl je typt. Typ je 'tomaten', dan zie je ook tomatensoep en tomatenpuree. Typ je 'soep', dan zie je kippensoep, tomatensoep en groentesoep. Tik erop om meteen daarop te zoeken." },
       { kind: "beter", text: "De app leert van wat mensen kiezen en vaak zoeken, zonder te onthouden wie het was. Zo komen de beste suggesties steeds vaker bovenaan." },
@@ -27,6 +27,11 @@ export const CHANGELOG: Release[] = [
       { kind: "beter", text: "Knoppen en kaarten veren even mee als je erop tikt, en lijsten komen rustig binnenglijden." },
       { kind: "beter", text: "Tijdens het laden zie je de vorm van wat eraan komt in plaats van een draaiend rondje." },
       { kind: "beter", text: "Totalen en besparingen tellen op naar het juiste bedrag. Kaarten hebben een zachte schaduw en rondere hoeken." },
+      { kind: "nieuw", text: "Vandaag op Home: even snel naar de winkel? Eén lijstje voor vandaag, voor 1 of meer personen. Het begint elke dag opnieuw; wat je nog niet had gekocht, blijft staan. Het staat meteen op de looproute van je vaste winkel." },
+      { kind: "nieuw", text: "Wat je vaak koopt: de app onthoudt wat je in de winkel afvinkt. Met één tik zet je het op je lijstje voor vandaag. Is iets daarvan vandaag in de aanbieding, dan zie je dat meteen." },
+      { kind: "nieuw", text: "Er zijn nu drie abonnementen: Standaard (gratis), Premium en Ultra. Bij Account > Abonnementen zie je wat ze kosten en wat je krijgt." },
+      { kind: "beter", text: "De slimme hulp onthoudt antwoorden. Stel je dezelfde vraag nog eens, dan krijg je het antwoord meteen." },
+      { kind: "beter", text: "Mijn geschiedenis: je kunt nu ook wissen wat de app onthield van wat je vaak koopt." },
     ],
   },
   {

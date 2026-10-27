@@ -21,7 +21,7 @@ import type { Package } from "@/app/package/edit";
 import type { Product } from "@/app/(tabs)/products";
 import { useAuth } from "@/src/auth";
 import { dietConflicts, useDiet } from "@/src/diet";
-import { GOLD, usePremium } from "@/src/premium";
+import { GOLD, useFeature } from "@/src/premium";
 import { useSwipePages } from "@/src/useSwipePages";
 import { goBack } from "@/src/nav";
 import { VegaPicker } from "@/src/VegaPicker";
@@ -96,7 +96,7 @@ export default function CampDetailScreen() {
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
-  const premium = usePremium();
+  const premium = useFeature("weekmenu");
   const { selected: diet } = useDiet();
 
   const canViewBudget = has("view_budget");

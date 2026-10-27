@@ -229,6 +229,8 @@ def public_user(doc: dict) -> dict:
         "premium_welcome": bool(doc.get("premium") and doc.get("premium_welcome")),
         "premium_org": doc.get("premium_org") if doc.get("premium") else None,
         "premium_until": doc.get("premium_until").isoformat() if doc.get("premium") and doc.get("premium_until") else None,
+        "plan": user_plan(doc),
+        "features": user_features(doc),
     }
 
 
@@ -429,6 +431,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     seen = user.get("last_seen_at")
     if not seen or ensure_aware(seen) < now_utc() - timedelta(hours=12):
         await _mark_seen(user["user_id"])
+    await _mark_active(user)
     return user
 
 
@@ -916,6 +919,8 @@ async def _erase_user(user: dict) -> None:
     await db.store_requests.delete_many({"requested_by": uid})
     await db.premium_requests.delete_many({"user_id": uid})
     await db.pantry.delete_many({"user_id": uid})
+    await db.bought.delete_many({"user_id": uid})
+    await db.ai_usage.delete_many({"user_id": uid})
     await db.price_alerts.delete_many({"user_id": uid})
     await db.auto_alert_marks.delete_many({"user_id": uid})
     if user.get("email"):
@@ -1363,7 +1368,6 @@ def _prep_basic(base: List[str], items: list) -> List[str]:
 async def _prep_ai(name: str, base: List[str], items: list) -> Optional[List[str]]:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
-    from anthropic import AsyncAnthropic
     lines = []
     for it in items:
         t = f"- {it['name']}" + (f" ({it['qty']})" if it.get("qty") else "")
@@ -1379,8 +1383,8 @@ async def _prep_ai(name: str, base: List[str], items: list) -> Optional[List[str
            "\nGebruik de tekst op de verpakking. Twijfel je hoe je iets het beste klaarmaakt, zoek het dan even op internet."
            "\nSchrijf in eenvoudig Nederlands, kort, als genummerde stappen (1. 2. 3.), maximaal 10 stappen, en verder niets.")
     try:
-        msg = await AsyncAnthropic().beta.messages.create(
-            model=DIRK_AI_MODEL, max_tokens=4000, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+        msg = await _claude(
+            "bereiding", max_tokens=4000,
             output_config={"effort": "low"},
             tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
             messages=[{"role": "user", "content": ask}])
@@ -1651,6 +1655,7 @@ def camp_public(doc: dict, uid: Optional[str] = None) -> dict:
         "owner_id": doc.get("owner_id"),
         "member_ids": doc.get("member_ids", []),
         "archived": bool(uid and uid in (doc.get("archived_by") or [])),
+        "daily": bool(doc.get("daily")),
         "created_at": doc["created_at"].isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at"),
     }
 
@@ -1821,7 +1826,7 @@ def _dish_cost(d: dict, by_pid: dict) -> Optional[float]:
 @api_router.post("/camps/{camp_id}/auto-menu")
 async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_current_user)):
     # Premium: lege maaltijden vullen met gerechten die bij je passen: je voorkeuren, wat je eerder at, en aanbiedingen
-    await require_premium(user)
+    await require_feature(user, "weekmenu")
     uid = user["user_id"]
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(uid)}, {"_id": 0})
     if not camp:
@@ -2464,7 +2469,6 @@ async def _dish_photo(name: str) -> Optional[str]:
         return None
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError("geen AI-sleutel")
-    from anthropic import AsyncAnthropic
     content: list = []
     for k, (_, title, url) in enumerate(cands):
         content += [{"type": "text", "text": f"Foto {k + 1} ({title}):"}, {"type": "image", "source": {"type": "url", "url": url}}]
@@ -2473,8 +2477,8 @@ async def _dish_photo(name: str) -> Optional[str]:
                                              "(\"havermout-banaan-brownies\" is geen havermout met banaan, \"tomatensoep met balletjes\" is goed genoeg voor tomatensoep). "
                                              "Geef het nummer van de foto, of null als geen enkele foto echt dit gerecht laat zien.")})
     try:
-        msg = await AsyncAnthropic().beta.messages.create(
-            model=DIRK_AI_MODEL, max_tokens=300, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+        msg = await _claude(
+            "foto", max_tokens=300,
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
                 "type": "object", "additionalProperties": False, "required": ["photo"],
                 "properties": {"photo": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}},
@@ -2622,6 +2626,7 @@ async def camp_tip_extra(camp_id: str, data: TipExtra, user: dict = Depends(get_
 class CheckedInput(BaseModel):
     on: List[str] = []
     off: List[str] = []
+    meta: Dict[str, dict] = Field(default_factory=dict)  # bij afvinken: welk product (naam, eenheid, afdeling), zodat de app leert wat je vaak koopt
 
 
 def _check_hash(k: str) -> str:
@@ -2650,6 +2655,9 @@ async def set_checked(camp_id: str, data: CheckedInput, user: dict = Depends(get
     upd = {**({"$set": sets} if sets else {}), **({"$unset": unsets} if unsets else {})}
     if upd:
         await db.camps.update_one({"camp_id": camp_id}, upd)
+    meta = {k: v for k, v in data.meta.items() if k in data.on and isinstance(v, dict)}
+    if meta:
+        asyncio.create_task(_track_bought(user, meta))
     return {"ok": True}
 
 
@@ -2833,7 +2841,8 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
             priced(d["by_store"])
     await asyncio.to_thread(price_all)
     # Voorraadkast (Premium): wat je al in huis hebt, zetten we erbij. Zonder Premium rekenen we alleen uit wat het had gescheeld
-    is_premium = bool(user.get("premium"))
+    is_premium = has_feature(user, "voorraadkast")
+    see_then = has_feature(user, "extra_besparen")
     has_pantry, pantry_value = False, 0.0
     pantry_of: Dict[int, float] = {}  # per regel: wat de voorraadkast scheelt (voor 'al bespaard')
     pantry = await _pantry_index(user["user_id"], user)
@@ -2863,7 +2872,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
                     nxt = _promo_public(p, it.get("pack_price") or 0)[1]
                     if nxt and nxt.get("label") == then["label"]:
                         then_value += _deal_saving(nxt, it.get("pack_price") or 0, it.get("packs") or 1)
-                    if is_premium:
+                    if see_then:
                         it["promo_then"] = then
                         promo_then += 1
     # Voor het bespaaroverzicht: per lijst onthouden wat de app scheelt
@@ -3098,7 +3107,7 @@ def _pantry_have(index: dict, name: str, unit: str) -> float:
 
 
 async def require_premium(user: dict):
-    if not user.get("premium"):
+    if user_plan(user) == "standaard":
         raise HTTPException(status_code=403, detail="Dit is een Premium-functie")
 
 
@@ -3187,7 +3196,7 @@ async def pantry_suggestions(skip: str = "", user: dict = Depends(get_current_us
     # Voorstellen voor je voorraadkast: wat de meeste mensen al in huis hebben (vaste lijst + wat andere gebruikers vaak invullen),
     # met per stuk het product dat de app erbij kiest in jouw winkel. Steeds 12 nieuwe: wat je al hebt (ook van een ander merk)
     # en wat je eerder te zien kreeg (skip) laten we weg.
-    await require_premium(user)
+    await require_feature(user, "voorraadkast")
     mine = await db.pantry.find({"user_id": user["user_id"]}, {"_id": 0, "name": 1, "product_id": 1}).to_list(1000)
     by_pid = _product_cache.get("by_pid") or {}
     have_names = [m["name"] for m in mine] + [by_pid[m["product_id"]]["name"] for m in mine if m.get("product_id") in by_pid]
@@ -3233,7 +3242,7 @@ class PantryBulk(BaseModel):
 @api_router.post("/pantry/bulk")
 async def add_pantry_bulk(data: PantryBulk, user: dict = Depends(get_current_user)):
     # Meerdere producten tegelijk (uit de voorstellen): als "vol" erbij, bestaande regels blijven staan
-    await require_premium(user)
+    await require_feature(user, "voorraadkast")
     have = {p["name_l"] async for p in db.pantry.find({"user_id": user["user_id"]}, {"_id": 0, "name_l": 1})}
     room = 500 - len(have)
     docs = []
@@ -3307,7 +3316,7 @@ def _pantry_public(p: dict, rate: float = 0) -> dict:
 
 @api_router.get("/pantry")
 async def list_pantry(user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "voorraadkast")
     items = await db.pantry.find({"user_id": user["user_id"]}, {"_id": 0}).sort("name_l", 1).to_list(1000)
     rate = _pantry_rate(user)
     return {"items": [_pantry_public(p, rate) for p in items]}
@@ -3316,7 +3325,7 @@ async def list_pantry(user: dict = Depends(get_current_user)):
 @api_router.get("/pantry/restock")
 async def pantry_restock(camp_id: str = "", user: dict = Depends(get_current_user)):
     # Bijna op in je voorraadkast: voorstel om mee te nemen in je volgende boodschappenlijst
-    if not user.get("premium"):
+    if not has_feature(user, "voorraadkast"):
         return {"items": []}
     rate = _pantry_rate(user)
     on_list = set()
@@ -3342,7 +3351,7 @@ class RestockInput(BaseModel):
 @api_router.post("/camps/{camp_id}/restock")
 async def camp_restock(camp_id: str, data: RestockInput, user: dict = Depends(get_current_user)):
     # Wat bijna op is bij de algemene boodschappen van dit lijstje zetten (onthoudt van welk voorraadproduct het komt)
-    await require_premium(user)
+    await require_feature(user, "voorraadkast")
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0, "general": 1})
     if camp is None:  # een leeg resultaat (veld nog niet gezet) is ook gevonden
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
@@ -3386,7 +3395,7 @@ def _pantry_clean(data: PantryInput) -> dict:
 
 @api_router.post("/pantry")
 async def add_pantry(data: PantryInput, user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "voorraadkast")
     clean = _pantry_clean(data)
     same = await db.pantry.find_one({"user_id": user["user_id"], "name_l": clean["name_l"], "unit": clean["unit"]})
     if same:
@@ -3404,7 +3413,7 @@ async def add_pantry(data: PantryInput, user: dict = Depends(get_current_user)):
 
 @api_router.put("/pantry/{item_id}")
 async def update_pantry(item_id: str, data: PantryInput, user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "voorraadkast")
     clean = _pantry_clean(data)
     res = await db.pantry.update_one({"item_id": item_id, "user_id": user["user_id"]}, {"$set": clean})
     if not res.matched_count:
@@ -3414,7 +3423,7 @@ async def update_pantry(item_id: str, data: PantryInput, user: dict = Depends(ge
 
 @api_router.delete("/pantry/{item_id}")
 async def delete_pantry(item_id: str, user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "voorraadkast")
     await db.pantry.delete_one({"item_id": item_id, "user_id": user["user_id"]})
     return {"ok": True}
 
@@ -3485,7 +3494,7 @@ def _best_split_saving(rows: list) -> float:
 async def savings_overview(user: dict = Depends(get_current_user)):
     # Voor iedereen: wat de app je scheelt. Premium-delen (voorraadkast, acties op je boodschappendag) tellen alleen mee met Premium;
     # zonder Premium laten we zien wat je er extra mee had kunnen besparen.
-    is_premium = bool(user.get("premium"))
+    is_premium = has_feature(user, "extra_besparen")
     # Ook verwijderde lijstjes: wat daar was afgevinkt (gekocht) is echt bespaard, tenzij je bij het verwijderen koos om het te vergeten.
     uid = user["user_id"]
     camps = await db.camps.find({"$and": [{"$or": [{"owner_id": uid}, {"member_ids": uid}]},
@@ -4917,9 +4926,8 @@ async def _ai_search_terms(q: str) -> list:
         return []
     _ai_search_state["n"] += 1
     try:
-        from anthropic import AsyncAnthropic
-        msg = await asyncio.wait_for(AsyncAnthropic().beta.messages.create(
-            model=AI_PICK_MODEL, max_tokens=300, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+        msg = await asyncio.wait_for(_claude(
+            "zoeken", max_tokens=300,
             output_config={"format": {"type": "json_schema", "schema": {
                 "type": "object", "additionalProperties": False, "required": ["terms"],
                 "properties": {"terms": {"type": "array", "items": {"type": "string"}}}}}},
@@ -5191,9 +5199,8 @@ async def _ai_profile_ask(q: str, key: str, groups: Dict[str, list]) -> Optional
     names = list(groups)[:45]
     lines = [f"{k + 1}. {g} ({len(groups[g])}x, bijv. {'; '.join(groups[g][:3])})" for k, g in enumerate(names)]
     try:
-        from anthropic import AsyncAnthropic
-        msg = await AsyncAnthropic().beta.messages.create(
-            model=AI_PICK_MODEL, max_tokens=600, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+        msg = await _claude(
+            "zoeken", max_tokens=600,
             output_config={"format": {"type": "json_schema", "schema": {
                 "type": "object", "additionalProperties": False, "required": ["order", "bottom"],
                 "properties": {"order": {"type": "array", "items": {"type": "integer"}}, "bottom": {"type": "array", "items": {"type": "integer"}}}}}},
@@ -5610,9 +5617,8 @@ def _needs_count(p: dict) -> bool:
 async def _ai_pack_count(p: dict) -> Optional[int]:
     if not os.environ.get("ANTHROPIC_API_KEY") or not p.get("image"):
         return None
-    from anthropic import AsyncAnthropic
-    msg = await AsyncAnthropic().beta.messages.create(
-        model=DIRK_AI_MODEL, max_tokens=300, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+    msg = await _claude(
+        "stuks", max_tokens=300,
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": {
             "type": "object", "additionalProperties": False, "required": ["count"],
             "properties": {"count": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}},
@@ -6566,7 +6572,6 @@ async def _dirk_extra_folders() -> list:
 
 
 # Dirk zet de acties van volgende week alleen als folderpagina's online; een AI-model leest die en maakt er losse acties van
-DIRK_AI_MODEL = "claude-opus-5-5"
 DIRK_AI_BATCH = 4
 _DIRK_AI_SCHEMA = {
     "type": "object",
@@ -6589,8 +6594,6 @@ _dirk_ai_state: dict = {"task": None}
 
 
 async def _dirk_ai_read(pages: list) -> list:
-    from anthropic import AsyncAnthropic
-    client = AsyncAnthropic()
     sem = asyncio.Semaphore(3)
 
     async def batch(urls):
@@ -6599,8 +6602,8 @@ async def _dirk_ai_read(pages: list) -> list:
             "Dit zijn pagina's uit de folder van supermarkt Dirk voor volgende week. Noem elke actie die erop staat: "
             "het product, de actie en de prijzen. Sla reclame zonder product of prijs over. Gebruik euro's als getal (1.99).")})
         async with sem:
-            msg = await client.beta.messages.create(
-                model=DIRK_AI_MODEL, max_tokens=16000, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            msg = await _claude(
+                "folder", max_tokens=16000,
                 output_config={"effort": "low", "format": {"type": "json_schema", "schema": _DIRK_AI_SCHEMA}},
                 messages=[{"role": "user", "content": content}])
         if msg.stop_reason in ("refusal", "max_tokens"):
@@ -7240,7 +7243,6 @@ def _recipe_cost(rec: dict, matches: dict) -> Optional[dict]:
 
 
 # --- AI kiest het product zoals de winkel dat zelf zou doen: uit de beste kandidaten het product dat je echt koopt ---
-AI_PICK_MODEL = "claude-haiku-5-5"
 AI_PICK_DAYS = 30
 
 
@@ -7275,9 +7277,8 @@ async def _ai_pick_products(names: list, store: str, docs: list) -> dict:
               "(dus sinaasappels, geen marmelade; prosecco, geen bloemen; geen snoep, geen cadeau, geen mini-variant als dat niet gevraagd is). "
               "Bij gelijke keuze het gewone, voordelige product. Past geen enkel product, geef dan null.\n\n" + "\n".join(lines))
     try:
-        from anthropic import AsyncAnthropic
-        msg = await AsyncAnthropic().beta.messages.create(
-            model=AI_PICK_MODEL, max_tokens=1500, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+        msg = await _claude(
+            "kiezen", max_tokens=1500,
             output_config={"format": {"type": "json_schema", "schema": {
                 "type": "object", "additionalProperties": False, "required": ["picks"],
                 "properties": {"picks": {"type": "array", "items": {
@@ -7979,9 +7980,8 @@ async def _ai_check_loop() -> None:
         _ai_check_state["n"] += len(batch)
         lines = [f"{n}. Gevraagd: {v[0]}  ->  Product: {v[1]} ({v[3]}, {v[2]})" for n, (k, v) in enumerate(batch, 1)]
         try:
-            from anthropic import AsyncAnthropic
-            msg = await AsyncAnthropic().beta.messages.create(
-                model=AI_PICK_MODEL, max_tokens=1500, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            msg = await _claude(
+                "kiezen", max_tokens=1500,
                 output_config={"format": {"type": "json_schema", "schema": {
                     "type": "object", "additionalProperties": False, "required": ["checks"],
                     "properties": {"checks": {"type": "array", "items": {
@@ -8582,7 +8582,7 @@ async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
         asyncio.create_task(_track_recipe(user["user_id"], rec, 1))
     out = await _recipe_products(rec, user)
     # Voorraadkast (Premium): staat wat waarschijnlijk al in huis is nog in je voorraad?
-    if user.get("premium"):
+    if has_feature(user, "voorraadkast"):
         names = [i["name"] for i in out["ingredients"] if i.get("pantry") and i.get("name")]
         stock = await _pantry_stock(user, names)
         out = {**out, "ingredients": [{**i, "stock": stock.get(i.get("name"))} if i.get("pantry") else i for i in out["ingredients"]]}
@@ -9058,13 +9058,18 @@ async def _history_delete(user: dict, kinds: list, period: str) -> dict:
     # Wist wat iemand bekeek: zijn voorstellen beginnen (voor die periode) opnieuw.
     # Wat de app van iedereen samen leerde (welk product past bij een ingrediënt) blijft.
     uid = user["user_id"]
-    kinds = [k for k in kinds if k in HISTORY_KINDS or k == "voorraad"]
+    kinds = [k for k in kinds if k in HISTORY_KINDS or k in ("voorraad", "gekocht")]
     days = HISTORY_PERIODS.get(period, -1)
     if days == -1 or not kinds:
         raise HTTPException(status_code=400, detail="Kies wat en welke periode je wilt wissen")
     since = (now_utc() - timedelta(days=days)).strftime("%Y-%m-%d") if days is not None else None
     removed = {}
     for kind in kinds:
+        if kind == "gekocht":
+            # Wat je afvinkte (Wat je vaak koopt op Home)
+            q = {"user_id": uid, **({"last": {"$gte": datetime.fromisoformat(since).replace(tzinfo=timezone.utc)}} if since else {})}
+            removed[kind] = (await db.bought.delete_many(q)).deleted_count
+            continue
         if kind == "voorraad":
             # Wat de voorraadkast zelf leerde ("al in huis" bij een recept); wat je zelf invulde blijft
             q = {"user_id": uid, "learned": True}
@@ -9116,6 +9121,9 @@ async def my_history(user: dict = Depends(get_current_user)):
         days = await db.interest_log.distinct("day", {"user_id": uid, "kind": kind})
         out[kind] = {"items": len(_flat({f: doc.get(f) for f in fields if doc.get(f)})), "since": min(days) if days else None}
     out["voorraad"] = {"items": await db.pantry.count_documents({"user_id": uid, "learned": True}), "since": None}
+    first = await db.bought.find_one({"user_id": uid}, {"_id": 0, "first": 1}, sort=[("first", 1)])
+    out["gekocht"] = {"items": await db.bought.count_documents({"user_id": uid}),
+                      "since": first["first"].date().isoformat() if first and isinstance(first.get("first"), datetime) else None}
     return {"kinds": out, "no_personal": bool(user.get("no_personal"))}
 
 
@@ -9294,7 +9302,7 @@ async def camp_shop_store(camp_id: str, data: ShopStoreInput, user: dict = Depen
     if not c:
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
     split = [x for x in dict.fromkeys(data.split) if x in COMPARE_STORES]
-    if len(split) >= 2 and not user.get("premium"):
+    if len(split) >= 2 and not has_feature(user, "slim_splitsen"):
         raise HTTPException(status_code=403, detail="Slim splitsen over winkels is een Premium-functie")
     if not data.store and len(split) < 2:
         await db.camps.update_one({"camp_id": camp_id}, {"$unset": {"shop_store": "", "store_products": "", "split_stores": "", "item_stores": "", "item_was": ""}})
@@ -9570,8 +9578,10 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
 
         def last_day(x):
             return (datetime.fromisoformat(x["start_date"]) + timedelta(days=max(0, len(x.get("days") or []) - 1))).date().isoformat()
-        upcoming = sorted((x for x in camps if x.get("start_date") and last_day(x) >= today), key=lambda x: x["start_date"])
-        c = upcoming[0] if upcoming else camps[0]
+        # Het Vandaag-lijstje heeft een eigen kaart op Home
+        mains = [x for x in camps if not x.get("daily")] or camps
+        upcoming = sorted((x for x in mains if x.get("start_date") and last_day(x) >= today), key=lambda x: x["start_date"])
+        c = upcoming[0] if upcoming else mains[0]
         dish_ids = {did for day in c.get("days", []) for cat in MEAL_CATEGORIES for did in (day.get("meals") or {}).get(cat, [])}
         dishes = await db.dishes.find({"dish_id": {"$in": list(dish_ids)}}, {"_id": 0, "dish_id": 1, "name": 1, "ingredients": 1, "image": 1, "photo": 1, "source.image": 1}).to_list(500)
         names = {}
@@ -9648,7 +9658,7 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
         todo["premium"] = await db.premium_requests.count_documents({"status": "pending"})
         todo["signups"] = await db.users.count_documents({"approval": "pending", "deleted_at": None})
     own_dishes = await db.dishes.count_documents({"owner_id": user["user_id"], "deleted_at": None})
-    alerts_hit = await db.price_alerts.count_documents({"user_id": user["user_id"], "notified_mark": {"$exists": True}}) if user.get("premium") else 0
+    alerts_hit = await db.price_alerts.count_documents({"user_id": user["user_id"], "notified_mark": {"$exists": True}}) if has_feature(user, "prijsalarm") else 0
     try:
         interest = {} if user.get("no_personal") else await db.user_interest.find_one({"user_id": user["user_id"]}, {"_id": 0}) or {}
         by_pid = _product_cache.get("by_pid") or {}
@@ -11211,7 +11221,7 @@ def _alert_public(alert: dict, prod: Optional[dict]) -> dict:
 
 @api_router.get("/price-alerts")
 async def list_price_alerts(user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "prijsalarm")
     alerts = await db.price_alerts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
     own = {a["product_id"] for a in alerts}
     auto_on = user.get("auto_alerts", True)
@@ -11231,7 +11241,7 @@ class AutoAlertsInput(BaseModel):
 
 @api_router.put("/price-alerts/auto")
 async def set_auto_alerts(data: AutoAlertsInput, user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "prijsalarm")
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"auto_alerts": data.on}})
     return {"auto_on": data.on}
 
@@ -11266,7 +11276,7 @@ async def _frequent_products(uid: str) -> list:
 
 @api_router.get("/products/{product_id}/price-alert")
 async def get_price_alert(product_id: str, user: dict = Depends(get_current_user)):
-    if not user.get("premium"):
+    if not has_feature(user, "prijsalarm"):
         return {"alert": None}
     a = await db.price_alerts.find_one({"user_id": user["user_id"], "product_id": product_id}, {"_id": 0})
     return {"alert": {"on_promo": bool(a.get("on_promo")), "target": a.get("target")} if a else None}
@@ -11274,7 +11284,7 @@ async def get_price_alert(product_id: str, user: dict = Depends(get_current_user
 
 @api_router.put("/products/{product_id}/price-alert")
 async def set_price_alert(product_id: str, data: PriceAlertInput, user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "prijsalarm")
     if not await db.products.find_one({"product_id": product_id, "deleted_at": None}, {"_id": 1}):
         raise HTTPException(status_code=404, detail="Product niet gevonden")
     target = round(float(data.target), 2) if data.target and data.target > 0 else None
@@ -11336,7 +11346,7 @@ async def _check_price_alerts() -> int:
     sent = 0
     for uid, hits in by_user.items():
         u = await db.users.find_one({"user_id": uid, "deleted_at": None})
-        if not u or not u.get("premium") or not u.get("email") or u.get("email_opt_out"):
+        if not u or not has_feature(u, "prijsalarm") or not u.get("email") or u.get("email_opt_out"):
             continue
         rows = "".join(
             f'<tr><td style="padding:6px 0;border-bottom:1px solid #eee">{escape(p.get("name") or "")}'
@@ -11364,7 +11374,7 @@ async def _check_price_alerts() -> int:
 
 @api_router.get("/products/{product_id}/price-history")
 async def price_history(product_id: str, user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "prijsgeschiedenis")
     doc = await db.price_history.find_one({"product_id": product_id}, {"_id": 0})
     return _history_summary((doc or {}).get("points") or [], datetime.now(timezone.utc).date().isoformat())
 
@@ -12194,6 +12204,8 @@ logging.getLogger().addHandler(_AlertLogHandler())
 
 @app.middleware("http")
 async def error_alert(request, call_next):
+    if request.method != "OPTIONS":
+        _count_use(request.url.path)  # voor het dashboard: alleen hoe vaak een onderdeel gebruikt wordt
     try:
         response = await call_next(request)
     except Exception as e:
@@ -12206,27 +12218,487 @@ async def error_alert(request, call_next):
     return response
 
 
+# --- Abonnementen: Standaard, Premium en Ultra. Beheer kiest per functie welk abonnement je nodig hebt ---
+PLAN_LEVELS = ["standaard", "premium", "ultra"]
+PLAN_LABELS = {"standaard": "Standaard", "premium": "Premium", "ultra": "Ultra"}
+# sleutel -> (titel, standaard-abonnement); de uitleg per functie staat in de app (src/premium.tsx)
+PLAN_FEATURES = {
+    "prijsalarm": ("Prijsalarm", "premium"),
+    "prijsgeschiedenis": ("Prijsgeschiedenis", "premium"),
+    "extra_besparen": ("Extra besparen", "premium"),
+    "slim_splitsen": ("Slim splitsen", "premium"),
+    "weekmenu": ("Automatisch weekmenu", "premium"),
+    "voorraadkast": ("Voorraadkast", "premium"),
+    "slimme_hulp": ("Slimme hulp (AI)", "premium"),
+    "looproute": ("Looproute van de winkel", "premium"),
+    "geen_advertenties": ("Geen advertenties", "premium"),
+}
+PLAN_DEFAULTS = {
+    "features": {k: v[1] for k, v in PLAN_FEATURES.items()},
+    "ai_limit": {"standaard": 0, "premium": 10, "ultra": 60},  # AI-vragen aan de slimme hulp per persoon per dag
+    "price": {"premium": 2.99, "ultra": 4.99},  # euro per maand, wat de app laat zien
+}
+_plans_conf: dict = {}
+
+
+def _plans() -> dict:
+    c = _plans_conf or {}
+    return {
+        "features": {**PLAN_DEFAULTS["features"], **{k: v for k, v in (c.get("features") or {}).items() if k in PLAN_FEATURES and v in PLAN_LEVELS}},
+        "ai_limit": {**PLAN_DEFAULTS["ai_limit"], **(c.get("ai_limit") or {})},
+        "price": {**PLAN_DEFAULTS["price"], **(c.get("price") or {})},
+    }
+
+
+def user_plan(doc: dict) -> str:
+    # Premium blijft de schakelaar (verenigingen, verdiend met delen); Ultra is Premium met meer
+    if not doc.get("premium"):
+        return "standaard"
+    return "ultra" if doc.get("plan") == "ultra" else "premium"
+
+
+def has_feature(doc: dict, key: str) -> bool:
+    need = _plans()["features"].get(key, "premium")
+    return PLAN_LEVELS.index(user_plan(doc)) >= PLAN_LEVELS.index(need)
+
+
+def user_features(doc: dict) -> list:
+    return [k for k in PLAN_FEATURES if has_feature(doc, k)]
+
+
+async def require_feature(user: dict, key: str):
+    if not has_feature(user, key):
+        need = PLAN_LABELS[_plans()["features"].get(key, "premium")]
+        raise HTTPException(status_code=403, detail=f"Dit is een {need}-functie")
+
+
+async def _load_plans() -> None:
+    global _plans_conf
+    doc = await db.settings.find_one({"key": "plans"}, {"_id": 0, "key": 0}) or {}
+    _plans_conf = doc
+    ai = await db.settings.find_one({"key": "ai"}, {"_id": 0, "key": 0}) or {}
+    _ai_conf.clear()
+    _ai_conf.update(ai)
+
+
+@api_router.get("/plans")
+async def get_plans(user: dict = Depends(get_current_user)):
+    p = _plans()
+    return {"levels": [{"key": k, "label": PLAN_LABELS[k], "price": p["price"].get(k), "ai_limit": p["ai_limit"].get(k, 0)} for k in PLAN_LEVELS],
+            "features": [{"key": k, "title": t, "plan": p["features"][k]} for k, (t, _) in PLAN_FEATURES.items()],
+            "mine": user_plan(user)}
+
+
+class PlansInput(BaseModel):
+    features: Optional[Dict[str, str]] = None
+    ai_limit: Optional[Dict[str, int]] = None
+    price: Optional[Dict[str, float]] = None
+
+
+@api_router.put("/admin/plans")
+async def admin_set_plans(data: PlansInput, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_settings")
+    upd = {}
+    if data.features is not None:
+        upd["features"] = {k: v for k, v in data.features.items() if k in PLAN_FEATURES and v in PLAN_LEVELS}
+    if data.ai_limit is not None:
+        upd["ai_limit"] = {k: max(0, min(500, int(v))) for k, v in data.ai_limit.items() if k in PLAN_LEVELS}
+    if data.price is not None:
+        upd["price"] = {k: round(max(0.0, min(100.0, float(v))), 2) for k, v in data.price.items() if k in ("premium", "ultra")}
+    if upd:
+        await db.settings.update_one({"key": "plans"}, {"$set": upd}, upsert=True)
+    await _load_plans()
+    return await get_plans(user)
+
+
+class PlanInput(BaseModel):
+    plan: str
+
+
+@api_router.put("/admin/users/{target_id}/plan")
+async def admin_set_plan(target_id: str, data: PlanInput, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    if data.plan not in PLAN_LEVELS:
+        raise HTTPException(status_code=400, detail="Onbekend abonnement")
+    target = await db.users.find_one({"user_id": target_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
+    if data.plan == "standaard":
+        await _set_premium(target, False, user["user_id"])
+        await db.users.update_one({"user_id": target_id}, {"$unset": {"plan": ""}})
+    else:
+        if not target.get("premium"):
+            await _set_premium(target, True, user["user_id"])
+        await db.users.update_one({"user_id": target_id}, {"$set": {"plan": data.plan}})
+    return {"ok": True, "plan": data.plan}
+
+
+# --- AI: welk model per taak, wat het kost, en antwoorden onthouden zodat dezelfde vraag geen geld meer kost ---
+AI_MODELS = {"klein": "claude-haiku-5-5", "middel": "claude-sonnet-5-5", "groot": "claude-opus-5-5"}
+AI_MODEL_LABELS = {"klein": "Snel en goedkoop (Haiku)", "middel": "Gemiddeld (Sonnet)", "groot": "Slimst en duurst (Opus)"}
+AI_PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.0, 10.0), "claude-opus-5-5": (4.0, 20.0)}  # dollar per miljoen tokens (in, uit)
+AI_WEB_SEARCH_USD = 0.01  # per zoekopdracht op internet
+USD_EUR = 0.92
+# taak -> (omschrijving, standaardmodel, hoeveel dagen een antwoord bewaard en hergebruikt wordt; 0 = niet)
+AI_TASKS = {
+    "zoeken": ("Slimmer zoeken: zoekwoorden en volgorde", "klein", 0),  # bewaart zijn antwoorden zelf al
+    "kiezen": ("Producten kiezen en controleren bij recepten", "klein", 0),  # bewaart zijn antwoorden zelf al
+    "foto": ("Foto bij een gerecht kiezen", "klein", 0),  # bewaart zijn antwoorden zelf al
+    "stuks": ("Stuks in een verpakking tellen", "klein", 90),
+    "bereiding": ("Bereiding van een gerecht schrijven", "middel", 90),
+    "lijst": ("Slimme hulp: lijst inspreken en bespaartips", "klein", 30),
+    "hulp": ("Slimme hulp: menu, restjes en recept overnemen", "middel", 30),
+    "folder": ("Folder van Dirk lezen", "groot", 0),
+}
+_ai_conf: dict = {}
+
+
+def _ai_model(task: str) -> str:
+    tier = (_ai_conf.get("tasks") or {}).get(task) or AI_TASKS[task][1]
+    return AI_MODELS.get(tier, AI_MODELS["groot"])
+
+
+def _ai_cost(model: str, tin: int, tout: int, searches: int = 0) -> float:
+    pin, pout = AI_PRICES.get(model, AI_PRICES["claude-opus-5-5"])
+    return ((tin * pin + tout * pout) / 1e6 + searches * AI_WEB_SEARCH_USD) * USD_EUR
+
+
+async def _ai_log(task: str, user_id: Optional[str], cost: float, tin: int = 0, tout: int = 0, hit: bool = False) -> None:
+    # Alleen aantallen en kosten; wat er gevraagd werd, bewaren we hier niet
+    day = now_utc().date().isoformat()
+    try:
+        await db.ai_stats.update_one({"day": day, "task": task}, {"$inc": {"n": 0 if hit else 1, "hits": 1 if hit else 0, "in": tin, "out": tout, "cost": cost}}, upsert=True)
+        if user_id:
+            await db.ai_usage.update_one({"user_id": user_id, "day": day},
+                                         {"$inc": {"calls": 0 if hit else 1, "hits": 1 if hit else 0, "cost": cost, f"tasks.{task}": cost}, "$set": {"at": now_utc()}}, upsert=True)
+    except Exception as e:
+        logger.info("AI-gebruik bijhouden: %r", e)
+
+
+async def _claude(task: str, user_id: Optional[str] = None, **kw):
+    # Eén plek voor alle AI-vragen: het model komt uit Beheer -> Abonnementen, we tellen wat het kost,
+    # en een antwoord op precies dezelfde vraag halen we uit het geheugen in plaats van opnieuw te betalen
+    from types import SimpleNamespace
+    from anthropic import AsyncAnthropic
+    model = _ai_model(task)
+    kw["model"] = model
+    if model.startswith("claude-haiku"):
+        kw.pop("betas", None)  # Haiku heeft geen vangnet-model bij een weigering
+        kw.pop("fallbacks", None)
+    else:
+        kw.setdefault("betas", ["server-side-fallback-2026-07-01"])
+        kw.setdefault("fallbacks", "default")
+    days = AI_TASKS[task][2]
+    key = None
+    if days:
+        sig = {k: v for k, v in kw.items() if k not in ("max_tokens", "betas", "fallbacks")}
+        key = hashlib.sha1(json.dumps(sig, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+        hit = await db.ai_cache.find_one({"key": key, "at": {"$gt": now_utc() - timedelta(days=days)}}, {"_id": 0, "texts": 1})
+        if hit:
+            await db.ai_cache.update_one({"key": key}, {"$inc": {"used": 1}})
+            await _ai_log(task, user_id, 0.0, hit=True)
+            return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=t) for t in hit["texts"]])
+    msg = await AsyncAnthropic().beta.messages.create(**kw)
+    u = getattr(msg, "usage", None)
+    tin = (getattr(u, "input_tokens", 0) or 0) + (getattr(u, "cache_read_input_tokens", 0) or 0) + (getattr(u, "cache_creation_input_tokens", 0) or 0)
+    tout = getattr(u, "output_tokens", 0) or 0
+    searches = getattr(getattr(u, "server_tool_use", None), "web_search_requests", 0) or 0
+    await _ai_log(task, user_id, _ai_cost(model, tin, tout, searches), tin, tout)
+    if key and msg.stop_reason == "end_turn":
+        texts = [b.text for b in msg.content if b.type == "text"]
+        if texts:
+            await db.ai_cache.update_one({"key": key}, {"$set": {"key": key, "task": task, "texts": texts, "at": now_utc()}, "$setOnInsert": {"used": 0}}, upsert=True)
+    return msg
+
+
+@api_router.get("/admin/ai")
+async def admin_ai(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_settings")
+    since = (now_utc() - timedelta(days=29)).date().isoformat()
+    per: Dict[str, dict] = {}
+    async for d in db.ai_stats.find({"day": {"$gte": since}}, {"_id": 0}):
+        r = per.setdefault(d["task"], {"n": 0, "hits": 0, "cost": 0.0})
+        r["n"] += d.get("n", 0)
+        r["hits"] += d.get("hits", 0)
+        r["cost"] += d.get("cost", 0.0)
+    return {"models": [{"key": k, "label": AI_MODEL_LABELS[k], "model": m, "price_in": AI_PRICES[m][0], "price_out": AI_PRICES[m][1]} for k, m in AI_MODELS.items()],
+            "tasks": [{"key": k, "label": t[0], "tier": (_ai_conf.get("tasks") or {}).get(k) or t[1], "default": t[1],
+                       "month": {**per.get(k, {"n": 0, "hits": 0, "cost": 0.0}), "cost": round(per.get(k, {}).get("cost", 0.0), 2)}}
+                      for k, t in AI_TASKS.items()]}
+
+
+class AiConfInput(BaseModel):
+    tasks: Dict[str, str]
+
+
+@api_router.put("/admin/ai")
+async def admin_set_ai(data: AiConfInput, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_settings")
+    tasks = {k: v for k, v in data.tasks.items() if k in AI_TASKS and v in AI_MODELS}
+    await db.settings.update_one({"key": "ai"}, {"$set": {"tasks": tasks}}, upsert=True)
+    await _load_plans()
+    return await admin_ai(user)
+
+
+# --- Live dashboard (alleen beheer): aantallen, geen namen of inhoud. Zo blijft het binnen de privacyregels ---
+_usage_buf: Dict[tuple, int] = {}
+_seen_today: set = set()
+USAGE_AREAS = {
+    "camps": "Lijstjes", "shopping-list": "Boodschappenlijst", "checked": "Afvinken", "dishes": "Gerechten", "recipes": "Recepten",
+    "products": "Producten zoeken", "folders": "Folders", "pantry": "Voorraadkast", "savings": "Bespaaroverzicht", "ai": "Slimme hulp",
+    "price-alerts": "Prijsalarm", "compare": "Prijzen vergelijken", "today": "Vandaag", "pdf": "PDF delen", "home": "Home",
+}
+
+
+def _usage_area(path: str) -> Optional[str]:
+    parts = [p for p in path.split("/") if p][1:]  # zonder "api"
+    if not parts or parts[0] in ("admin", "auth", "img", "files", "settings", "meta"):
+        return None
+    for p in reversed(parts):
+        if p in USAGE_AREAS:
+            return p
+    return parts[0] if parts[0] in USAGE_AREAS else None
+
+
+def _count_use(path: str) -> None:
+    area = _usage_area(path)
+    if area:
+        k = (now_utc().date().isoformat(), area)
+        _usage_buf[k] = _usage_buf.get(k, 0) + 1
+
+
+async def _usage_flush_loop() -> None:
+    while True:
+        await asyncio.sleep(60)
+        buf = dict(_usage_buf)
+        _usage_buf.clear()
+        for (day, area), n in buf.items():
+            try:
+                await db.usage_daily.update_one({"day": day, "area": area}, {"$inc": {"n": n}}, upsert=True)
+            except Exception as e:
+                logger.info("Gebruik bijhouden: %r", e)
+
+
+async def _mark_active(user: dict) -> None:
+    # Per dag één vinkje "was actief", met een onherkenbare code in plaats van wie het is
+    day = now_utc().date().isoformat()
+    if (day, user["user_id"]) in _seen_today:
+        return
+    if len(_seen_today) > 50000:
+        _seen_today.clear()
+    _seen_today.add((day, user["user_id"]))
+    code = hashlib.sha1(f"{user['user_id']}:{os.environ.get('ACTIVE_SALT', 'slim')}".encode()).hexdigest()[:16]
+    try:
+        await db.active_days.update_one({"day": day, "u": code}, {"$set": {"day": day, "u": code, "plan": user_plan(user), "at": now_utc()}}, upsert=True)
+    except Exception as e:
+        logger.info("Actief bijhouden: %r", e)
+
+
+@api_router.get("/admin/dashboard")
+async def admin_dashboard(days: int = 7, plan: str = "", task: str = "", user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_users")
+    days = max(1, min(365, days))
+    today = now_utc().date()
+    since = (today - timedelta(days=days - 1)).isoformat()
+    since_dt = datetime.combine(today - timedelta(days=days - 1), datetime.min.time(), tzinfo=timezone.utc)
+    plan = plan if plan in PLAN_LEVELS else ""
+    task = task if task in AI_TASKS else ""
+    pq = {"plan": plan} if plan else {}
+
+    # Gebruikers
+    base_q = {"deleted_at": None}
+    by_plan = {k: 0 for k in PLAN_LEVELS}
+    async for u in db.users.find(base_q, {"_id": 0, "premium": 1, "plan": 1}):
+        by_plan[user_plan(u)] += 1
+    new_users = await db.users.count_documents({**base_q, "created_at": {"$gte": since_dt}})
+    active = {}
+    for label, n in (("today", 1), ("week", 7), ("month", 30)):
+        s = (today - timedelta(days=n - 1)).isoformat()
+        active[label] = len(await db.active_days.distinct("u", {"day": {"$gte": s}, **pq}))
+    act_series = {d["_id"]: d["n"] async for d in db.active_days.aggregate([
+        {"$match": {"day": {"$gte": since}, **pq}}, {"$group": {"_id": "$day", "n": {"$sum": 1}}}])}
+
+    # Wat er gemaakt en gebruikt wordt
+    made = {"lists": await db.camps.count_documents({"created_at": {"$gte": since_dt}}),
+            "dishes": await db.dishes.count_documents({"created_at": {"$gte": since_dt}, "is_standard": {"$ne": True}})}
+    areas: Dict[str, int] = {}
+    async for d in db.usage_daily.find({"day": {"$gte": since}}, {"_id": 0}):
+        areas[d["area"]] = areas.get(d["area"], 0) + d.get("n", 0)
+    for (day, area), n in _usage_buf.items():
+        if day >= since:
+            areas[area] = areas.get(area, 0) + n
+    use = sorted(({"key": k, "label": USAGE_AREAS.get(k, k), "n": n} for k, n in areas.items()), key=lambda x: -x["n"])
+
+    # AI: per dag, per taak en per persoon (gemiddeld, meeste, minste). Geen namen.
+    ai_days: Dict[str, dict] = {}
+    ai_tasks: Dict[str, dict] = {}
+    async for d in db.ai_stats.find({"day": {"$gte": since}, **({"task": task} if task else {})}, {"_id": 0}):
+        r = ai_days.setdefault(d["day"], {"n": 0, "hits": 0, "cost": 0.0})
+        t = ai_tasks.setdefault(d["task"], {"n": 0, "hits": 0, "cost": 0.0})
+        for x in (r, t):
+            x["n"] += d.get("n", 0)
+            x["hits"] += d.get("hits", 0)
+            x["cost"] += d.get("cost", 0.0)
+    per_user: Dict[str, dict] = {}
+    async for d in db.ai_usage.find({"day": {"$gte": since}}, {"_id": 0}):
+        r = per_user.setdefault(d["user_id"], {"n": 0, "cost": 0.0})
+        r["n"] += d.get("n", 0) if not task else 0
+        r["cost"] += (d.get("tasks") or {}).get(task, 0.0) if task else d.get("cost", 0.0)
+    if plan and per_user:
+        plans_of = {u["user_id"]: user_plan(u) async for u in db.users.find({"user_id": {"$in": list(per_user)}}, {"_id": 0, "user_id": 1, "premium": 1, "plan": 1})}
+        per_user = {k: v for k, v in per_user.items() if plans_of.get(k) == plan}
+    per_user = {k: v for k, v in per_user.items() if v["cost"] > 0 or v["n"] > 0}
+    costs = [v["cost"] for v in per_user.values()]
+    asks = [v["n"] for v in per_user.values()]
+
+    def stats(xs):
+        return {"avg": round(sum(xs) / len(xs), 3) if xs else 0, "max": round(max(xs), 3) if xs else 0, "min": round(min(xs), 3) if xs else 0}
+    series = []
+    for k in range(days):
+        day = (today - timedelta(days=days - 1 - k)).isoformat()
+        a = ai_days.get(day, {})
+        series.append({"day": day, "active": act_series.get(day, 0), "ai": a.get("n", 0), "hits": a.get("hits", 0), "cost": round(a.get("cost", 0.0), 3)})
+    total_cost = sum(x["cost"] for x in ai_tasks.values())
+    return {
+        "days": days, "plan": plan, "task": task,
+        "users": {"total": sum(by_plan.values()), "by_plan": by_plan, "new": new_users, "active": active},
+        "made": made, "use": use[:15], "series": series,
+        "ai": {"calls": sum(x["n"] for x in ai_tasks.values()), "hits": sum(x["hits"] for x in ai_tasks.values()), "cost": round(total_cost, 2),
+               "month_estimate": round(total_cost / days * 30, 2),
+               "tasks": sorted(({"key": k, "label": AI_TASKS.get(k, (k,))[0], "n": v["n"], "hits": v["hits"], "cost": round(v["cost"], 3)} for k, v in ai_tasks.items()), key=lambda x: -x["cost"]),
+               "per_person": {"people": len(per_user), "cost": stats(costs), "asks": stats(asks)}},
+        "tasks": [{"key": k, "label": t[0]} for k, t in AI_TASKS.items()],
+    }
+
+
+# --- Vandaag: voor wie (bijna) elke dag even boodschappen doet. Eén vast lijstje dat elke dag opnieuw begint ---
+class TodayInput(BaseModel):
+    people: Optional[int] = None
+
+
+class TodayAdd(BaseModel):
+    name: str
+    unit: str = "stuks"
+    qty: float = 1
+    aisle: str = "Overig"
+    product_id: Optional[str] = None
+    store: Optional[str] = None
+
+
+def _today_people(user: dict) -> int:
+    return max(1, min(12, int(user.get("daily_people") or 2)))
+
+
+async def _today_camp(user: dict, create: bool = True) -> Optional[dict]:
+    today = now_utc().date().isoformat()
+    c = await db.camps.find_one({"owner_id": user["user_id"], "daily": True, "deleted_at": None}, {"_id": 0})
+    people = _today_people(user)
+    day = {"index": 0, "adults": people, "children": 0, "is_shopping_day": True, "meals": {cat: [] for cat in MEAL_CATEGORIES},
+           "extras": [], "leftovers": {}, "meal_names": {}}
+    if c and c.get("start_date") != today:
+        # Nieuwe dag: wat je gisteren afvinkte is gekocht en gaat eraf; wat er nog op stond blijft staan
+        bought = {(x.get("k") or "").split("|")[1] for x in (c.get("checked") or {}).values() if (x.get("k") or "").count("|") >= 2}
+        general = [e for e in c.get("general") or [] if (e.get("name") or "").lower() not in bought]
+        c.update({"general": general, "start_date": today, "days": [day], "checked": {}})
+        await db.camps.update_one({"camp_id": c["camp_id"]}, {"$set": {"general": general, "start_date": today, "days": [day], "checked": {}}})
+    if c or not create:
+        return c
+    c = {"camp_id": f"camp_{uuid.uuid4().hex[:12]}", "owner_id": user["user_id"], "member_ids": [], "name": "Vandaag", "daily": True,
+         "days": [day], "vega_adults": 0, "vega_children": 0, "general": [], "budget_target": 0, "start_date": today,
+         "deleted_at": None, "created_at": now_utc()}
+    if user.get("store") in COMPARE_STORES:
+        c["shop_store"] = user["store"]  # je vaste winkel: het lijstje staat meteen op de looproute van die winkel
+    await db.camps.insert_one(dict(c))
+    return c
+
+
+async def _track_bought(user: dict, meta: Dict[str, dict]) -> None:
+    # Wat je afvinkt, heb je gekocht: zo weet de app wat je vaak koopt (Vandaag op Home)
+    if user.get("no_personal"):
+        return
+    now = now_utc()
+    for k, m in list(meta.items())[:100]:
+        name = (m.get("name") or "").strip()[:80]
+        if not name:
+            continue
+        unit = (m.get("unit") or "stuks")[:20]
+        key = f"{_norm_text(name)}|{unit}"
+        await db.bought.update_one({"user_id": user["user_id"], "key": key}, {
+            "$set": {"name": name, "unit": unit, "aisle": (m.get("aisle") or "Overig")[:60], "store": m.get("store"),
+                     "product_id": m.get("product_id"), "last": now},
+            "$inc": {"n": 1}, "$setOnInsert": {"first": now}}, upsert=True)
+
+
+@api_router.get("/today")
+async def today_info(user: dict = Depends(get_current_user)):
+    c = await _today_camp(user, create=False)
+    by_pid = _product_cache.get("by_pid") or {}
+    on_list = {_norm_text(e.get("name") or "") for e in (c or {}).get("general") or []}
+    often, deals = [], []
+    async for b in db.bought.find({"user_id": user["user_id"], "n": {"$gte": 2}}, {"_id": 0}).sort("n", -1).limit(16):
+        p = by_pid.get(b.get("product_id") or "")
+        row = {"name": b["name"], "unit": b.get("unit") or "stuks", "aisle": b.get("aisle") or "Overig", "store": b.get("store"),
+               "product_id": b.get("product_id"), "n": b["n"], "image": (p or {}).get("image"), "on_list": _norm_text(b["name"]) in on_list}
+        if p:
+            st = p.get("_src") or product_source(p)
+            price = resolve_price(p.get("prices") or {}, st, p.get("unavailable") or [])
+            promo = _promo_public(p, price)[0] if price else None
+            row["price"] = price
+            if promo:
+                row["promo"] = promo.get("label")
+                deals.append({**row, "promo_price": promo.get("price"), "store": st})
+        often.append(row)
+    items = len((c or {}).get("general") or [])
+    return {"list": {"id": c["camp_id"], "items": items} if c else None, "people": _today_people(user), "often": often, "deals": deals[:6]}
+
+
+@api_router.post("/today")
+async def today_open(data: TodayInput, user: dict = Depends(get_current_user)):
+    if data.people is not None:
+        people = max(1, min(12, data.people))
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"daily_people": people}})
+        user = {**user, "daily_people": people}
+        await db.camps.update_one({"owner_id": user["user_id"], "daily": True, "deleted_at": None}, {"$set": {"days.0.adults": people}})
+    c = await _today_camp(user)
+    return {"id": c["camp_id"], "people": _today_people(user)}
+
+
+@api_router.post("/today/add")
+async def today_add(data: TodayAdd, user: dict = Depends(get_current_user)):
+    c = await _today_camp(user)
+    name = data.name.strip()[:120]
+    if not name:
+        raise HTTPException(status_code=400, detail="Geen product")
+    if any(_norm_text(e.get("name") or "") == _norm_text(name) for e in c.get("general") or []):
+        return {"ok": True, "id": c["camp_id"], "already": True}
+    item = {"name": name, "unit": data.unit or "stuks", "qty": max(0.1, data.qty), "aisle": data.aisle or "Overig",
+            "product_id": data.product_id, "store": data.store, "meal": None, "auto": False}
+    await db.camps.update_one({"camp_id": c["camp_id"]}, {"$push": {"general": item}})
+    return {"ok": True, "id": c["camp_id"]}
+
+
 # --- Slimme hulp (Premium): menu uit één zin, restjes koken, recept plakken of fotograferen, lijst typen of inspreken, bespaartips ---
-AI_DAILY_LIMIT = 60  # zoveel AI-vragen per persoon per dag; daarna morgen weer
+AI_DAILY_LIMIT = 60  # reserve; het echte aantal per abonnement staat bij Beheer -> Abonnementen
 AI_IMAGE_MAX = 4_500_000  # bytes; groter kan de AI niet lezen
 
 
 async def _ai_ready(user: dict) -> None:
     # Premium, een AI-sleutel, en niet eindeloos veel vragen per dag (elke vraag kost geld)
-    await require_premium(user)
+    await require_feature(user, "slimme_hulp")
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=503, detail="De slimme hulp is nog niet beschikbaar. Probeer het later nog eens.")
     day = now_utc().date().isoformat()
     doc = await db.ai_usage.find_one_and_update({"user_id": user["user_id"], "day": day}, {"$inc": {"n": 1}}, upsert=True, return_document=True)
-    if (doc or {}).get("n", 0) > AI_DAILY_LIMIT:
-        raise HTTPException(status_code=429, detail="Je hebt vandaag al heel veel aan de slimme hulp gevraagd. Morgen kan het weer.")
+    limit = int(_plans()["ai_limit"].get(user_plan(user), AI_DAILY_LIMIT))
+    if (doc or {}).get("n", 0) > limit:
+        more = " Met Ultra kun je meer vragen." if user_plan(user) == "premium" and _plans()["ai_limit"].get("ultra", 0) > limit else ""
+        raise HTTPException(status_code=429, detail=f"Je hebt vandaag al {limit} keer iets aan de slimme hulp gevraagd. Morgen kan het weer.{more}")
 
 
-async def _ai_json(content, schema: dict, model: str = DIRK_AI_MODEL, max_tokens: int = 4000, effort: str = "low") -> dict:
-    from anthropic import AsyncAnthropic
+async def _ai_json(content, schema: dict, user: Optional[dict] = None, task: str = "hulp", max_tokens: int = 4000, effort: str = "low") -> dict:
     try:
-        msg = await AsyncAnthropic().beta.messages.create(
-            model=model, max_tokens=max_tokens, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+        msg = await _claude(
+            task, (user or {}).get("user_id"), max_tokens=max_tokens,
             output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
             messages=[{"role": "user", "content": content}])
     except Exception as e:
@@ -12324,7 +12796,7 @@ async def ai_menu(data: AiMenuInput, user: dict = Depends(get_current_user)):
         "startdatum als JJJJ-MM-DD (of null als niet genoemd), welke maaltijden (standaard alleen avondeten), dieet (leeg als niets gezegd), "
         "woorden van gerechten of ingrediënten waar ze zin in hebben (prefer) en wat ze niet willen of niet mogen (avoid, ook allergieën), "
         "goedkoop (true bij budget of zuinig), het budget in euro voor alles (of null), en stijl: vertrouwd, mix of nieuw (iets nieuws proberen).",
-        schema, model=AI_PICK_MODEL, max_tokens=800)
+        schema, user=user, task="lijst", max_tokens=800)
     days = max(1, min(int(p.get("days") or 7), 21))
     adults, children = max(0, min(int(p.get("adults") or 0), 60)), max(0, min(int(p.get("children") or 0), 60))
     if adults + children == 0:
@@ -12375,7 +12847,7 @@ async def ai_leftovers(data: AiLeftoversInput, user: dict = Depends(get_current_
            ("Voorraadkast:\n" + "\n".join(have[:150]) + "\n\n" if have else "") +
            "Zet bij elk ingrediënt have=true als het al in huis is, have=false als het erbij gekocht moet worden (zo min mogelijk). "
            "In note leg je in één zin uit wat je ermee opmaakt. Gerechten voor 2 personen, tenzij anders gezegd.\n" + _AI_DISH_RULES)
-    res = await _ai_json(ask, _obj({"dishes": {"type": "array", "items": _AI_DISH_SCHEMA}}), max_tokens=6000)
+    res = await _ai_json(ask, _obj({"dishes": {"type": "array", "items": _AI_DISH_SCHEMA}}), user=user, max_tokens=6000)
     dishes = (res.get("dishes") or [])[:3]
     return {"dishes": [await _dish_preview(d, user) for d in dishes]}
 
@@ -12507,7 +12979,7 @@ async def ai_recipe(data: AiRecipeInput, user: dict = Depends(get_current_user))
         "Neem de ingrediënten en stappen over zoals ze in het recept staan; staat er geen bereiding, bedenk dan een korte, logische bereiding. "
         "Is het geen recept, geef dan een lege lijst ingrediënten. Zet in note eventueel een korte tip uit het recept.\n" + _AI_DISH_RULES +
         (f"\n\nHet recept:\n{text}" if text else ""))})
-    d = await _ai_json(content, _AI_DISH_SCHEMA, max_tokens=6000)
+    d = await _ai_json(content, _AI_DISH_SCHEMA, user=user, max_tokens=6000)
     if not d.get("ingredients"):
         raise HTTPException(status_code=400, detail="Er is geen recept gevonden. Plak de ingrediënten en de bereiding, of maak een scherpere foto.")
     out = await _dish_preview(d, user)
@@ -12539,7 +13011,7 @@ class AiDishSave(BaseModel):
 
 @api_router.post("/ai/dish")
 async def ai_dish_save(data: AiDishSave, user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "slimme_hulp")
     if data.category not in MEAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="Ongeldige categorie")
     camp = None
@@ -12595,7 +13067,7 @@ async def ai_items(data: AiItemsInput, user: dict = Depends(get_current_user)):
         "qty en unit: het aantal verpakkingen of stuks (unit stuks), of het gewicht als dat genoemd is (gram, kg, liter, ml). "
         "Is iets vaag (\"iets voor bij de koffie\"), kies dan een gewoon product dat erbij past. Laat weg wat geen boodschap is. Maximaal 40 producten.",
         _obj({"items": {"type": "array", "items": _obj({"name": {"type": "string"}, "qty": {"type": "number"}, "unit": {"type": "string"}})}}),
-        model=AI_PICK_MODEL, max_tokens=2000)
+        user=user, task="lijst", max_tokens=2000)
     items = [i for i in res.get("items") or [] if (i.get("name") or "").strip()][:40]
     hits = await _match_names([i["name"].strip() for i in items], user)
     favs = set(user.get("favorite_products") or [])
@@ -12619,7 +13091,7 @@ class AiItemsAdd(BaseModel):
 
 @api_router.post("/ai/items/add")
 async def ai_items_add(data: AiItemsAdd, user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "slimme_hulp")
     camp = await db.camps.find_one({"camp_id": data.camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not camp:
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
@@ -12697,7 +13169,7 @@ def _saving_facts(sl: dict) -> list:
 
 @api_router.get("/ai/savings-tips")
 async def ai_savings_tips(camp_id: str, user: dict = Depends(get_current_user)):
-    await require_premium(user)
+    await require_feature(user, "slimme_hulp")
     sl = await shopping_list(camp_id, user)
     camp = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0, "savings": 1, "name": 1})
     sl = {**sl, "savings": (camp or {}).get("savings") or {}}
@@ -12719,7 +13191,7 @@ async def ai_savings_tips(camp_id: str, user: dict = Depends(get_current_user)):
                 "Feiten (nummer: feit, besparing):\n" + "\n".join(f"{k + 1}: {f['text']} (€ {f['saving']:.2f})" for k, f in enumerate(facts)) +
                 "\n\nHet lijstje:\n" + ", ".join(n for n in names if n),
                 _obj({"tips": {"type": "array", "items": _obj({"text": {"type": "string"}, "fact": {"anyOf": [{"type": "integer"}, {"type": "null"}]}})}}),
-                model=AI_PICK_MODEL, max_tokens=1500)
+                user=user, task="lijst", max_tokens=1500)
             for t in (res.get("tips") or [])[:len(facts) + 2]:
                 k = t.get("fact")
                 texts[str(k - 1) if isinstance(k, int) and 1 <= k <= len(facts) else f"x{len(texts)}"] = (t.get("text") or "").strip()[:300]
@@ -13017,6 +13489,11 @@ async def startup():
     asyncio.create_task(_global_products())  # productlijst meteen laden: de rest van het opstarten heeft hem niet nodig
     asyncio.create_task(_warm_home())  # daarna de startpagina (acties en recepten) klaarzetten
     asyncio.create_task(_ai_check_loop())  # productvoorstellen op de achtergrond laten nakijken door de AI
+    asyncio.create_task(_usage_flush_loop())  # gebruik voor het dashboard elke minuut wegschrijven
+    try:
+        await _load_plans()
+    except Exception as e:
+        logger.warning("Abonnementen laden mislukt: %r", e)
     try:
         await _init_storage()
         logger.info("Object storage initialised")
@@ -13038,6 +13515,17 @@ async def startup():
     await db.search_learn.create_index([("k", 1), ("pick", 1)], unique=True)
     await db.search_typed.create_index([("kind", 1), ("term", 1)], unique=True)
     await db.ai_usage.create_index([("user_id", 1), ("day", 1)], unique=True)
+    await db.ai_stats.create_index([("day", 1), ("task", 1)], unique=True)
+    await db.ai_cache.create_index("key", unique=True)
+    await db.usage_daily.create_index([("day", 1), ("area", 1)], unique=True)
+    await db.active_days.create_index([("day", 1), ("u", 1)], unique=True)
+    await db.bought.create_index([("user_id", 1), ("key", 1)], unique=True)
+    # Privacy: gebruiksgegevens niet langer bewaren dan nodig (ruim een jaar; AI-antwoorden 90 dagen)
+    for coll, field, secs in (("active_days", "at", 400 * 86400), ("ai_usage", "at", 400 * 86400), ("ai_cache", "at", 90 * 86400)):
+        try:
+            await db[coll].create_index(field, expireAfterSeconds=secs)
+        except Exception as e:
+            logger.warning("Bewaartermijn %s: %r", coll, e)
     await db.camps.create_index("camp_id", unique=True)
     await db.invitations.create_index([("email", 1), ("camp_id", 1)], unique=True)
     await db.google_logins.create_index("expires_at", expireAfterSeconds=0)

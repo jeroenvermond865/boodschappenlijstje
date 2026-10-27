@@ -24,7 +24,7 @@ import { sliceInfo } from "@/src/slices";
 import { AISLE_ICONS, formatQty } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
-import { usePremium } from "@/src/premium";
+import { useFeature } from "@/src/premium";
 import { RouteSheet, useRoute } from "@/src/route";
 import { CompareCard, type CompareStore } from "@/src/CompareCard";
 import { storage } from "@/src/utils/storage";
@@ -64,6 +64,8 @@ export default function ShoppingScreen() {
   // jouw vinkjes en sturen ze later alsnog
   const queueKey = `checked_queue_${id}`;
   const queue = useRef<{ on: string[]; off: string[] }>({ on: [], off: [] });
+  // Wat je in de winkel afvinkt, heb je gekocht: zo leert de app wat je vaak koopt (Vandaag op Home)
+  const bought = useRef<Record<string, { name: string; unit: string; aisle: string; product_id?: string; store: string }>>({});
   const busy = useRef(0);
 
   useEffect(() => {
@@ -81,9 +83,11 @@ export default function ShoppingScreen() {
     const q = queue.current;
     if (!q.on.length && !q.off.length) return true;
     queue.current = { on: [], off: [] };
+    const meta = Object.fromEntries(Object.entries(bought.current).filter(([k]) => q.on.includes(k)));
+    bought.current = {};
     busy.current++;
     try {
-      await api(`/camps/${id}/checked`, { method: "POST", body: q });
+      await api(`/camps/${id}/checked`, { method: "POST", body: { ...q, meta } });
       if (!queue.current.on.length && !queue.current.off.length) storage.removeItem(queueKey);
       return true;
     } catch {
@@ -126,9 +130,15 @@ export default function ShoppingScreen() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live.data]);
-  const save = (next: Set<string>) => {
+  const save = (next: Set<string>, learn = false) => {
     const on = [...next].filter((k) => !checked.has(k));
     const off = [...checked].filter((k) => !next.has(k));
+    if (learn) {
+      on.forEach((k) => {
+        const x = allItems.find((a) => key(a.store, a.item) === k);
+        if (x) bought.current[k] = { name: x.item.name, unit: x.item.unit, aisle: x.item.aisle, product_id: x.item.product_id, store: x.store };
+      });
+    }
     lastSave.current = Date.now();
     setChecked(next);
     storage.setItem(storageKey, Array.from(next));
@@ -171,9 +181,10 @@ export default function ShoppingScreen() {
   };
 
   const multi = data?.multi_store ?? false;
-  const premium = usePremium();
+  const premium = useFeature("voorraadkast");
+  const routeOk = useFeature("looproute");
   const route = useRoute();
-  const onRoute = premium && route.on;
+  const onRoute = routeOk && route.on;
   const [routeEdit, setRouteEdit] = useState<string | null>(null);
   // Algemeen block first, then each store's totals
   const totalBlocks: { store: string; label: string; grouped: Grouped[]; total?: number }[] = useMemo(() => {
@@ -258,7 +269,7 @@ export default function ShoppingScreen() {
       next.delete(k);
       next.delete(t);
     }
-    save(next);
+    save(next, true);
   };
 
   // Voorraadkast (Premium): alles wat je al genoeg in huis hebt in één keer afvinken
@@ -544,11 +555,11 @@ export default function ShoppingScreen() {
             <View style={styles.routeRow}>
               <Pressable
                 testID="route-toggle"
-                onPress={() => (premium ? route.setOn(!route.on) : router.push("/premium"))}
+                onPress={() => (routeOk ? route.setOn(!route.on) : router.push("/premium"))}
                 style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1 }}
               >
                 <Icon name={onRoute ? "checkbox-marked" : "checkbox-blank-outline"} size={20} color={colors.brandPrimary} />
-                <Text style={styles.pantryLinkText}>Op looproute van de winkel{premium ? "" : " (Premium)"}</Text>
+                <Text style={styles.pantryLinkText}>Op looproute van de winkel{routeOk ? "" : " (Premium)"}</Text>
               </Pressable>
               {onRoute ? (
                 <Pressable onPress={() => setRouteEdit(data.by_store[0].store)} hitSlop={8}>

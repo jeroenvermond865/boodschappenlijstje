@@ -11,7 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
-import { GOLD, PremiumLock, usePremium } from "@/src/premium";
+import { GOLD, PremiumLock, useFeature } from "@/src/premium";
 import { euro } from "@/src/search";
 import { useTerms } from "@/src/settings";
 import { useToast } from "@/src/toast";
@@ -36,7 +36,7 @@ export default function SlimScreen() {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const premium = usePremium();
+  const premium = useFeature("slimme_hulp");
   const params = useLocalSearchParams<{ tab?: Tab; camp?: string }>();
   const [tab, setTab] = useState<Tab>(TABS.some((t) => t.key === params.tab) ? (params.tab as Tab) : "menu");
 
@@ -59,7 +59,7 @@ export default function SlimScreen() {
           ))}
         </ScrollView>
         {!premium ? (
-          <PremiumLock title="De slimme hulp" text="Laat de app een menu maken uit één zin, koken met wat je nog hebt, recepten overnemen en besparen." />
+          <PremiumLock feature="slimme_hulp" title="De slimme hulp" text="Laat de app een menu maken uit één zin, koken met wat je nog hebt, recepten overnemen en besparen." />
         ) : tab === "menu" ? (
           <MenuTab />
         ) : tab === "restjes" ? (

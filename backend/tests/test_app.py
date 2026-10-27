@@ -329,3 +329,96 @@ def test_herroepen_bewaart_en_bevestigt(monkeypatch):
     assert [t for t, _ in sent] == ["test@voorbeeld.nl", S.INFO_EMAIL]
     with pytest.raises(HTTPException):
         run(S.legal_withdraw(S.WithdrawInput(name="X", email="geen-mail"), req, None))
+
+
+# --- Abonnementen: Standaard, Premium en Ultra ---
+def test_functie_per_abonnement():
+    S._plans_conf.clear()
+    std, prem, ultra = {"premium": False}, {"premium": True}, {"premium": True, "plan": "ultra"}
+    assert S.user_plan(std) == "standaard" and S.user_plan(prem) == "premium" and S.user_plan(ultra) == "ultra"
+    assert not S.has_feature(std, "voorraadkast") and S.has_feature(prem, "voorraadkast")
+    # Beheer zet de slimme hulp op Ultra: Premium heeft hem dan niet meer, Ultra wel
+    S._plans_conf.update({"features": {"slimme_hulp": "ultra"}})
+    try:
+        assert not S.has_feature(prem, "slimme_hulp") and S.has_feature(ultra, "slimme_hulp")
+        with pytest.raises(HTTPException) as e:
+            run(S.require_feature(prem, "slimme_hulp"))
+        assert "Ultra" in e.value.detail
+        assert "slimme_hulp" in S.public_user({"user_id": "x", **ultra})["features"]
+    finally:
+        S._plans_conf.clear()
+
+
+# --- AI: antwoord onthouden, tweede keer gratis ---
+def test_ai_antwoord_uit_geheugen(monkeypatch):
+    calls = []
+
+    class Msg:
+        stop_reason = "end_turn"
+        content = [type("B", (), {"type": "text", "text": '{"ok": 1}'})()]
+        usage = type("U", (), {"input_tokens": 1000, "output_tokens": 100})()
+
+    class Fake:
+        def __init__(self):
+            self.beta = self
+            self.messages = self
+
+        async def create(self, **kw):
+            calls.append(kw)
+            return Msg()
+
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", Fake)
+
+    async def t():
+        a = await S._claude("lijst", "u1", max_tokens=10, messages=[{"role": "user", "content": "melk"}])
+        b = await S._claude("lijst", "u1", max_tokens=10, messages=[{"role": "user", "content": "melk"}])
+        u = await S.db.ai_usage.find_one({"user_id": "u1"})
+        return a.content[0].text, b.content[0].text, u
+    a, b, u = run(t())
+    assert a == b == '{"ok": 1}'
+    assert len(calls) == 1  # de tweede keer uit het geheugen
+    assert calls[0]["model"] == "claude-haiku-5-5" and "fallbacks" not in calls[0]
+    assert u["calls"] == 1 and u["hits"] == 1 and u["cost"] > 0
+
+
+# --- Vandaag: één lijstje dat elke dag opnieuw begint ---
+def test_vandaag_lijstje_en_vaak_gekocht():
+    user = {"user_id": "u1", "name": "Jeroen", "store": "Dirk"}
+
+    async def t():
+        r = await S.today_open(S.TodayInput(people=1), user)
+        await S.today_add(S.TodayAdd(name="Melk"), {**user, "daily_people": 1})
+        await S.today_add(S.TodayAdd(name="Brood"), {**user, "daily_people": 1})
+        c = await S.db.camps.find_one({"camp_id": r["id"]})
+        # Gisteren: melk afgevinkt (gekocht), brood niet
+        await S.db.camps.update_one({"camp_id": r["id"]}, {"$set": {"start_date": "2000-01-01", "checked": {"a": {"k": "Dirk|melk|stuks"}}}})
+        for _ in range(2):
+            await S._track_bought(user, {"Dirk|melk|stuks": {"name": "Melk", "unit": "stuks", "aisle": "Zuivel"}})
+        info = await S.today_info({**user, "daily_people": 1})
+        c2 = await S.db.camps.find_one({"camp_id": r["id"]})
+        return c, info, c2
+    c, info, c2 = run(t())
+    assert c["daily"] and c["shop_store"] == "Dirk" and c["days"][0]["adults"] == 1
+    assert [e["name"] for e in c2["general"]] == ["Brood"]  # gekochte melk is eraf, brood blijft staan
+    assert info["often"][0]["name"] == "Melk" and info["people"] == 1
+
+
+def test_dashboard_zonder_namen(monkeypatch):
+    admin = {"user_id": "a1", "role": "beheerder"}
+
+    async def perms(u):
+        return ["manage_users"]
+    monkeypatch.setattr(S, "user_permissions", perms)
+
+    async def t():
+        await S.db.users.insert_many([{"user_id": "u1", "deleted_at": None, "premium": True}, {"user_id": "u2", "deleted_at": None}])
+        await S._mark_active({"user_id": "u1", "premium": True})
+        await S._ai_log("hulp", "u1", 0.02)
+        await S._ai_log("hulp", "u2", 0.01)
+        return await S.admin_dashboard(7, "", "", admin)
+    d = run(t())
+    assert d["users"]["active"]["today"] == 1 and d["users"]["by_plan"]["premium"] == 1
+    pp = d["ai"]["per_person"]
+    assert pp["people"] == 2 and pp["cost"]["max"] == 0.02 and pp["cost"]["min"] == 0.01
+    assert "u1" not in json.dumps(d)

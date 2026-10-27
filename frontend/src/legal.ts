@@ -173,6 +173,8 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
           "Slimme hulp: wat je typt, de link die je plakt of de foto die je maakt, zodat de AI er een menu, gerecht of lijstje van kan maken. Het resultaat wordt alleen bewaard als je het opslaat.",
           "Mensen die je uitnodigt: hun e-mailadres, zodat we ze een uitnodiging kunnen sturen.",
           "Wat je bekijkt en kiest: welke afdelingen, merken, producten en recepten je opzoekt en kiest, en wat de voorraadkast leert van je recepten. Hiermee zetten we aanbiedingen en recepten in een voor jou handige volgorde. Je kunt dit wissen en uitzetten (zie punt 4).",
+          "Wat je koopt: welke producten je op je boodschappenlijst afvinkt, en hoe vaak. Daarmee laten we bij Vandaag op de startpagina zien wat je vaak koopt. Ook dit kun je wissen of uitzetten (zie punt 4).",
+          "Gebruik van de app: hoe vaak onderdelen van de app gebruikt worden, en hoeveel vragen je aan de slimme hulp stelt (zodat we het aantal per dag kunnen begrenzen en de kosten kennen). Voor het tellen van actieve gebruikers gebruiken we een onherkenbare code in plaats van je naam of e-mailadres. We gebruiken hiervoor geen trackers of cookies van andere bedrijven.",
           "Herroepen: gebruik je de herroepknop, dan bewaren we je naam, e-mailadres, wat je herroept en wanneer.",
           "Technische gegevens: een inlogcode op je apparaat zodat je ingelogd blijft, en je IP-adres in de logboeken van de server en om misbruik (zoals te veel inlogpogingen) tegen te gaan.",
           "We vragen nooit om bijzondere gegevens, zoals gezondheid of geloof. Vul die ook niet in bij namen, notities of Slimme hulp. Allergieën en dieet die je bij Account instelt, blijven alleen op je eigen apparaat. Die krijgen wij niet te zien.",
@@ -219,6 +221,7 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
           "Gebruik je je account twee jaar niet, dan sturen we je een e-mail. Log je daarna binnen 30 dagen niet in, dan verwijderen we je account en je gegevens. Inloggen is genoeg om je account te houden.",
           "Herroepingen bewaren we 2 jaar, als bewijs voor jou en voor ons. Betalingen bewaren we 7 jaar, omdat de belastingwet dat vraagt.",
           "Logboeken van de server worden na korte tijd automatisch gewist.",
+          "Tellingen van het gebruik van de app worden na ruim een jaar automatisch gewist. Antwoorden van de slimme hulp die we onthouden, worden na 90 dagen gewist.",
         ],
       },
       {

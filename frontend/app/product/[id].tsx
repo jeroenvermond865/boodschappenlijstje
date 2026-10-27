@@ -11,7 +11,7 @@ import { AISLE_ICONS } from "@/src/constants";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { euro } from "@/src/search";
 import { PriceAlertCard, PriceHistory } from "@/src/PriceTools";
-import { PremiumLock, usePremium } from "@/src/premium";
+import { PremiumLock, useFeature } from "@/src/premium";
 import { sliceInfo } from "@/src/slices";
 import { AddProductButtons } from "@/src/AddProductSheet";
 import { BarcodeLink } from "@/src/ShopSwap";
@@ -43,7 +43,7 @@ export default function ProductScreen() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const qc = useQueryClient();
-  const premium = usePremium();
+  const premium = useFeature("prijsalarm");
 
   const product = useQuery({ queryKey: ["product", id], queryFn: () => api<Product>(`/products/${id}`) });
   const details = useQuery({
@@ -149,7 +149,7 @@ export default function ProductScreen() {
           {p.is_global ? <OtherStores productId={p.id} /> : null}
 
           {p.is_global && !premium ? (
-            <PremiumLock plural title="Prijsalarm en prijsgeschiedenis" text="Krijg een mail als dit product in de aanbieding is, en zie of een aanbieding echt goed is." />
+            <PremiumLock plural feature="prijsalarm" title="Prijsalarm en prijsgeschiedenis" text="Krijg een mail als dit product in de aanbieding is, en zie of een aanbieding echt goed is." />
           ) : p.is_global ? (
             <>
               <PriceAlertCard productId={p.id} price={p.price} />

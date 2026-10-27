@@ -6,7 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
-import { PremiumLock, usePremium } from "@/src/premium";
+import { PremiumLock, useFeature } from "@/src/premium";
 import { euro } from "@/src/search";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
@@ -84,14 +84,14 @@ function Bars({ pts, height, barWidth, labels }: { pts: Point[]; height: number;
 export function PriceHistory({ productId }: { productId: string }) {
   const styles = useStyles();
   const { colors } = useTheme();
-  const premium = usePremium();
+  const premium = useFeature("prijsgeschiedenis");
   const [big, setBig] = useState(false);
   const { data } = useQuery({
     queryKey: ["price-history", productId],
     queryFn: () => api<History>(`/products/${productId}/price-history`),
     enabled: premium,
   });
-  if (!premium) return <PremiumLock title="Prijsgeschiedenis" text="Zie hoe de prijs zich ontwikkelt, zodat je weet of een aanbieding echt goed is." />;
+  if (!premium) return <PremiumLock feature="prijsgeschiedenis" title="Prijsgeschiedenis" text="Zie hoe de prijs zich ontwikkelt, zodat je weet of een aanbieding echt goed is." />;
   if (!data) return null;
   const pts = data.points.slice(-24);
   const hasPromo = data.points.some((x) => x.a);
@@ -211,7 +211,7 @@ type Alert = { on_promo: boolean; target: number | null } | null;
 export function PriceAlertCard({ productId, price }: { productId: string; price: number }) {
   const styles = useStyles();
   const { colors } = useTheme();
-  const premium = usePremium();
+  const premium = useFeature("prijsalarm");
   const toast = useToast();
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -222,7 +222,7 @@ export function PriceAlertCard({ productId, price }: { productId: string; price:
     queryFn: () => api<{ alert: Alert }>(`/products/${productId}/price-alert`),
     enabled: premium,
   });
-  if (!premium) return <PremiumLock title="Prijsalarm" text="Krijg een mail als dit product in de aanbieding is of onder jouw prijs zakt." />;
+  if (!premium) return <PremiumLock feature="prijsalarm" title="Prijsalarm" text="Krijg een mail als dit product in de aanbieding is of onder jouw prijs zakt." />;
   const alert = data?.alert;
 
   const open = () => {

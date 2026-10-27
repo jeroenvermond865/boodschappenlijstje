@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Icon } from "@/src/components/ui";
 import { ProductBrowser } from "@/src/ProductBrowser";
-import { usePremium } from "@/src/premium";
+import { useFeature } from "@/src/premium";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings } from "@/src/settings";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
@@ -18,7 +18,7 @@ export default function ProductsScreen() {
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
   const router = useRouter();
   const { colors } = useTheme();
-  const premium = usePremium();
+  const premium = useFeature("prijsalarm");
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <ProductBrowser

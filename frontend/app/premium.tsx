@@ -9,7 +9,7 @@ import { Button, Field, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
-import { GOLD, PREMIUM_FEATURES } from "@/src/premium";
+import { GOLD, PLAN_NAME, PREMIUM_FEATURES, ULTRA, usePlans, type PlanKey } from "@/src/premium";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -33,6 +33,11 @@ export default function PremiumScreen() {
     enabled: !user?.premium,
   });
   const req = data?.request;
+  const plans = usePlans();
+  const mine: PlanKey = (user?.plan as PlanKey) ?? (user?.premium ? "premium" : "standaard");
+  const planOf = (k: string) => plans.data?.features.find((f) => f.key === k)?.plan ?? "premium";
+  const levels = plans.data?.levels ?? [];
+  const rank = { standaard: 0, premium: 1, ultra: 2 } as const;
 
   const send = async () => {
     setSending(true);
@@ -53,13 +58,13 @@ export default function PremiumScreen() {
         <Pressable testID="back-button" onPress={() => goBack("/account")} hitSlop={10} style={styles.headerBtn}>
           <Icon name="chevron-left" size={28} color={colors.onSurface} />
         </Pressable>
-        <Text style={styles.headerTitle}>Premium</Text>
+        <Text style={styles.headerTitle}>Abonnementen</Text>
         <View style={styles.headerBtn} />
       </View>
       <KeyboardAwareScrollView bottomOffset={20} contentContainerStyle={{ padding: 16, gap: 18, paddingBottom: insets.bottom + 24 }} keyboardShouldPersistTaps="handled">
         <View style={styles.hero}>
           <Icon name="star" size={34} color={GOLD.icon} />
-          <Text style={styles.heroTitle}>{user?.premium ? "Je bent Premium" : "Slim Boodschappenlijstje Premium"}</Text>
+          <Text style={styles.heroTitle}>{user?.premium ? `Je hebt ${PLAN_NAME[mine]}` : "Wat kost het en wat krijg je?"}</Text>
           <Text style={styles.heroText}>
             {user?.premium
               ? user.premium_org
@@ -69,24 +74,60 @@ export default function PremiumScreen() {
           </Text>
         </View>
 
-        <View style={{ gap: 12 }}>
-          {PREMIUM_FEATURES.map((f) => (
-            <Pressable
-              key={f.title}
-              style={styles.feature}
-              disabled={!user?.premium || !f.to}
-              onPress={() => f.to && router.push(f.to as any)}
-              testID={`premium-feature-${f.icon}`}
-            >
-              <Icon name={f.icon} size={22} color={GOLD.icon} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.featureTitle}>{f.title}</Text>
-                <Text style={styles.featureText}>{f.text}</Text>
-                {f.where ? <Text style={styles.featureWhere}>{f.where}</Text> : null}
+        {/* Wat kost het en wat krijg je: de drie abonnementen naast elkaar */}
+        <View style={styles.plans}>
+          {levels.map((l) => {
+            const c = l.key === "ultra" ? ULTRA : l.key === "premium" ? GOLD : null;
+            const extra = PREMIUM_FEATURES.filter((f) => planOf(f.key) === l.key);
+            return (
+              <View key={l.key} style={[styles.plan, c && { backgroundColor: c.bg, borderColor: c.border }, mine === l.key && styles.planMine]} testID={`plan-${l.key}`}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  {l.key !== "standaard" ? <Icon name="star" size={16} color={c!.icon} /> : null}
+                  <Text style={[styles.planName, c && { color: c.text }]}>{l.label}</Text>
+                  {mine === l.key ? <Text style={styles.planNow}>Jouw abonnement</Text> : null}
+                </View>
+                <Text style={[styles.planPrice, c && { color: c.text }]}>
+                  {l.key === "standaard" ? "Gratis" : l.price ? `€ ${l.price.toFixed(2).replace(".", ",")} per maand` : "Prijs volgt"}
+                </Text>
+                <Text style={styles.featureText}>
+                  {l.key === "standaard"
+                    ? "Lijstjes, gerechten, aanbiedingen, prijzen vergelijken, delen, Vandaag en Wat je vaak koopt."
+                    : `Alles van ${l.key === "ultra" ? "Premium" : "Standaard"}${extra.length ? ", plus:" : "."}`}
+                </Text>
+                {extra.map((f) => (
+                  <Text key={f.key} style={styles.planLine}>• {f.title}</Text>
+                ))}
+                {l.ai_limit ? <Text style={styles.planLine}>• {l.ai_limit} vragen per dag aan de slimme hulp</Text> : null}
               </View>
-              {user?.premium && f.to ? <Icon name="chevron-right" size={20} color={colors.muted} /> : null}
-            </Pressable>
-          ))}
+            );
+          })}
+        </View>
+
+        <View style={{ gap: 12 }}>
+          {PREMIUM_FEATURES.map((f) => {
+            const need = planOf(f.key);
+            const have = rank[mine] >= rank[need];
+            return (
+              <Pressable
+                key={f.title}
+                style={styles.feature}
+                disabled={!have || !f.to}
+                onPress={() => f.to && router.push(f.to as any)}
+                testID={`premium-feature-${f.icon}`}
+              >
+                <Icon name={f.icon} size={22} color={need === "ultra" ? ULTRA.icon : GOLD.icon} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.featureTitle}>
+                    {f.title}
+                    {need !== "standaard" ? <Text style={styles.featureWhere}>{`  ${PLAN_NAME[need]}`}</Text> : null}
+                  </Text>
+                  <Text style={styles.featureText}>{f.text}</Text>
+                  {f.where ? <Text style={styles.featureWhere}>{f.where}</Text> : null}
+                </View>
+                {have && f.to ? <Icon name="chevron-right" size={20} color={colors.muted} /> : null}
+              </Pressable>
+            );
+          })}
         </View>
 
         {user?.premium ? null : isLoading ? (
@@ -154,6 +195,13 @@ const useStyles = makeStyles((colors) => ({
   heroTitle: { fontSize: 20, fontFamily: fonts.bold, color: GOLD.text, textAlign: "center" },
   heroText: { fontSize: 14, lineHeight: 20, fontFamily: fonts.regular, color: GOLD.text, textAlign: "center" },
   feature: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
+  plans: { gap: 10 },
+  plan: { gap: 4, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, padding: 14 },
+  planMine: { borderWidth: 2, borderColor: colors.brandPrimary },
+  planName: { fontSize: 16, fontFamily: fonts.bold, color: colors.onSurface },
+  planNow: { marginLeft: "auto", fontSize: 11, fontFamily: fonts.semibold, color: colors.onBrandPrimary, backgroundColor: colors.brandPrimary, borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2, overflow: "hidden" },
+  planPrice: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
+  planLine: { fontSize: 13, lineHeight: 18, fontFamily: fonts.regular, color: colors.onSurfaceSecondary },
   featureTitle: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
   featureWhere: { fontSize: 12, fontFamily: fonts.semibold, color: GOLD.icon, marginTop: 2 },
   featureText: { fontSize: 13, lineHeight: 18, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
