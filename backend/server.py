@@ -352,29 +352,34 @@ async def _send_gmail(sender: dict, to: str, subject: str, html: str, attachment
     for name, data, mime in attachments or []:
         main, sub = mime.split("/", 1)
         msg.add_attachment(data, maintype=main, subtype=sub, filename=name)
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    async with httpx.AsyncClient(timeout=30) as c:
+    async with httpx.AsyncClient(timeout=120) as c:
         tok = await c.post("https://oauth2.googleapis.com/token", data={
             "client_id": GOOGLE_CLIENT_ID,
             "client_secret": GOOGLE_CLIENT_SECRET,
             "refresh_token": sender["refresh_token"],
             "grant_type": "refresh_token",
         })
-        tok.raise_for_status()
+        if tok.status_code != 200:
+            raise RuntimeError(f"Gmail-koppeling werkt niet meer, koppel opnieuw ({tok.status_code}: {tok.text[:200]})")
+        # Via de upload-ingang: de gewone ingang weigert grote mails (zoals de back-up), deze neemt tot 35 MB
         resp = await c.post(
-            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-            headers={"Authorization": f"Bearer {tok.json()['access_token']}"},
-            json={"raw": raw},
+            "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media",
+            headers={"Authorization": f"Bearer {tok.json()['access_token']}", "Content-Type": "message/rfc822"},
+            content=msg.as_bytes(),
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            raise RuntimeError(f"Gmail weigerde de mail ({resp.status_code}: {resp.text[:200]})")
         return resp.json().get("id")
 
 
-async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool = True, attachments: Optional[list] = None) -> Optional[str]:
-    # attachments: [(bestandsnaam, bytes, "type/subtype")]
+async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool = True, attachments: Optional[list] = None,
+                     raise_errors: bool = False) -> Optional[str]:
+    # attachments: [(bestandsnaam, bytes, "type/subtype")]; raise_errors: geef de echte fout door (voor de back-up)
     sender = await gmail_sender()
     if not sender and not RESEND_API_KEY and not EMAIL_KEY:
         logger.warning("Geen e-maildienst ingesteld (Gmail koppelen of RESEND_API_KEY); e-mail overgeslagen")
+        if raise_errors:
+            raise RuntimeError("Geen e-maildienst ingesteld: koppel Gmail via /api/email/gmail/connect")
         return None
     if allow_unsubscribe:
         if await is_opted_out(to):
@@ -393,6 +398,8 @@ async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool =
             return await _send_gmail(sender, to, subject, html, attachments)
         except Exception as e:
             logger.error("Email send error: %s", e)
+            if raise_errors:
+                raise
             return None
     try:
         async with httpx.AsyncClient(timeout=30) as c:
@@ -414,6 +421,8 @@ async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool =
         return resp.json().get("id")
     except Exception as e:
         logger.error("Email send error: %s", e)
+        if raise_errors:
+            raise
         return None
 
 
@@ -12079,7 +12088,8 @@ async def import_shared_dish(token: str, user: dict = Depends(get_current_user))
 # Niet nodig of geheim: inlogsessies en -codes, en wat de app zelf opnieuw uitrekent of ophaalt
 BACKUP_SKIP = {"user_sessions", "google_logins", "password_resets", "dirk_ai", "recipe_cost", "dish_preps", "ai_picks",
                "auto_alert_marks", "recipe_diet"}
-BACKUP_MAIL_MAX = 18 * 1024 * 1024  # groter past niet in een mail
+BACKUP_MAIL_MAX = 17 * 1024 * 1024  # groter past niet in een mail (Gmail: 25 MB, de bijlage wordt een derde groter)
+BACKUP_RETRY = timedelta(hours=1)  # mislukt? een uur later nog een keer, lukt dat ook niet dan een mail zonder bijlage
 
 
 def _backup_to() -> str:
@@ -12109,6 +12119,15 @@ async def _backup_zip(history: bool = True, files: bool = False) -> tuple:
     return buf.getvalue(), counts
 
 
+def _backup_due(doc: dict) -> bool:
+    # Gelukt: na 22 uur weer. Eén keer mislukt: na een uur opnieuw. Twee keer: de volgende nacht weer
+    at = doc.get("at")
+    if not at:
+        return True
+    wait = BACKUP_RETRY if doc.get("fails", 0) % 2 == 1 else timedelta(hours=22)
+    return ensure_aware(at) < now_utc() - wait
+
+
 async def _backup_mail(reason: str = "nacht") -> dict:
     data, counts = await _backup_zip(history=False, files=False)
     day = now_utc().strftime("%Y-%m-%d")
@@ -12117,16 +12136,42 @@ async def _backup_mail(reason: str = "nacht") -> dict:
         status["error"] = f"Te groot om te mailen ({len(data) // 1048576} MB); download hem bij Beheer"
     else:
         rows = "".join(f"<li>{escape(k)}: {v}</li>" for k, v in counts.items() if v)
-        mid = await send_email(_backup_to(), f"Back-up Slim Boodschappenlijstje {day}",
-                               f"<p>De back-up van {day} zit in de bijlage ({max(1, len(data) // 1024)} kB).</p>"
-                               f"<p>Bewaar deze mail. Wat erin zit:</p><ul>{rows}</ul>",
-                               allow_unsubscribe=False, attachments=[(f"backup-{day}.zip", data, "application/zip")])
-        status["ok"] = bool(mid)
-        if not mid:
-            status["error"] = "Mail versturen lukte niet (is Gmail gekoppeld bij Beheer?)"
+        try:
+            await send_email(_backup_to(), f"Back-up Slim Boodschappenlijstje {day}",
+                             f"<p>De back-up van {day} zit in de bijlage ({max(1, len(data) // 1024)} kB).</p>"
+                             f"<p>Bewaar deze mail. Wat erin zit:</p><ul>{rows}</ul>",
+                             allow_unsubscribe=False, attachments=[(f"backup-{day}.zip", data, "application/zip")],
+                             raise_errors=True)
+            status["ok"] = True
+        except Exception as e:
+            status["error"] = f"Mail versturen lukte niet: {e}"[:400]
+    prev = await db.meta.find_one({"key": "backup"}) or {}
+    fails = prev.get("fails", 0)
+    if status["ok"]:
+        status.update(ok_at=status["at"], fails=0)
+    elif reason == "nacht":
+        # Alleen de automatische back-up telt mee; bij "Nu mailen" zie je de fout meteen in beeld
+        status["fails"] = fails = fails + 1
     await db.meta.update_one({"key": "backup"}, {"$set": {"key": "backup", **status}}, upsert=True)
-    logger.info("Back-up (%s): %d kB, gemaild: %s", reason, len(data) // 1024, status["ok"])
+    logger.info("Back-up (%s): %d kB, gemaild: %s %s", reason, len(data) // 1024, status["ok"], status["error"] or "")
+    if not status["ok"] and reason == "nacht" and fails % 2 == 0:
+        await _backup_failed_mail(status["error"], prev.get("ok_at") or (prev.get("at") if prev.get("ok") else None))
     return status
+
+
+async def _backup_failed_mail(error: str, ok_at) -> None:
+    # Zonder bijlage, dus dit komt ook aan als alleen de grote back-upmail werd geweigerd
+    base = (FRONTEND_URL or "").rstrip("/")
+    last = ensure_aware(ok_at).strftime("%d-%m-%Y %H:%M") + " (UTC)" if ok_at else "nog nooit"
+    link = f'<p><a href="{escape(base)}/admin/settings">Open Beheer → Instellingen</a> om zelf een back-up te downloaden.</p>' \
+        if base.startswith("https://") else "<p>Download zelf een back-up bij Beheer → Instellingen.</p>"
+    try:
+        await send_email(_backup_to(), "Let op: back-up niet gelukt",
+                         f"<p>De back-up van vannacht is twee keer mislukt.</p><p>Fout: {escape(error or 'onbekend')}</p>"
+                         f"<p>Laatste geslaagde back-up: {last}.</p>{link}",
+                         allow_unsubscribe=False, raise_errors=True)
+    except Exception as e:
+        logger.error("Ook de melding 'back-up niet gelukt' kon niet worden gemaild: %r", e)
 
 
 @api_router.get("/admin/backup")
@@ -12150,8 +12195,9 @@ async def admin_backup_status(user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_settings")
     doc = await db.meta.find_one({"key": "backup"}, {"_id": 0}) or {}
     at = doc.get("at")
+    ok_at = doc.get("ok_at") or (at if doc.get("ok") else None)  # oudere status had nog geen ok_at
     return {"at": ensure_aware(at).isoformat() if at else None, "ok": doc.get("ok"), "size": doc.get("size"),
-            "error": doc.get("error"), "to": _backup_to()}
+            "error": doc.get("error"), "to": _backup_to(), "ok_at": ensure_aware(ok_at).isoformat() if ok_at else None}
 
 
 # ---------------------------------------------------------------------------
@@ -14008,8 +14054,7 @@ async def _daily_refresh_loop():
         except Exception as e:
             logger.warning("Wekelijkse barcodes: %r", e)
         try:
-            doc = await db.meta.find_one({"key": "backup"}) or {}
-            if not doc.get("at") or ensure_aware(doc["at"]) < now_utc() - timedelta(hours=22):
+            if _backup_due(await db.meta.find_one({"key": "backup"}) or {}):
                 await _backup_mail()
         except Exception as e:
             logger.warning("Back-up mislukt: %r", e)

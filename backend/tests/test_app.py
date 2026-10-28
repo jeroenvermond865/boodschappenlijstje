@@ -167,6 +167,44 @@ def test_backup_terugzetten_leest_zip(tmp_path):
     assert backup_restore.restore(str(f), really=False)["camps"] == 1
 
 
+def test_backup_mislukt_eerst_opnieuw_dan_een_melding(monkeypatch):
+    mails = []
+
+    async def nep_mail(to, subject, html, allow_unsubscribe=True, attachments=None, raise_errors=False):
+        mails.append(subject)
+        if attachments:
+            raise RuntimeError("Gmail weigerde de mail (413)")
+        return "id"
+    monkeypatch.setattr(S, "send_email", nep_mail)
+
+    async def t():
+        st1 = await S._backup_mail()
+        doc = await S.db.meta.find_one({"key": "backup"})
+        assert doc["fails"] == 1 and "413" in st1["error"] and not S._backup_due(doc)
+        doc["at"] -= S.BACKUP_RETRY + S.timedelta(minutes=1)
+        assert S._backup_due(doc)  # een uur later: nog een poging
+        await S._backup_mail()
+        doc = await S.db.meta.find_one({"key": "backup"})
+        doc["at"] -= S.BACKUP_RETRY + S.timedelta(minutes=1)
+        assert doc["fails"] == 2 and not S._backup_due(doc)  # daarna pas de volgende nacht
+    run(t())
+    assert [m for m in mails if m.startswith("Let op")] == ["Let op: back-up niet gelukt"]
+    assert sum(m.startswith("Back-up") for m in mails) == 2
+
+
+def test_backup_gelukt_zet_teller_terug(monkeypatch):
+    async def nep_mail(*a, **k):
+        return "id"
+    monkeypatch.setattr(S, "send_email", nep_mail)
+
+    async def t():
+        await S.db.meta.insert_one({"key": "backup", "fails": 1, "at": S.now_utc()})
+        st = await S._backup_mail()
+        return st, await S.db.meta.find_one({"key": "backup"})
+    st, doc = run(t())
+    assert st["ok"] and doc["fails"] == 0 and doc["ok_at"]
+
+
 # --- Foutmelding ---
 def test_foutmelding_pas_na_veel_fouten_en_niet_te_vaak():
     uitkomst = [S._note_error("GET /api/x: 500") for _ in range(S.ALERT_MIN * 2)]

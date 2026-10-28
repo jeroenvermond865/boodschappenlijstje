@@ -130,7 +130,9 @@ export default function AppSettingsScreen() {
   );
 }
 
-type BackupStatus = { at: string | null; ok: boolean | null; size: number | null; error: string | null; to: string };
+type BackupStatus = { at: string | null; ok: boolean | null; size: number | null; error: string | null; to: string; ok_at: string | null };
+
+const BACKUP_STALE_MS = 2 * 24 * 3600 * 1000; // langer geen geslaagde back-up: waarschuwen
 
 // Back-up: elke nacht gaat er een naar je mail; hier zie je de laatste, en mail of download je er zelf een
 function BackupCard() {
@@ -165,6 +167,7 @@ function BackupCard() {
     }
   };
   const s = status.data;
+  const stale = !!s && (!s.ok_at || Date.now() - new Date(s.ok_at).getTime() > BACKUP_STALE_MS);
   return (
     <View style={{ gap: 10, marginTop: 12 }}>
       <Text style={styles.group}>Back-up</Text>
@@ -172,6 +175,13 @@ function BackupCard() {
         Elke nacht gaat er een back-up van alle gegevens (gebruikers, lijstjes, gerechten, voorraad) naar {s?.to ?? "je mail"}.
         Winkelproducten zitten er niet in, die haalt de app zelf weer op.
       </Text>
+      {stale ? (
+        <Text style={[styles.hint, { marginTop: 0, color: colors.error, fontFamily: fonts.bold }]} testID="backup-stale">
+          {s?.ok_at
+            ? `Let op: de laatste geslaagde back-up is van ${new Date(s.ok_at).toLocaleDateString("nl-NL", { dateStyle: "medium" })}. Mail of download er nu een.`
+            : "Let op: er is nog geen geslaagde back-up. Mail of download er nu een."}
+        </Text>
+      ) : null}
       {s ? (
         <Text style={[styles.hint, { marginTop: 0, color: s.at && s.ok === false ? colors.error : undefined }]}>
           {s.at
