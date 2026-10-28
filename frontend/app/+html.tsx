@@ -10,6 +10,8 @@ export default function Root({ children }: PropsWithChildren) {
         <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
         {/* Productfoto's van winkels: zonder verwijzing naar onze site, anders weigeren sommige winkels de foto */}
         <meta name="referrer" content="no-referrer" />
+        {/* Invoervelden, schuifbalken en datumkiezers van de browser volgen licht of donker mee */}
+        <meta name="color-scheme" content="light dark" />
         <meta
           name="viewport"
           content="width=device-width, initial-scale=1, shrink-to-fit=no"

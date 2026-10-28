@@ -10,6 +10,7 @@ import { useAuth } from "@/src/auth";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings } from "@/src/settings";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
+import { GOLD } from "@/src/premium";
 
 export default function AccountScreen() {
   const styles = useStyles();
@@ -131,7 +132,7 @@ export default function AccountScreen() {
                     : "Bedankt voor je steun! "}Bekijk wat je allemaal extra hebt.
               </Text>
             </View>
-            <Icon name="chevron-right" size={22} color="#7A5212" />
+            <Icon name="chevron-right" size={22} color={GOLD.text} />
           </Pressable>
         ) : (
           <Pressable style={[styles.premiumCard, { borderStyle: "dashed" }]} testID="premium-info-card" onPress={() => router.push("/premium")}>
@@ -142,7 +143,7 @@ export default function AccountScreen() {
               <Text style={styles.premiumTitle}>{user.plan === "ultra" ? "Ultra" : "Premium"}</Text>
               <Text style={styles.premiumText}>Gratis voor verenigingen. Bekijk wat je krijgt en vraag het aan.</Text>
             </View>
-            <Icon name="chevron-right" size={22} color="#7A5212" />
+            <Icon name="chevron-right" size={22} color={GOLD.text} />
           </Pressable>
         )}
 
@@ -374,7 +375,7 @@ const useStyles = makeStyles((colors) => ({
     gap: 14,
     padding: 16,
     borderRadius: 16,
-    backgroundColor: "#FBEFD6",
+    backgroundColor: GOLD.bg,
     borderWidth: 1,
     borderColor: colors.brandSecondary,
   },
@@ -386,8 +387,8 @@ const useStyles = makeStyles((colors) => ({
     alignItems: "center",
     justifyContent: "center",
   },
-  premiumTitle: { fontSize: 17, fontFamily: fonts.bold, color: "#7A5212" },
-  premiumText: { fontSize: 13, fontFamily: fonts.regular, color: "#7A5212", marginTop: 2 },
+  premiumTitle: { fontSize: 17, fontFamily: fonts.bold, color: GOLD.text },
+  premiumText: { fontSize: 13, fontFamily: fonts.regular, color: GOLD.text, marginTop: 2 },
   avatarText: { fontSize: 24, fontFamily: fonts.bold, color: colors.onBrandPrimary },
   name: { fontSize: 18, fontFamily: fonts.semibold, color: colors.onSurface },
   email: { fontSize: 14, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },

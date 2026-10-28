@@ -6,11 +6,30 @@ import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { useAppSettings } from "@/src/settings";
-import { fonts, makeStyles } from "@/src/theme";
+import { fonts, getScheme, makeStyles } from "@/src/theme";
 
-export const GOLD = { bg: "#FBF1DC", border: "#E8C77A", text: "#7A5212", icon: "#B07A1E" };
+type Accent = { bg: string; border: string; text: string; icon: string };
+// Goud (Premium) en paars (Ultra), met een eigen donkere variant. Lees ze in een render of in makeStyles,
+// dan wisselen ze vanzelf mee met licht en donker.
+function accent(light: Accent, dark: Accent): Accent {
+  const pick = () => (getScheme() === "dark" ? dark : light);
+  return {
+    get bg() { return pick().bg; },
+    get border() { return pick().border; },
+    get text() { return pick().text; },
+    get icon() { return pick().icon; },
+  };
+}
 
-export const ULTRA = { bg: "#EFE8FB", border: "#B9A2E8", text: "#4A2D86", icon: "#7A52C9" };
+export const GOLD = accent(
+  { bg: "#FBF1DC", border: "#E8C77A", text: "#7A5212", icon: "#B07A1E" },
+  { bg: "#2B2415", border: "#5E4B22", text: "#F0DCAE", icon: "#E2AC52" },
+);
+
+export const ULTRA = accent(
+  { bg: "#EFE8FB", border: "#B9A2E8", text: "#4A2D86", icon: "#7A52C9" },
+  { bg: "#231C33", border: "#4F407C", text: "#DCCFF7", icon: "#A88BE6" },
+);
 
 export type FeatureKey = "prijsalarm" | "prijsgeschiedenis" | "extra_besparen" | "slim_splitsen" | "weekmenu" | "voorraadkast" | "slimme_hulp" | "looproute" | "geen_advertenties";
 export type PlanKey = "standaard" | "premium" | "ultra";
@@ -97,11 +116,11 @@ export function PremiumLock({ title, text, plural, feature }: { title: string; t
   );
 }
 
-const useStyles = makeStyles(() => ({
+const useStyles = makeStyles((colors) => ({
   lock: { flexDirection: "row", gap: 12, backgroundColor: GOLD.bg, borderColor: GOLD.border, borderWidth: 1, borderRadius: 16, padding: 14 },
   lockTitle: { fontSize: 15, fontFamily: fonts.bold, color: GOLD.text },
   lockText: { fontSize: 13, lineHeight: 18, fontFamily: fonts.regular, color: GOLD.text },
-  ad: { minHeight: 60, borderRadius: 12, borderWidth: 1, borderColor: "#ddd", alignItems: "center", justifyContent: "center" },
-  adText: { fontSize: 11, fontFamily: fonts.regular, color: "#999" },
+  ad: { minHeight: 60, borderRadius: 12, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
+  adText: { fontSize: 11, fontFamily: fonts.regular, color: colors.muted },
   lockLink: { fontSize: 13, fontFamily: fonts.semibold, color: GOLD.icon, marginTop: 4, textDecorationLine: "underline" },
 }));

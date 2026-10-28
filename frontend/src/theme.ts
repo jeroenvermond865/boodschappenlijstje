@@ -1,8 +1,8 @@
 // Design tokens for ScoutKook. Light and dark theme (nature / scouting palette).
 // Keys match the "color" block of /app/design_guidelines.json.
 
-import { useMemo } from "react";
-import { Appearance, StyleSheet, useColorScheme } from "react-native";
+import { useMemo, useSyncExternalStore } from "react";
+import { Appearance, StyleSheet } from "react-native";
 
 export type ColorScheme = "light" | "dark";
 
@@ -99,9 +99,31 @@ export function setColorScheme(scheme: ColorScheme | null) {
 
 setColorScheme?.(themes.dark ? null : defaultScheme);
 
+// Eén luisteraar voor de hele app. useColorScheme van react-native-web meldt zich bij elke render opnieuw aan;
+// wisselt je telefoon van licht naar donker, dan kregen daardoor maar een paar onderdelen het door en bleef de rest
+// in de oude kleur hangen. Hier hoort iedereen het tegelijk.
+function systemScheme(): ColorScheme {
+  const s = Appearance.getColorScheme();
+  return s === "dark" && themes.dark ? "dark" : s === "light" ? "light" : defaultScheme;
+}
+let currentScheme: ColorScheme = systemScheme();
+const schemeListeners = new Set<() => void>();
+Appearance.addChangeListener(() => {
+  const next = systemScheme();
+  if (next === currentScheme) return;
+  currentScheme = next;
+  [...schemeListeners].forEach((f) => f());
+});
+function subscribeScheme(f: () => void) {
+  schemeListeners.add(f);
+  return () => {
+    schemeListeners.delete(f);
+  };
+}
+export const getScheme = () => currentScheme;
+
 export function useTheme(): { scheme: ColorScheme; colors: ThemeColors } {
-  const system = useColorScheme();
-  const scheme: ColorScheme = system === "dark" && themes.dark ? "dark" : system === "light" ? "light" : defaultScheme;
+  const scheme = useSyncExternalStore(subscribeScheme, getScheme, getScheme);
   return { scheme, colors: themes[scheme] ?? themes.light };
 }
 

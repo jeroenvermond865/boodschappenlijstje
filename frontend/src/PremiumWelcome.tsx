@@ -6,6 +6,7 @@ import { Button, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
+import { GOLD } from "@/src/premium";
 
 // Felicitatie de eerste keer dat iemand de app opent nadat premium is aangezet
 export function PremiumWelcome() {
@@ -52,7 +53,7 @@ const useStyles = makeStyles((colors) => ({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 4,
-    borderColor: "#F3D9A4",
+    borderColor: GOLD.border,
   },
   title: { fontSize: 24, fontFamily: fonts.bold, color: colors.onSurface, textAlign: "center" },
   text: { fontSize: 15, lineHeight: 22, fontFamily: fonts.regular, color: colors.onSurfaceSecondary, textAlign: "center" },

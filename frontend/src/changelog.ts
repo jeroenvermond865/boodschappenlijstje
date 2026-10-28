@@ -5,6 +5,15 @@ export type Release = { id: string; date: string; title: string; changes: Change
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-28-a",
+    date: "28 oktober 2026",
+    title: "Donkere modus wisselt overal goed mee",
+    changes: [
+      { kind: "opgelost", text: "Zet je telefoon van licht naar donker (of terug), dan wisselt nu de hele app mee. Eerst bleef een deel in de oude kleur hangen, bijvoorbeeld Home, Lijstjes of Gerechten, terwijl de balk onderin wel wisselde." },
+      { kind: "opgelost", text: "De gouden Premium-knoppen en -kaarten, en de paarse van Ultra, hebben nu een eigen donkere kleur en lichten niet meer fel op in donkere modus." },
+    ],
+  },
+  {
     id: "2026-10-27-j",
     date: "27 oktober 2026",
     title: "Vandaag op Home, Premium en Ultra, nieuwe uitleg, donkere modus en zoeksuggesties",
