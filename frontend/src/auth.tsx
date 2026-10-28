@@ -33,6 +33,7 @@ export type User = {
   premium_until?: string | null;
   plan?: "standaard" | "premium" | "ultra";
   features?: string[];
+  subscription?: "active" | "cancelled" | null;
 };
 type Status = "loading" | "authed" | "guest";
 

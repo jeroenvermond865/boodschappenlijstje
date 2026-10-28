@@ -21,6 +21,7 @@ De app draait als één website. De server (FastAPI) levert zowel de API (`/api/
 | `GMAIL_SENDER` | het Google-account dat de mails verstuurt: `beheer@slimboodschappenlijstje.nl`. Daarna eenmalig koppelen via `/api/email/gmail/connect` |
 | `ADMIN_EMAIL` | krijgt back-ups, foutmeldingen en Premium-aanvragen (standaard `beheer@slimboodschappenlijstje.nl`) |
 | `INFO_EMAIL` | antwoorden van gebruikers op een mail gaan hierheen (standaard `info@slimboodschappenlijstje.nl`) |
+| `MOLLIE_API_KEY` | betalen voor Premium en Ultra via Mollie. Leeg: betalen staat uit en alles werkt zoals altijd. `test_...`: proberen zonder echt geld. `live_...`: echt. Mollie stuurt betalingen naar `FRONTEND_URL/api/billing/webhook` |
 
 ## Bestaande gegevens meenemen (optioneel)
 

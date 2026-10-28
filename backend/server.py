@@ -231,6 +231,9 @@ def public_user(doc: dict) -> dict:
         "premium_until": doc.get("premium_until").isoformat() if doc.get("premium") and doc.get("premium_until") else None,
         "plan": user_plan(doc),
         "features": user_features(doc),
+        # Betaald abonnement via Mollie: "active", of "cancelled" (opgezegd, loopt nog tot premium_until)
+        "subscription": (("cancelled" if (doc.get("billing") or {}).get("cancelled") else "active")
+                         if doc.get("premium") and (doc.get("billing") or {}).get("subscription_id") else None),
     }
 
 
@@ -898,6 +901,7 @@ async def delete_account(data: DeleteAccount, user: dict = Depends(get_current_u
         {"role": "beheerder", "deleted_at": None, "user_id": {"$ne": uid}}
     ):
         raise HTTPException(status_code=400, detail="Je bent de enige beheerder. Maak eerst iemand anders beheerder")
+    await _billing_stop(user)
     await _erase_user(user)
     return {"ok": True}
 
@@ -3839,6 +3843,8 @@ async def _set_premium(target: dict, premium: bool, by_user_id: str, org: Option
     if not premium and target.get("premium_bank", 0) > 0:
         # Eigen Premium gestopt, maar nog verdiende maanden op het tegoed: die gaan nu in
         await db.users.update_one({"user_id": target["user_id"]}, {"$set": {"premium": True, "premium_until": now_utc() + timedelta(days=30)}, "$inc": {"premium_bank": -1}})
+    if not premium and by_user_id != "mollie":
+        await _billing_stop(target)
     if not premium:
         await db.premium_requests.update_many({"user_id": target["user_id"], "status": "approved"}, {"$set": {"status": "ended"}})
     if newly and target.get("email"):
@@ -13210,6 +13216,177 @@ async def ai_savings_tips(camp_id: str, user: dict = Depends(get_current_user)):
     return {"tips": tips, "total": round(sum(f["saving"] or 0 for f in facts if f["kind"] in ("groter", "huismerk")), 2)}
 
 
+# ---------------------------------------------------------------------------
+# Betalen met Mollie (iDEAL, daarna elke maand automatisch). Staat uit zolang MOLLIE_API_KEY niet in Render staat:
+# dan werkt alles zoals altijd (Premium alleen via Beheer, verenigingen of verdienen met delen).
+# Werking: eerste betaling via iDEAL -> Mollie maakt een machtiging -> wij starten een maandabonnement bij Mollie.
+# Elke betaalde maand schuift premium_until op; komt er geen betaling (opgezegd of mislukt), dan loopt premium_until af
+# en zet get_current_user de gebruiker vanzelf terug naar Standaard. De beheerder hoeft niets te doen.
+# ---------------------------------------------------------------------------
+MOLLIE_API = "https://api.mollie.com/v2"
+BILLING_GRACE_DAYS = 3  # na de afschrijfdatum nog even Premium, voor een betaling die wat later binnenkomt
+
+
+def _mollie_key() -> str:
+    return os.environ.get("MOLLIE_API_KEY", "").strip()
+
+
+def _billing_base() -> str:
+    return (os.environ.get("BILLING_BASE_URL") or FRONTEND_URL or "").rstrip("/")
+
+
+async def _mollie(method: str, path: str, body: Optional[dict] = None) -> dict:
+    key = _mollie_key()
+    if not key:
+        raise HTTPException(status_code=503, detail="Betalen is nog niet beschikbaar")
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.request(method, f"{MOLLIE_API}{path}", json=body, headers={"Authorization": f"Bearer {key}"})
+    if r.status_code == 204:
+        return {}
+    if r.status_code >= 400:
+        logger.warning("Mollie %s %s: %s %s", method, path, r.status_code, r.text[:300])
+        raise HTTPException(status_code=502, detail="Betalen lukt nu even niet, probeer het later nog eens")
+    return r.json()
+
+
+def _amount(plan: str) -> dict:
+    price = _plans()["price"].get(plan)
+    if not price:
+        raise HTTPException(status_code=400, detail="Voor dit abonnement is nog geen prijs ingesteld")
+    return {"currency": "EUR", "value": f"{float(price):.2f}"}
+
+
+def _billing_public(user: dict) -> dict:
+    b = user.get("billing") or {}
+    return {
+        "enabled": bool(_mollie_key()),
+        "plan": b.get("plan") if b.get("subscription_id") else None,
+        "active": bool(b.get("subscription_id")) and not b.get("cancelled"),
+        "cancelled": bool(b.get("cancelled")),
+        "paid_until": ensure_aware(user["premium_until"]).isoformat() if b.get("subscription_id") and user.get("premium_until") else None,
+        "test": _mollie_key().startswith("test_"),
+    }
+
+
+@api_router.get("/billing")
+async def billing_status(user: dict = Depends(get_current_user)):
+    return _billing_public(user)
+
+
+class BillingStart(BaseModel):
+    plan: str
+
+
+@api_router.post("/billing/start")
+async def billing_start(data: BillingStart, user: dict = Depends(get_current_user)):
+    if data.plan not in ("premium", "ultra"):
+        raise HTTPException(status_code=400, detail="Onbekend abonnement")
+    if user.get("premium") and not (user.get("billing") or {}).get("subscription_id"):
+        raise HTTPException(status_code=400, detail="Je hebt Premium al via een vereniging, de beheerder of verdiend met delen")
+    limit(f"billing:{user['user_id']}", 10, 3600)
+    b = user.get("billing") or {}
+    cid = b.get("customer_id")
+    if not cid:
+        cust = await _mollie("POST", "/customers", {"name": (user.get("name") or "")[:100], "email": user.get("email"), "metadata": {"user_id": user["user_id"]}})
+        cid = cust["id"]
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"billing.customer_id": cid}})
+    base = _billing_base()
+    pay = await _mollie("POST", f"/customers/{cid}/payments", {
+        "amount": _amount(data.plan),
+        "description": f"Slim Boodschappenlijstje {PLAN_LABELS[data.plan]} (eerste maand)",
+        "sequenceType": "first",
+        "redirectUrl": f"{base}/premium?betaald=1",
+        "webhookUrl": f"{base}/api/billing/webhook",
+        "metadata": {"user_id": user["user_id"], "plan": data.plan},
+    })
+    await db.payments.insert_one({"payment_id": pay["id"], "user_id": user["user_id"], "plan": data.plan, "kind": "first",
+                                  "status": pay.get("status"), "amount": pay["amount"]["value"], "created_at": now_utc()})
+    return {"checkout_url": pay["_links"]["checkout"]["href"]}
+
+
+async def _billing_paid(user: dict, plan: str, first: bool) -> None:
+    until = now_utc() + timedelta(days=31 + BILLING_GRACE_DAYS)
+    if first:
+        # Nieuw (of overgestapt): eerst Premium aan zoals de beheerder dat ook doet (welkom, mail, beloning voor wie deelde)
+        if not user.get("premium"):
+            await _set_premium(user, True, "mollie")
+    upd = {"premium": True, "premium_until": until, "billing.plan": plan, "billing.last_paid_at": now_utc()}
+    if plan == "ultra":
+        upd["plan"] = plan
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": upd, **({"$unset": {"plan": ""}} if plan != "ultra" else {})})
+
+
+async def _billing_subscribe(user: dict, plan: str) -> None:
+    b = user.get("billing") or {}
+    cid = b["customer_id"]
+    if b.get("subscription_id") and not b.get("cancelled"):
+        # Overstap Premium <-> Ultra: het oude abonnement stopt, het nieuwe loopt vanaf nu
+        try:
+            await _mollie("DELETE", f"/customers/{cid}/subscriptions/{b['subscription_id']}")
+        except HTTPException:
+            pass
+    start = (now_utc() + timedelta(days=31)).date().isoformat()
+    sub = await _mollie("POST", f"/customers/{cid}/subscriptions", {
+        "amount": _amount(plan), "interval": "1 month", "startDate": start,
+        "description": f"Slim Boodschappenlijstje {PLAN_LABELS[plan]}",
+        "webhookUrl": f"{_billing_base()}/api/billing/webhook",
+        "metadata": {"user_id": user["user_id"], "plan": plan},
+    })
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"billing.subscription_id": sub["id"], "billing.plan": plan, "billing.cancelled": False}})
+
+
+@api_router.post("/billing/webhook")
+async def billing_webhook(request: Request):
+    # Mollie stuurt alleen een id; wat er echt gebeurd is, vragen we zelf op bij Mollie (een nep-melding doet dus niets)
+    from urllib.parse import parse_qs
+    pid = (parse_qs((await request.body()).decode(errors="ignore")).get("id") or [""])[0]
+    if not pid.startswith("tr_") or not _mollie_key():
+        return {"ok": True}
+    pay = await _mollie("GET", f"/payments/{pid}")
+    meta = pay.get("metadata") or {}
+    user = await db.users.find_one({"user_id": meta.get("user_id")}) if meta.get("user_id") else None
+    if user is None and pay.get("customerId"):
+        user = await db.users.find_one({"billing.customer_id": pay["customerId"]})
+    status = pay.get("status")
+    known = await db.payments.find_one({"payment_id": pid})
+    await db.payments.update_one({"payment_id": pid}, {"$set": {
+        "payment_id": pid, "user_id": user["user_id"] if user else None, "status": status, "amount": (pay.get("amount") or {}).get("value"),
+        "subscription_id": pay.get("subscriptionId"), "updated_at": now_utc()}, "$setOnInsert": {"created_at": now_utc(), "kind": "recurring"}}, upsert=True)
+    if user is None or status != "paid" or (known and known.get("handled")):
+        return {"ok": True}
+    plan = meta.get("plan") if meta.get("plan") in ("premium", "ultra") else (user.get("billing") or {}).get("plan", "premium")
+    first = pay.get("sequenceType") == "first"
+    await _billing_paid(user, plan, first)
+    if first:
+        await _billing_subscribe(await db.users.find_one({"user_id": user["user_id"]}), plan)
+    await db.payments.update_one({"payment_id": pid}, {"$set": {"handled": True}})
+    return {"ok": True}
+
+
+async def _billing_stop(user: dict) -> None:
+    # Account weg of Premium door de beheerder uitgezet: dan ook niet meer afschrijven
+    b = user.get("billing") or {}
+    if not b.get("subscription_id") or b.get("cancelled") or not _mollie_key():
+        return
+    try:
+        await _mollie("DELETE", f"/customers/{b['customer_id']}/subscriptions/{b['subscription_id']}")
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"billing.cancelled": True, "billing.cancelled_at": now_utc()}})
+    except HTTPException:
+        logger.warning("Mollie-abonnement van %s niet gestopt", user.get("user_id"))
+
+
+@api_router.post("/billing/cancel")
+async def billing_cancel(user: dict = Depends(get_current_user)):
+    b = user.get("billing") or {}
+    if not b.get("subscription_id") or b.get("cancelled"):
+        raise HTTPException(status_code=400, detail="Je hebt geen lopend abonnement")
+    await _mollie("DELETE", f"/customers/{b['customer_id']}/subscriptions/{b['subscription_id']}")
+    # Wat betaald is, blijft: Premium loopt tot het eind van de betaalde maand en stopt dan vanzelf
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"billing.cancelled": True, "billing.cancelled_at": now_utc()}})
+    fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return _billing_public(fresh)
+
+
 app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
@@ -13500,6 +13677,8 @@ async def startup():
         logger.warning("Object storage init failed: %s", e)
     await db.users.create_index("email", unique=True)
     await db.users.create_index("user_id", unique=True)
+    await db.users.create_index("billing.customer_id", sparse=True)
+    await db.payments.create_index("payment_id", unique=True)
     await db.users.create_index("ref_code", sparse=True)
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("user_id")

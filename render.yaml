@@ -25,3 +25,5 @@ services:
         value: beheer@slimboodschappenlijstje.nl
       - key: INFO_EMAIL
         value: info@slimboodschappenlijstje.nl
+      - key: MOLLIE_API_KEY  # leeg = betalen uit; test_... = proberen zonder echt geld; live_... = echt
+        sync: false

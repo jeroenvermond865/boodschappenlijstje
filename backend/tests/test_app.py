@@ -422,3 +422,89 @@ def test_dashboard_zonder_namen(monkeypatch):
     pp = d["ai"]["per_person"]
     assert pp["people"] == 2 and pp["cost"]["max"] == 0.02 and pp["cost"]["min"] == 0.01
     assert "u1" not in json.dumps(d)
+
+
+# --- Betalen met Mollie (nep-Mollie, er gaat niets naar buiten) ---
+class _NepMollie:
+    def __init__(self):
+        self.calls, self.payments, self.subs = [], {}, 0
+
+    async def __call__(self, method, path, body=None):
+        self.calls.append((method, path))
+        if method == "POST" and path == "/customers":
+            return {"id": "cst_1"}
+        if method == "POST" and path.endswith("/payments"):
+            self.payments["tr_1"] = {"id": "tr_1", "status": "open", "sequenceType": "first", "customerId": "cst_1", "metadata": body["metadata"], "amount": body["amount"]}
+            return {**self.payments["tr_1"], "_links": {"checkout": {"href": "https://mollie.test/pay"}}}
+        if method == "GET" and path.startswith("/payments/"):
+            return self.payments[path.split("/")[-1]]
+        if method == "POST" and path.endswith("/subscriptions"):
+            self.subs += 1
+            return {"id": f"sub_{self.subs}"}
+        return {}
+
+
+def _webhook(pid):
+    from starlette.requests import Request
+    body = f"id={pid}".encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body}
+    return Request({"type": "http", "method": "POST", "headers": [], "client": ("1.2.3.4", 1)}, receive)
+
+
+def test_zonder_mollie_sleutel_blijft_alles_zoals_het_was(monkeypatch):
+    monkeypatch.delenv("MOLLIE_API_KEY", raising=False)
+    assert S._billing_public({"user_id": "u1"})["enabled"] is False
+    with pytest.raises(HTTPException) as e:
+        run(S.billing_start(S.BillingStart(plan="premium"), {"user_id": "u1", "name": "J", "email": "a@b.nl"}))
+    assert e.value.status_code == 503
+
+
+def test_mollie_afsluiten_verlengen_en_opzeggen(monkeypatch):
+    monkeypatch.setenv("MOLLIE_API_KEY", "test_abc")
+    nep = _NepMollie()
+    monkeypatch.setattr(S, "_mollie", nep)
+    monkeypatch.setattr(S, "send_email", _geen_mail)
+    S._plans_conf.clear()
+
+    async def t():
+        await S.db.users.insert_one({"user_id": "u1", "name": "J", "email": "a@b.nl", "deleted_at": None})
+        u = await S.db.users.find_one({"user_id": "u1"})
+        r = await S.billing_start(S.BillingStart(plan="ultra"), u)
+        assert r["checkout_url"] == "https://mollie.test/pay"
+        # Nog niet betaald: niets veranderd
+        await S.billing_webhook(_webhook("tr_1"))
+        assert not (await S.db.users.find_one({"user_id": "u1"})).get("premium")
+        # Betaald: Ultra aan, maandabonnement gestart
+        nep.payments["tr_1"]["status"] = "paid"
+        await S.billing_webhook(_webhook("tr_1"))
+        await S.billing_webhook(_webhook("tr_1"))  # dubbele melding doet niets extra
+        u = await S.db.users.find_one({"user_id": "u1"})
+        assert u["premium"] and S.user_plan(u) == "ultra" and u["billing"]["subscription_id"] == "sub_1" and nep.subs == 1
+        assert S.public_user(u)["subscription"] == "active"
+        # Volgende maand automatisch betaald: langer Premium
+        nep.payments["tr_2"] = {"id": "tr_2", "status": "paid", "sequenceType": "recurring", "customerId": "cst_1", "subscriptionId": "sub_1", "metadata": {"user_id": "u1", "plan": "ultra"}, "amount": {"value": "4.99"}}
+        before = S.ensure_aware(u["premium_until"])
+        await S.db.users.update_one({"user_id": "u1"}, {"$set": {"premium_until": S.now_utc()}})
+        await S.billing_webhook(_webhook("tr_2"))
+        u = await S.db.users.find_one({"user_id": "u1"})
+        assert S.ensure_aware(u["premium_until"]) >= before - S.timedelta(minutes=1)
+        # Opzeggen: blijft tot het eind van de betaalde maand
+        r = await S.billing_cancel(u)
+        assert r["cancelled"] and ("DELETE", "/customers/cst_1/subscriptions/sub_1") in nep.calls
+        u = await S.db.users.find_one({"user_id": "u1"})
+        assert u["premium"]
+        # Maand voorbij en niet meer betaald: vanzelf terug naar Standaard
+        await S.db.users.update_one({"user_id": "u1"}, {"$set": {"premium_until": S.now_utc() - S.timedelta(days=1)}})
+        u = await S._premium_expired(await S.db.users.find_one({"user_id": "u1"}))
+        assert S.user_plan(u) == "standaard"
+    run(t())
+
+
+def test_nep_melding_zonder_echte_betaling_doet_niets(monkeypatch):
+    monkeypatch.setenv("MOLLIE_API_KEY", "test_abc")
+    nep = _NepMollie()
+    monkeypatch.setattr(S, "_mollie", nep)
+    run(S.billing_webhook(_webhook("geen-id")))
+    assert nep.calls == []

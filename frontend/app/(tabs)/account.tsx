@@ -127,7 +127,11 @@ export default function AccountScreen() {
               <Text style={styles.premiumText}>
                 {user.premium_org
                   ? `Via ${user.premium_org}. `
-                  : user.premium_until
+                  : user.subscription === "active"
+                    ? "Je betaalt per maand. "
+                    : user.subscription === "cancelled" && user.premium_until
+                      ? `Opgezegd, loopt nog tot ${new Date(user.premium_until).toLocaleDateString("nl-NL", { day: "numeric", month: "long" })}. `
+                      : user.premium_until
                     ? `Verdiend met delen, tot ${new Date(user.premium_until).toLocaleDateString("nl-NL", { day: "numeric", month: "long" })}. `
                     : "Bedankt voor je steun! "}Bekijk wat je allemaal extra hebt.
               </Text>

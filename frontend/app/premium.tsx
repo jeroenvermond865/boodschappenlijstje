@@ -1,9 +1,9 @@
-import { useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Linking, Platform, Pressable, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { Button, Field, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
@@ -13,13 +13,15 @@ import { GOLD, PLAN_NAME, PREMIUM_FEATURES, ULTRA, usePlans, type PlanKey } from
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
+type Billing = { enabled: boolean; plan: PlanKey | null; active: boolean; cancelled: boolean; paid_until: string | null; test: boolean };
 type PReq = { req_id: string; org_name: string; message?: string; status: "pending" | "approved" | "rejected" | "ended"; created_at: string };
 
 export default function PremiumScreen() {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, refresh } = useAuth();
+  const { betaald } = useLocalSearchParams<{ betaald?: string }>();
   const toast = useToast();
   const qc = useQueryClient();
   const router = useRouter();
@@ -33,6 +35,54 @@ export default function PremiumScreen() {
     enabled: !user?.premium,
   });
   const req = data?.request;
+  // Betalen via Mollie: alleen zichtbaar als de beheerder Mollie heeft gekoppeld, anders blijft alles zoals het was
+  const billing = useQuery({ queryKey: ["billing"], queryFn: () => api<Billing>("/billing") });
+  const bill = billing.data;
+  const [paying, setPaying] = useState<PlanKey | null>(null);
+  const [stopAsk, setStopAsk] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const canBuy = !!bill?.enabled && (!user?.premium || !!bill.plan);
+
+  // Terug van iDEAL: de betaling komt via Mollie binnen, haal je account een paar keer opnieuw op
+  useEffect(() => {
+    if (!betaald) return;
+    toast.show("Bedankt! Je betaling wordt verwerkt.", "success");
+    let n = 0;
+    const t = setInterval(() => {
+      n += 1;
+      refresh().catch(() => {});
+      qc.invalidateQueries({ queryKey: ["billing"] });
+      if (n >= 5) clearInterval(t);
+    }, 3000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [betaald]);
+
+  const buy = async (plan: PlanKey) => {
+    setPaying(plan);
+    try {
+      const r = await api<{ checkout_url: string }>("/billing/start", { method: "POST", body: { plan } });
+      if (Platform.OS === "web" && typeof window !== "undefined") window.location.href = r.checkout_url;
+      else await Linking.openURL(r.checkout_url);
+    } catch (e: any) {
+      toast.show(e?.message ?? "Betalen lukt nu niet", "error");
+      setPaying(null);
+    }
+  };
+  const stop = async () => {
+    setStopping(true);
+    try {
+      await api("/billing/cancel", { method: "POST" });
+      await Promise.all([refresh(), qc.invalidateQueries({ queryKey: ["billing"] })]);
+      setStopAsk(false);
+      toast.show("Opgezegd. Je houdt alles tot het eind van de betaalde maand.", "success");
+    } catch (e: any) {
+      toast.show(e?.message ?? "Opzeggen lukte niet", "error");
+    } finally {
+      setStopping(false);
+    }
+  };
+  const nice = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("nl-NL", { day: "numeric", month: "long" }) : "");
   const plans = usePlans();
   const mine: PlanKey = (user?.plan as PlanKey) ?? (user?.premium ? "premium" : "standaard");
   const planOf = (k: string) => plans.data?.features.find((f) => f.key === k)?.plan ?? "premium";
@@ -98,6 +148,16 @@ export default function PremiumScreen() {
                   <Text key={f.key} style={styles.planLine}>• {f.title}</Text>
                 ))}
                 {l.ai_limit ? <Text style={styles.planLine}>• {l.ai_limit} vragen per dag aan de slimme hulp</Text> : null}
+                {canBuy && l.key !== "standaard" && l.price && !(bill?.active && bill.plan === l.key) ? (
+                  <Button
+                    label={bill?.active ? `Overstappen naar ${l.label}` : `Neem ${l.label}`}
+                    icon="credit-card-outline"
+                    onPress={() => buy(l.key as PlanKey)}
+                    loading={paying === l.key}
+                    testID={`plan-buy-${l.key}`}
+                    style={{ marginTop: 8 }}
+                  />
+                ) : null}
               </View>
             );
           })}
@@ -130,6 +190,31 @@ export default function PremiumScreen() {
           })}
         </View>
 
+        {bill?.plan && user?.premium ? (
+          <View style={styles.section} testID="billing-status">
+            <Text style={styles.sectionTitle}>Je abonnement</Text>
+            {bill.cancelled ? (
+              <Text style={styles.sectionText}>Opgezegd. Je houdt {PLAN_NAME[bill.plan]} tot {nice(bill.paid_until)}, daarna ga je vanzelf terug naar Standaard. Er wordt niets meer afgeschreven.</Text>
+            ) : (
+              <>
+                <Text style={styles.sectionText}>
+                  Je betaalt elke maand automatisch voor {PLAN_NAME[bill.plan]}. Opzeggen kan altijd: je houdt alles tot het eind van de maand die je al betaald hebt.
+                </Text>
+                {stopAsk ? (
+                  <View style={{ gap: 8 }}>
+                    <Text style={styles.sectionText}>Weet je het zeker?</Text>
+                    <Button label="Ja, opzeggen" variant="secondary" onPress={stop} loading={stopping} testID="billing-cancel-confirm" />
+                    <Button label="Toch niet" onPress={() => setStopAsk(false)} />
+                  </View>
+                ) : (
+                  <Button label="Abonnement opzeggen" variant="secondary" onPress={() => setStopAsk(true)} testID="billing-cancel" />
+                )}
+              </>
+            )}
+          </View>
+        ) : null}
+        {bill?.test && canBuy ? <Text style={styles.small}>Testmodus: er wordt nog geen echt geld afgeschreven.</Text> : null}
+
         {user?.premium ? null : isLoading ? (
           <ActivityIndicator color={colors.brandPrimary} />
         ) : req?.status === "pending" ? (
@@ -160,7 +245,7 @@ export default function PremiumScreen() {
               style={{ minHeight: 80, textAlignVertical: "top" }}
             />
             <Button label="Gratis Premium aanvragen" onPress={send} loading={sending} disabled={org.trim().length < 2} testID="premium-request-send" />
-            <Text style={styles.small}>Voor thuisgebruik komt Premium later tegen een kleine vergoeding.</Text>
+            {bill?.enabled ? null : <Text style={styles.small}>Voor thuisgebruik komt Premium later tegen een kleine vergoeding.</Text>}
           </View>
         )}
         <Text style={styles.small}>
