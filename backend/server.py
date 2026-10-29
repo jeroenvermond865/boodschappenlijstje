@@ -3884,6 +3884,86 @@ async def savings_overview(user: dict = Depends(get_current_user)):
     return {"months": out, "is_premium": is_premium, **tot, "premium_bought": round(premium_bought, 2)}
 
 
+# --- Wat elk abonnement bespaart: jij, een gemiddelde gebruiker en een actieve gebruiker ---
+# Elk deel van de besparing hoort bij een functie; bij welk abonnement die functie hoort, bepaalt Beheer > Abonnementen.
+_SAVE_PARTS = {"pantry": "voorraadkast", "promo_day": "extra_besparen", "split": "slim_splitsen", "split_can": "slim_splitsen"}
+_SAVE_KEYS = ("promo", "smart", "pantry", "promo_day", "split", "split_can")
+SAVINGS_DAYS = 90
+ACTIVE_LISTS = 4  # zoveel lijstjes in de laatste 3 maanden = actieve gebruiker
+_plan_savings_cache: dict = {"at": 0.0, "v": None}
+
+
+def _plan_saving(parts: dict) -> dict:
+    # Per abonnement: Standaard-besparing plus de delen waarvan de functie bij dit abonnement (of lager) hoort
+    feats = _plans()["features"]
+    rank = {k: i for i, k in enumerate(PLAN_LEVELS)}
+    out = {}
+    for lvl in PLAN_LEVELS:
+        v = (parts.get("promo") or 0) + (parts.get("smart") or 0)
+        v += sum(parts.get(k) or 0 for k, f in _SAVE_PARTS.items() if rank[feats.get(f, "premium")] <= rank[lvl])
+        out[lvl] = round(v, 2)
+    return out
+
+
+def _camp_month(c: dict) -> str:
+    when = c.get("start_date") or (c.get("created_at").isoformat() if isinstance(c.get("created_at"), datetime) else str(c.get("created_at") or ""))
+    return (when or "")[:7]
+
+
+def _per_month(camps: list) -> tuple:
+    # (besparing per deel, gemiddeld per maand met lijstjes; aantal lijstjes)
+    parts = {k: 0.0 for k in _SAVE_KEYS}
+    months = set()
+    n = 0
+    for c in camps:
+        sv = c.get("savings") or {}
+        if not sv.get("total"):
+            continue
+        n += 1
+        months.add(_camp_month(c))
+        for k in _SAVE_KEYS:
+            parts[k] += float(sv.get(k) or 0)
+    m = max(1, len(months))
+    return {k: v / m for k, v in parts.items()}, n
+
+
+async def _population_savings() -> dict:
+    # Over alle gebruikers (eigenaar van het lijstje), de laatste 3 maanden; een paar uur bewaard
+    if _plan_savings_cache["v"] and time.time() - _plan_savings_cache["at"] < 6 * 3600:
+        return _plan_savings_cache["v"]
+    since = now_utc() - timedelta(days=SAVINGS_DAYS)
+    by_owner: Dict[str, list] = {}
+    async for c in db.camps.find({"deleted_at": None, "created_at": {"$gte": since}, "savings.total": {"$gt": 0}},
+                                 {"_id": 0, "owner_id": 1, "savings": 1, "start_date": 1, "created_at": 1}):
+        by_owner.setdefault(c.get("owner_id"), []).append(c)
+    rows = [_per_month(v) for v in by_owner.values()]
+    rows = [r for r in rows if r[1]]
+
+    def avg(rs):
+        if not rs:
+            return None
+        return _plan_saving({k: sum(r[0][k] for r in rs) / len(rs) for k in _SAVE_KEYS})
+    active = [r for r in rows if r[1] >= ACTIVE_LISTS]
+    if not active and rows:
+        # Nog weinig mensen met veel lijstjes: het kwart dat de meeste lijstjes maakt
+        active = sorted(rows, key=lambda r: -r[1])[:max(1, len(rows) // 4)]
+    v = {"average": avg(rows), "active": avg(active), "users": len(rows), "active_users": len(active)}
+    _plan_savings_cache.update(at=time.time(), v=v)
+    return v
+
+
+@api_router.get("/savings/plans")
+async def savings_per_plan(user: dict = Depends(get_current_user)):
+    uid = user["user_id"]
+    since = now_utc() - timedelta(days=SAVINGS_DAYS)
+    mine = await db.camps.find({"$or": [{"owner_id": uid}, {"member_ids": uid}], "deleted_at": None, "created_at": {"$gte": since}},
+                               {"_id": 0, "savings": 1, "start_date": 1, "created_at": 1}).to_list(500)
+    parts, n = _per_month(mine)
+    pop = await _population_savings()
+    return {"you": _plan_saving(parts) if n else None, "you_lists": n, "you_parts": {k: round(v, 2) for k, v in parts.items()},
+            **pop, "parts_plan": {k: _plans()["features"].get(f, "premium") for k, f in _SAVE_PARTS.items()}}
+
+
 @api_router.post("/auth/trial-seen")
 async def trial_seen(user: dict = Depends(get_current_user)):
     # De melding "je proefperiode is voorbij" niet nog eens tonen

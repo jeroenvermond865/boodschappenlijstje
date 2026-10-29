@@ -199,38 +199,51 @@ export default function PremiumScreen() {
           })}
         </View>
 
-        <View style={{ gap: 12 }}>
-          {PREMIUM_FEATURES.map((f) => {
-            const need = planOf(f.key);
-            const have = rank[mine] >= rank[need];
-            const fc = planAccent(need);
-            return (
-              <Pressable
-                key={f.title}
-                style={[styles.feature, { backgroundColor: fc.bg, borderColor: fc.border }]}
-                disabled={!have || !f.to}
-                onPress={() => f.to && router.push(f.to as any)}
-                testID={`premium-feature-${f.icon}`}
-              >
-                <Icon name={f.icon} size={22} color={fc.icon} />
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <Text style={[styles.featureTitle, { color: fc.text }]}>{f.title}</Text>
-                    {need !== "standaard" ? (
-                      <View style={[styles.planTag, { backgroundColor: fc.icon }]}>
-                        <Icon name={planIcon(need)} size={11} color="#FFFFFF" />
-                        <Text style={styles.planTagText}>{PLAN_NAME[need]}</Text>
+        {/* Per abonnement netjes onder elkaar: eerst Premium, dan Ultra. Tik: heb je het, dan ga je erheen; anders zie je een voorbeeld */}
+        {(["standaard", "premium", "ultra"] as const).map((lvl) => {
+          const list = PREMIUM_FEATURES.filter((f) => planOf(f.key) === lvl);
+          if (!list.length) return null;
+          const fc = planAccent(lvl);
+          return (
+            <View key={lvl} style={{ gap: 10 }} testID={`features-${lvl}`}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                {lvl !== "standaard" ? <Icon name={planIcon(lvl)} size={18} color={fc.icon} /> : null}
+                <Text style={[styles.groupTitle, lvl !== "standaard" && { color: fc.icon }]}>
+                  {lvl === "standaard" ? "Voor iedereen" : lvl === "premium" ? "Met Premium" : "Met Ultra (ook alles van Premium)"}
+                </Text>
+              </View>
+              {list.map((f) => {
+                const need = planOf(f.key);
+                const have = rank[mine] >= rank[need];
+                const c = planAccent(need);
+                return (
+                  <Pressable
+                    key={f.key}
+                    style={({ pressed }) => [styles.feature, need !== "standaard" && { backgroundColor: c.bg, borderColor: c.border }, pressed && { opacity: 0.8 }]}
+                    onPress={() => (have && f.to ? router.navigate(f.to as any) : router.push({ pathname: "/feature/[key]", params: { key: f.key } }))}
+                    testID={`premium-feature-${f.key}`}
+                  >
+                    <Icon name={have ? f.icon : "lock-outline"} size={22} color={need === "standaard" ? colors.brandPrimary : c.icon} />
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <Text style={[styles.featureTitle, need !== "standaard" && { color: c.text }]}>{f.title}</Text>
+                        {need !== "standaard" ? (
+                          <View style={[styles.planTag, { backgroundColor: c.icon }]}>
+                            <Icon name={planIcon(need)} size={11} color="#FFFFFF" />
+                            <Text style={styles.planTagText}>{PLAN_NAME[need]}</Text>
+                          </View>
+                        ) : null}
                       </View>
-                    ) : null}
-                  </View>
-                  <Text style={[styles.featureText, { color: fc.text }]}>{f.text}</Text>
-                  {f.where ? <Text style={[styles.featureWhere, { color: fc.icon }]}>{f.where}</Text> : null}
-                </View>
-                {have && f.to ? <Icon name="chevron-right" size={20} color={colors.muted} /> : null}
-              </Pressable>
-            );
-          })}
-        </View>
+                      <Text style={[styles.featureText, need !== "standaard" && { color: c.text }]}>{f.text}</Text>
+                      {f.where ? <Text style={[styles.featureWhere, need !== "standaard" && { color: c.icon }]}>{have ? f.where : "Tik voor een voorbeeld"}</Text> : null}
+                    </View>
+                    <Icon name="chevron-right" size={20} color={colors.muted} />
+                  </Pressable>
+                );
+              })}
+            </View>
+          );
+        })}
 
         {bill?.plan && user?.premium ? (
           <View style={styles.section} testID="billing-status">
@@ -305,41 +318,116 @@ export default function PremiumScreen() {
   );
 }
 
-// Kort overzicht: wat elk abonnement jou oplevert, met je eigen lijstjes (gemiddeld per maand over de laatste maanden)
+// Kort overzicht: wat elk abonnement oplevert per maand. Tik bovenaan: voor jou, een gemiddelde of een actieve gebruiker.
+// Tik op de rij "Bespaart" voor waar het vandaan komt (aanbiedingen, goedkoopste winkel, splitsen, voorraadkast, acties).
+type PlanSavings = {
+  you: Record<PlanKey, number> | null; you_lists: number;
+  average: Record<PlanKey, number> | null; active: Record<PlanKey, number> | null; users: number; active_users: number;
+  you_parts: Record<string, number>; parts_plan: Record<string, PlanKey>;
+};
+const WHO = [
+  { key: "you", label: "Jij" },
+  { key: "average", label: "Gemiddeld" },
+  { key: "active", label: "Actief" },
+] as const;
+
 function PlanCompare({ levels }: { levels: { key: PlanKey; price?: number | null; ai_limit: number }[] }) {
   const styles = useStyles();
-  const sv = useQuery({ queryKey: ["savings"], queryFn: () => api<{ months: { standard: number; premium: number }[] }>("/savings") });
-  const months = (sv.data?.months ?? []).slice(0, 3);
+  const { colors } = useTheme();
+  const sv = useQuery({ queryKey: ["savings-plans"], queryFn: () => api<PlanSavings>("/savings/plans") });
+  const [who, setWho] = useState<(typeof WHO)[number]["key"]>("you");
+  const [why, setWhy] = useState(false);
   if (!levels.length) return null;
-  const avg = (k: "standard" | "premium") => (months.length ? months.reduce((n, m) => n + (m[k] || 0), 0) / months.length : 0);
-  const std = avg("standard");
-  const extra = avg("premium");
+  const d = sv.data;
+  const vals = d ? d[who] : null;
   const eur = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
   const get = (k: PlanKey) => levels.find((l) => l.key === k);
-  const rows: [string, string, string, string][] = [
-    ["Prijs", "Gratis", get("premium")?.price ? `${eur(get("premium")!.price!)} p/m` : "–", get("ultra")?.price ? `${eur(get("ultra")!.price!)} p/m` : "–"],
-    ...(months.length ? [["Bespaart jou ca.", `${eur(std)} p/m`, `${eur(std + extra)} p/m`, `${eur(std + extra)} p/m`] as [string, string, string, string]] : []),
-    ["Slimme hulp", `${get("standaard")?.ai_limit ?? 0} vragen`, `${get("premium")?.ai_limit ?? 0} vragen`, `${get("ultra")?.ai_limit ?? 0} vragen`],
-    ["Gedeelde lijstjes", "Jouw functies", "Jouw functies", "Iedereen erin alle functies"],
+  const PLANS: PlanKey[] = ["standaard", "premium", "ultra"];
+  const price = (k: PlanKey) => (k === "standaard" ? 0 : get(k)?.price ?? 0);
+  const col = (k: PlanKey, i: number) => (i === 0 ? undefined : planAccent(k).text);
+  const note =
+    who === "you"
+      ? d?.you_lists
+        ? `Op basis van je eigen ${d.you_lists === 1 ? "lijstje" : `${d.you_lists} lijstjes`} van de laatste 3 maanden, per maand.`
+        : "Je hebt nog geen lijstjes met prijzen. Kijk bij Gemiddeld of Actief."
+      : who === "average"
+        ? `Gemiddeld per maand over ${d?.users ?? 0} gebruikers met lijstjes in de laatste 3 maanden.`
+        : `Actieve gebruikers: ${d?.active_users ?? 0} mensen die vaak lijstjes maken (4 of meer in 3 maanden). Gemiddeld per maand.`;
+  const parts = [
+    { key: "promo", label: "Aanbiedingen" },
+    { key: "smart", label: "Goedkoopste winkel" },
+    { key: "split", label: "Slim splitsen" },
+    { key: "pantry", label: "Voorraadkast" },
+    { key: "promo_day", label: "Acties op je boodschappendag" },
   ];
   return (
     <View style={styles.cmp} testID="plan-compare">
-      <Text style={styles.cmpTitle}>Wat levert het jou op?</Text>
-      <View style={styles.cmpRow}>
-        <Text style={[styles.cmpCell, styles.cmpHead, { flex: 1.3 }]} />
-        {["Standaard", "Premium", "Ultra"].map((h, i) => (
-          <Text key={h} style={[styles.cmpCell, styles.cmpHead, i > 0 && { color: planAccent(i === 2 ? "ultra" : "premium").icon }]}>{h}</Text>
+      <Text style={styles.cmpTitle}>Wat levert het op?</Text>
+      <View style={styles.whoRow}>
+        {WHO.map((w) => (
+          <Pressable key={w.key} onPress={() => setWho(w.key)} style={[styles.whoBtn, who === w.key && styles.whoOn]} testID={`compare-who-${w.key}`}>
+            <Text style={[styles.whoText, who === w.key && { color: "#FFFFFF" }]}>{w.label}</Text>
+          </Pressable>
         ))}
       </View>
-      {rows.map((r) => (
-        <View key={r[0]} style={styles.cmpRow}>
-          <Text style={[styles.cmpCell, styles.cmpLabel, { flex: 1.3 }]}>{r[0]}</Text>
-          {r.slice(1).map((v, k) => (
-            <Text key={k} style={[styles.cmpCell, k > 0 && { color: planAccent(k === 2 ? "ultra" : "premium").text }]}>{v}</Text>
-          ))}
+      <View style={styles.cmpRow}>
+        <Text style={[styles.cmpCell, styles.cmpHead, { flex: 1.3 }]} />
+        {PLANS.map((k, i) => (
+          <Text key={k} style={[styles.cmpCell, styles.cmpHead, i > 0 && { color: planAccent(k).icon }]}>{PLAN_NAME[k]}</Text>
+        ))}
+      </View>
+      <View style={styles.cmpRow}>
+        <Text style={[styles.cmpCell, styles.cmpLabel, { flex: 1.3 }]}>Prijs</Text>
+        {PLANS.map((k, i) => (
+          <Text key={k} style={[styles.cmpCell, { color: col(k, i) }]}>{i === 0 ? "Gratis" : price(k) ? `${eur(price(k))} p/m` : "–"}</Text>
+        ))}
+      </View>
+      <Pressable onPress={() => setWhy((v) => !v)} style={styles.cmpRow} testID="compare-saving-row">
+        <View style={{ flex: 1.3, flexDirection: "row", alignItems: "center", gap: 2 }}>
+          <Text style={[styles.cmpCell, styles.cmpLabel, { flex: 0 }]}>Bespaart p/m</Text>
+          <Icon name={why ? "chevron-up" : "information-outline"} size={14} color={colors.brandPrimary} />
         </View>
-      ))}
-      {months.length ? <Text style={styles.cmpNote}>Op basis van je eigen lijstjes van de laatste {months.length === 1 ? "maand" : `${months.length} maanden`}.</Text> : null}
+        {PLANS.map((k, i) => (
+          <Text key={k} style={[styles.cmpCell, { color: col(k, i), fontFamily: fonts.bold }]}>
+            {sv.isLoading ? "…" : vals ? eur(vals[k]) : "–"}
+          </Text>
+        ))}
+      </Pressable>
+      <View style={styles.cmpRow}>
+        <Text style={[styles.cmpCell, styles.cmpLabel, { flex: 1.3 }]}>Netto (min prijs)</Text>
+        {PLANS.map((k, i) => (
+          <Text key={k} style={[styles.cmpCell, { color: col(k, i) }]}>{vals ? eur(vals[k] - price(k)) : "–"}</Text>
+        ))}
+      </View>
+      <View style={styles.cmpRow}>
+        <Text style={[styles.cmpCell, styles.cmpLabel, { flex: 1.3 }]}>Slimme hulp</Text>
+        {PLANS.map((k, i) => (
+          <Text key={k} style={[styles.cmpCell, { color: col(k, i) }]}>{get(k)?.ai_limit ?? 0} vragen</Text>
+        ))}
+      </View>
+      <View style={styles.cmpRow}>
+        <Text style={[styles.cmpCell, styles.cmpLabel, { flex: 1.3 }]}>Gedeelde lijstjes</Text>
+        {PLANS.map((k, i) => (
+          <Text key={k} style={[styles.cmpCell, { color: col(k, i) }]}>{k === "ultra" ? "Iedereen alle functies" : "Jouw functies"}</Text>
+        ))}
+      </View>
+      {why ? (
+        <View style={styles.whyBox} testID="compare-why">
+          <Text style={[styles.cmpNote, { marginTop: 0, color: colors.onSurface, fontFamily: fonts.semibold }]}>Waar de besparing vandaan komt</Text>
+          {parts.map((p) => {
+            const plan = (d?.parts_plan?.[p.key] as PlanKey | undefined) ?? "standaard";
+            return (
+              <View key={p.key} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Text style={[styles.cmpNote, { flex: 1, marginTop: 0 }]}>{p.label}</Text>
+                <Text style={[styles.cmpNote, { marginTop: 0, color: plan === "standaard" ? colors.muted : planAccent(plan).icon, fontFamily: fonts.semibold }]}>
+                  {plan === "standaard" ? "iedereen" : `vanaf ${PLAN_NAME[plan]}`}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
+      <Text style={styles.cmpNote}>{note}</Text>
     </View>
   );
 }
@@ -351,6 +439,11 @@ const useStyles = makeStyles((colors) => ({
   cmpCell: { flex: 1, fontSize: 12.5, fontFamily: fonts.medium, color: colors.onSurface, textAlign: "center" },
   cmpHead: { fontFamily: fonts.bold, color: colors.muted },
   cmpLabel: { textAlign: "left", fontFamily: fonts.semibold },
+  whoRow: { flexDirection: "row", gap: 6, marginBottom: 6 },
+  whoBtn: { flex: 1, alignItems: "center", paddingVertical: 7, borderRadius: 999, backgroundColor: colors.surfaceSecondary },
+  whoOn: { backgroundColor: colors.brandPrimary },
+  whoText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.onSurface },
+  whyBox: { gap: 4, marginTop: 6, padding: 10, borderRadius: 12, backgroundColor: colors.surfaceSecondary },
   cmpNote: { fontSize: 11.5, fontFamily: fonts.regular, color: colors.muted, marginTop: 4 },
   periodRow: { flexDirection: "row", gap: 6, alignSelf: "center", backgroundColor: colors.surfaceSecondary, borderRadius: 999, padding: 4 },
   periodBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999 },
@@ -371,6 +464,7 @@ const useStyles = makeStyles((colors) => ({
   hero: { alignItems: "center", gap: 6, backgroundColor: GOLD.bg, borderColor: GOLD.border, borderWidth: 1, borderRadius: 20, padding: 20 },
   heroTitle: { fontSize: 20, fontFamily: fonts.bold, color: GOLD.text, textAlign: "center" },
   heroText: { fontSize: 14, lineHeight: 20, fontFamily: fonts.regular, color: GOLD.text, textAlign: "center" },
+  groupTitle: { fontSize: 16, fontFamily: fonts.bold, color: colors.onSurface },
   feature: { flexDirection: "row", gap: 12, alignItems: "flex-start", borderWidth: 1, borderRadius: 14, padding: 12 },
   planTag: { flexDirection: "row", alignItems: "center", gap: 3, borderRadius: 999, paddingHorizontal: 7, paddingVertical: 2 },
   planTagText: { fontSize: 11, fontFamily: fonts.bold, color: "#FFFFFF" },

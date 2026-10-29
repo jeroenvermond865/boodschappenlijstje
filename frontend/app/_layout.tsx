@@ -74,6 +74,7 @@ function Gate() {
       <Stack.Screen name="admin/barcodes" />
       <Stack.Screen name="admin/premium-requests" />
       <Stack.Screen name="premium" />
+      <Stack.Screen name="feature/[key]" />
       <Stack.Screen name="pantry" />
       <Stack.Screen name="alerts" />
       <Stack.Screen name="invite" />

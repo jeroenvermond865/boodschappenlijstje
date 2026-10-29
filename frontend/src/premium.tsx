@@ -119,7 +119,7 @@ export function PremiumLock({ title, text, plural, feature }: { title: string; t
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={[styles.lockTitle, { color: c.text }]}>{title} {plural ? `zijn ${name}-functies` : `is een ${name}-functie`}</Text>
         {text ? <Text style={[styles.lockText, { color: c.text }]}>{text}</Text> : null}
-        <Pressable onPress={() => router.push("/premium")} hitSlop={8} testID="premium-lock-more">
+        <Pressable onPress={() => (feature ? router.push({ pathname: "/feature/[key]", params: { key: feature } }) : router.push("/premium"))} hitSlop={8} testID="premium-lock-more">
           <Text style={[styles.lockLink, { color: c.icon }]}>Probeer {name} ›</Text>
         </Pressable>
       </View>

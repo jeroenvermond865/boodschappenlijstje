@@ -1132,3 +1132,32 @@ def test_vega_per_maaltijd():
     assert S._diet_counts(day, {"vega_adults": 1}, "avondeten")["vega"] == (1, 0)
     days = S._build_days([S.DayInput(adults=4, meal_people={"lunch": {"adults": 2, "vega_adults": 1}})])
     assert days[0]["meal_people"]["lunch"] == {"adults": 2, "children": 0, "vega_adults": 1}
+
+
+# --- Besparing per abonnement ---
+def test_besparing_per_abonnement():
+    S._plans_conf.clear()
+    S._plans_conf.update({"features": {"slim_splitsen": "ultra", "voorraadkast": "ultra"}})
+    try:
+        r = S._plan_saving({"promo": 2, "smart": 1, "pantry": 3, "promo_day": 1, "split": 4, "split_can": 1})
+        assert r == {"standaard": 3, "premium": 4, "ultra": 12}
+    finally:
+        S._plans_conf.clear()
+
+
+def test_besparing_gemiddeld_en_actief():
+    from datetime import datetime, timezone
+    S._plan_savings_cache.update(at=0.0, v=None)
+
+    async def t():
+        now = datetime.now(timezone.utc)
+        for i in range(5):
+            await S.db.camps.insert_one({"camp_id": f"a{i}", "owner_id": "u1", "deleted_at": None, "created_at": now,
+                                         "savings": {"total": 50, "promo": 2, "smart": 1, "split": 2}})
+        await S.db.camps.insert_one({"camp_id": "b", "owner_id": "u2", "deleted_at": None, "created_at": now,
+                                     "savings": {"total": 20, "promo": 1}})
+        return await S.savings_per_plan(U1)
+    r = run(t())
+    assert r["users"] == 2 and r["active_users"] == 1
+    assert r["active"]["standaard"] == 15 and r["you"]["standaard"] == 15
+    assert r["average"]["standaard"] == 8

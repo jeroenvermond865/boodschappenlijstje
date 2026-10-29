@@ -5,6 +5,18 @@ export type Release = { id: string; version?: string; date: string; title: strin
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-29-v113",
+    version: "1.1.3",
+    date: "29 oktober 2026",
+    title: "Abonnementen: eerlijke besparing per abonnement en elke functie aan te tikken",
+    changes: [
+      { kind: "beter", text: "Wat levert het op? rekent nu per abonnement wat de functies van dat abonnement besparen. Slim splitsen telt dus mee bij het abonnement waar het bij hoort." },
+      { kind: "nieuw", text: "Tik bovenaan de tabel op Jij, Gemiddeld of Actief. Zo zie je wat het jou oplevert, en een gemiddelde of actieve gebruiker. Tik op Bespaart voor waar het vandaan komt." },
+      { kind: "beter", text: "De functies staan nu netjes per abonnement: eerst Premium, dan Ultra." },
+      { kind: "opgelost", text: "Tik je op een functie, dan ga je er nu altijd heen. Heb je hem nog niet, dan zie je een slotje, een voorbeeld van wat hij doet en een knop om het abonnement te nemen." },
+    ],
+  },
+  {
     id: "2026-10-29-v112",
     version: "1.1.2",
     date: "29 oktober 2026",
