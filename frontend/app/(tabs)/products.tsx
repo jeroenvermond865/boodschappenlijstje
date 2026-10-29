@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Icon } from "@/src/components/ui";
 import { ProductBrowser } from "@/src/ProductBrowser";
-import { useFeature } from "@/src/premium";
+import { useFeature, useFeatureAccent } from "@/src/premium";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings } from "@/src/settings";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
@@ -19,6 +19,7 @@ export default function ProductsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
   const premium = useFeature("prijsalarm");
+  const acc = useFeatureAccent("prijsalarm");
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <ProductBrowser
@@ -30,8 +31,11 @@ export default function ProductsScreen() {
               <Text style={styles.subtitle}>{s.sub_products}</Text>
             </View>
             <Pressable testID="alerts-button" onPress={() => router.push("/alerts")} hitSlop={8} style={styles.headBtn}>
-              <Icon name="bell-ring-outline" size={22} color={colors.brandPrimary} />
-              <Text style={styles.headBtnText}>Prijsalarm{premium ? "" : " ⭐"}</Text>
+              <Icon name="bell-ring-outline" size={22} color={premium ? colors.brandPrimary : acc.c.icon} />
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+                <Text style={[styles.headBtnText, !premium && { color: acc.c.icon }]}>Prijsalarm</Text>
+                {premium ? null : <Icon name={acc.icon} size={11} color={acc.c.icon} />}
+              </View>
             </Pressable>
           </View>
         }

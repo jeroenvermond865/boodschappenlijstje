@@ -12,7 +12,7 @@ import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
 import { useSwipePages } from "@/src/useSwipePages";
-import { GOLD, PremiumLock, useFeature, usePlans } from "@/src/premium";
+import { GOLD, PremiumLock, useFeature, useFeatureAccent, usePlans } from "@/src/premium";
 import { euro } from "@/src/search";
 import { useTerms } from "@/src/settings";
 import { useToast } from "@/src/toast";
@@ -34,6 +34,7 @@ type AiDish = { name: string; category: MealCategory; servings: number; ingredie
 type CampLite = { id: string; name: string; days: { index: number; adults: number; children: number }[] };
 
 export default function SlimScreen() {
+  const fa = useFeatureAccent("slimme_hulp"); // goud of paars, net als het abonnement waar de hulp bij hoort
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -60,8 +61,8 @@ export default function SlimScreen() {
       <ScrollView contentContainerStyle={{ padding: 16, gap: 14, paddingBottom: insets.bottom + 40 }} keyboardShouldPersistTaps="handled">
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
           {TABS.map((t) => (
-            <Pressable key={t.key} onPress={() => setTab(t.key)} style={[styles.tab, tab === t.key && styles.tabOn]} testID={`slim-tab-${t.key}`}>
-              <Icon name={t.icon} size={16} color={tab === t.key ? "#FFFFFF" : GOLD.icon} />
+            <Pressable key={t.key} onPress={() => setTab(t.key)} style={[styles.tab, { backgroundColor: fa.c.bg, borderColor: fa.c.border }, tab === t.key && { backgroundColor: fa.c.icon, borderColor: fa.c.icon }]} testID={`slim-tab-${t.key}`}>
+              <Icon name={t.icon} size={16} color={tab === t.key ? "#FFFFFF" : fa.c.icon} />
               <Text style={[styles.tabText, tab === t.key && { color: "#FFFFFF" }]}>{t.label}</Text>
             </Pressable>
           ))}

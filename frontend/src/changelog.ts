@@ -1,9 +1,25 @@
 // Wat er nieuw is in de app. Bij elke update die online gaat: bovenaan een nieuw blok met een nieuwe id.
 // Iedereen ziet bovenin één keer kort wat er nieuw is sinds zijn of haar vorige bezoek; tik erop voor alles.
 export type Change = { kind: "nieuw" | "beter" | "opgelost"; text: string };
-export type Release = { id: string; date: string; title: string; changes: Change[] };
+export type Release = { id: string; version?: string; date: string; title: string; changes: Change[] };
 
 export const CHANGELOG: Release[] = [
+  {
+    id: "2026-10-29-v110",
+    version: "1.1.0",
+    date: "29 oktober 2026",
+    title: "Barcode scannen werkt, Ultra in paars en een rustiger Account",
+    changes: [
+      { kind: "opgelost", text: "Barcode scannen werkt nu ook op de website en op de iPhone. Houd de barcode in beeld, dan herkent de app hem vanzelf. Je ziet meteen het product en tikt op Product toevoegen." },
+      { kind: "nieuw", text: "Kent de app een barcode nog niet? Koppel dan zelf het product. Voor jou werkt het meteen. Een beheerder keurt het goed voor iedereen." },
+      { kind: "nieuw", text: "Bij Producten kun je in de zoekbalk ook een barcode typen of op het scan-icoon tikken." },
+      { kind: "beter", text: "Snel lijstje: de knoppen Gerecht en Scan zijn omgewisseld. Met de deelknop kun je nu ook iemand uitnodigen om samen af te vinken." },
+      { kind: "beter", text: "Alles wat bij Ultra hoort, is nu paars: de uitleg, de blokjes, het sterretje en de knoppen. Premium blijft goud." },
+      { kind: "beter", text: "Profiel & wachtwoord is opnieuw ingedeeld in duidelijke blokjes. Het wachtwoord wijzig je pas als je erop tikt." },
+      { kind: "beter", text: "Feedback en Supermarkt aanvragen zitten nu samen onder Feedback & ideeën. Bij Voorwaarden staat nu ook Herroepen in de naam." },
+      { kind: "beter", text: "Het versienummer onderaan Account loopt nu mee met elke update." },
+    ],
+  },
   {
     id: "2026-10-28-a",
     date: "28 oktober 2026",
@@ -291,3 +307,7 @@ export const CHANGELOG: Release[] = [
     ],
   },
 ];
+
+// Versienummer: elke update +0.0.1 (1.1.0 → 1.1.1), een wat grotere update +0.1 (1.1.x → 1.2.0),
+// en alleen als de eigenaar zegt dat het een grote update is +1 (→ 2.0.0). Het nummer staat bij de nieuwste release.
+export const APP_VERSION = CHANGELOG.find((r) => r.version)?.version ?? "1.0.0";

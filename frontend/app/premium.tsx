@@ -9,7 +9,7 @@ import { Button, Field, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
-import { GOLD, PLAN_NAME, PREMIUM_FEATURES, ULTRA, usePlans, type PlanKey } from "@/src/premium";
+import { GOLD, PLAN_NAME, PREMIUM_FEATURES, ULTRA, planAccent, planIcon, usePlans, type PlanKey } from "@/src/premium";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -116,7 +116,7 @@ export default function PremiumScreen() {
       </View>
       <KeyboardAwareScrollView bottomOffset={20} contentContainerStyle={{ padding: 16, gap: 18, paddingBottom: insets.bottom + 24 }} keyboardShouldPersistTaps="handled">
         <View style={styles.hero}>
-          <Icon name="star" size={34} color={GOLD.icon} />
+          <Icon name={planIcon(mine)} size={34} color={planAccent(mine).icon} />
           <Text style={styles.heroTitle}>{user?.premium ? `Je hebt ${PLAN_NAME[mine]}` : "Wat kost het en wat krijg je?"}</Text>
           <Text style={styles.heroText}>
             {(user as any)?.trial
@@ -152,7 +152,7 @@ export default function PremiumScreen() {
             return (
               <View key={l.key} style={[styles.plan, c && { backgroundColor: c.bg, borderColor: c.border }, mine === l.key && styles.planMine]} testID={`plan-${l.key}`}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                  {l.key !== "standaard" ? <Icon name="star" size={16} color={c!.icon} /> : null}
+                  {l.key !== "standaard" ? <Icon name={planIcon(l.key)} size={16} color={c!.icon} /> : null}
                   <Text style={[styles.planName, c && { color: c.text }]}>{l.label}</Text>
                   {mine === l.key ? <Text style={styles.planNow}>Jouw abonnement</Text> : null}
                 </View>
@@ -203,22 +203,28 @@ export default function PremiumScreen() {
           {PREMIUM_FEATURES.map((f) => {
             const need = planOf(f.key);
             const have = rank[mine] >= rank[need];
+            const fc = planAccent(need);
             return (
               <Pressable
                 key={f.title}
-                style={styles.feature}
+                style={[styles.feature, { backgroundColor: fc.bg, borderColor: fc.border }]}
                 disabled={!have || !f.to}
                 onPress={() => f.to && router.push(f.to as any)}
                 testID={`premium-feature-${f.icon}`}
               >
-                <Icon name={f.icon} size={22} color={need === "ultra" ? ULTRA.icon : GOLD.icon} />
+                <Icon name={f.icon} size={22} color={fc.icon} />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.featureTitle}>
-                    {f.title}
-                    {need !== "standaard" ? <Text style={styles.featureWhere}>{`  ${PLAN_NAME[need]}`}</Text> : null}
-                  </Text>
-                  <Text style={styles.featureText}>{f.text}</Text>
-                  {f.where ? <Text style={styles.featureWhere}>{f.where}</Text> : null}
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <Text style={[styles.featureTitle, { color: fc.text }]}>{f.title}</Text>
+                    {need !== "standaard" ? (
+                      <View style={[styles.planTag, { backgroundColor: fc.icon }]}>
+                        <Icon name={planIcon(need)} size={11} color="#FFFFFF" />
+                        <Text style={styles.planTagText}>{PLAN_NAME[need]}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={[styles.featureText, { color: fc.text }]}>{f.text}</Text>
+                  {f.where ? <Text style={[styles.featureWhere, { color: fc.icon }]}>{f.where}</Text> : null}
                 </View>
                 {have && f.to ? <Icon name="chevron-right" size={20} color={colors.muted} /> : null}
               </Pressable>
@@ -321,15 +327,15 @@ function PlanCompare({ levels }: { levels: { key: PlanKey; price?: number | null
       <Text style={styles.cmpTitle}>Wat levert het jou op?</Text>
       <View style={styles.cmpRow}>
         <Text style={[styles.cmpCell, styles.cmpHead, { flex: 1.3 }]} />
-        {["Standaard", "Premium", "Ultra"].map((h) => (
-          <Text key={h} style={[styles.cmpCell, styles.cmpHead]}>{h}</Text>
+        {["Standaard", "Premium", "Ultra"].map((h, i) => (
+          <Text key={h} style={[styles.cmpCell, styles.cmpHead, i > 0 && { color: planAccent(i === 2 ? "ultra" : "premium").icon }]}>{h}</Text>
         ))}
       </View>
       {rows.map((r) => (
         <View key={r[0]} style={styles.cmpRow}>
           <Text style={[styles.cmpCell, styles.cmpLabel, { flex: 1.3 }]}>{r[0]}</Text>
           {r.slice(1).map((v, k) => (
-            <Text key={k} style={styles.cmpCell}>{v}</Text>
+            <Text key={k} style={[styles.cmpCell, k > 0 && { color: planAccent(k === 2 ? "ultra" : "premium").text }]}>{v}</Text>
           ))}
         </View>
       ))}
@@ -365,7 +371,9 @@ const useStyles = makeStyles((colors) => ({
   hero: { alignItems: "center", gap: 6, backgroundColor: GOLD.bg, borderColor: GOLD.border, borderWidth: 1, borderRadius: 20, padding: 20 },
   heroTitle: { fontSize: 20, fontFamily: fonts.bold, color: GOLD.text, textAlign: "center" },
   heroText: { fontSize: 14, lineHeight: 20, fontFamily: fonts.regular, color: GOLD.text, textAlign: "center" },
-  feature: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
+  feature: { flexDirection: "row", gap: 12, alignItems: "flex-start", borderWidth: 1, borderRadius: 14, padding: 12 },
+  planTag: { flexDirection: "row", alignItems: "center", gap: 3, borderRadius: 999, paddingHorizontal: 7, paddingVertical: 2 },
+  planTagText: { fontSize: 11, fontFamily: fonts.bold, color: "#FFFFFF" },
   plans: { gap: 10 },
   plan: { gap: 4, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary, padding: 14 },
   planMine: { borderWidth: 2, borderColor: colors.brandPrimary },

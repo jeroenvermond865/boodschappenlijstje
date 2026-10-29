@@ -9,6 +9,7 @@ import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
+import { planAccent, planIcon } from "@/src/premium";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type AdminUser = { id: string; name: string; email: string; username?: string | null; phone?: string | null; role: string; premium?: boolean; plan?: "standaard" | "premium" | "ultra";
@@ -17,6 +18,7 @@ type AdminUser = { id: string; name: string; email: string; username?: string | 
 const nlDate = (iso?: string | null) =>
   iso ? new Date(iso).toLocaleString("nl-NL", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : null;
 type Role = { name: string; label: string };
+const PAGE = 50;
 type SignupReq = { id: string; name?: string; email?: string; auth_provider?: string; created_at?: string | null };
 
 export default function AdminUsersScreen() {
@@ -66,22 +68,33 @@ export default function AdminUsersScreen() {
     onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
   });
 
-  // Zoeken op naam, e-mail, gebruikersnaam, telefoon of rol; filter op Premium
+  // Zoeken op naam, e-mail, gebruikersnaam of telefoon; filteren op rol en abonnement; sorteren; per 50 tonen.
+  // Zo blijft het overzichtelijk, ook met duizend gebruikers.
   const [q, setQ] = useState("");
-  const [onlyPremium, setOnlyPremium] = useState(false);
+  const [roleFilter, setRoleFilter] = useState<string>("all");
+  const [planFilter, setPlanFilter] = useState<"all" | "standaard" | "premium" | "ultra">("all");
+  const [sort, setSort] = useState<"new" | "name">("new");
+  const [shown, setShown] = useState(PAGE);
+  const [signupOpen, setSignupOpen] = useState(false);
   const norm = (t?: string | null) => (t ?? "").toLowerCase();
   const terms = norm(q).split(/\s+/).filter(Boolean);
   const allUsers = usersData?.users ?? [];
-  const users = allUsers.filter(
-    (u) =>
-      (!onlyPremium || u.premium) &&
-      terms.every((t) => [u.name, u.email, u.username, u.phone, u.role].some((v) => norm(v).includes(t))),
-  );
+  const planOf = (u: AdminUser) => u.plan ?? (u.premium ? "premium" : "standaard");
+  const users = allUsers
+    .filter(
+      (u) =>
+        (roleFilter === "all" || u.role === roleFilter) &&
+        (planFilter === "all" || planOf(u) === planFilter) &&
+        terms.every((t) => [u.name, u.email, u.username, u.phone].some((v) => norm(v).includes(t))),
+    )
+    .sort((a, b) => (sort === "name" ? norm(a.name || a.email).localeCompare(norm(b.name || b.email)) : (b.created_at ?? "").localeCompare(a.created_at ?? "")));
   // Alleen de beheerder kan iemand beheerder maken
-  const roles = (rolesData?.roles ?? []).filter((r) => iAmOwner || r.name !== "beheerder");
+  const allRoles = rolesData?.roles ?? [];
+  const roles = allRoles.filter((r) => iAmOwner || r.name !== "beheerder");
+  const roleLabel = (n: string) => allRoles.find((r) => r.name === n)?.label ?? n;
+  const countBy = (f: (u: AdminUser) => boolean) => allUsers.filter(f).length;
+  const resetPage = () => setShown(PAGE);
 
-  // De ster wisselt: Standaard -> Premium -> Ultra -> Standaard
-  const NEXT_PLAN: Record<string, "standaard" | "premium" | "ultra"> = { standaard: "premium", premium: "ultra", ultra: "standaard" };
   const PLAN_LABEL: Record<string, string> = { standaard: "Standaard", premium: "Premium", ultra: "Ultra" };
   const setPremium = useMutation({
     mutationFn: (v: { id: string; plan: string }) => api(`/admin/users/${v.id}/plan`, { method: "PUT", body: { plan: v.plan } }),
@@ -166,7 +179,25 @@ export default function AdminUsersScreen() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 24, gap: 12 }} keyboardShouldPersistTaps="handled">
+          {/* Overzicht in getallen; tik om te filteren */}
+          <View style={styles.stats}>
+            <Stat label="Totaal" n={allUsers.length} on={planFilter === "all" && roleFilter === "all"} onPress={() => { setPlanFilter("all"); setRoleFilter("all"); resetPage(); }} />
+            <Stat label="Standaard" n={countBy((u) => planOf(u) === "standaard")} on={planFilter === "standaard"} onPress={() => { setPlanFilter("standaard"); resetPage(); }} />
+            <Stat label="Premium" n={countBy((u) => planOf(u) === "premium")} on={planFilter === "premium"} color={planAccent("premium")} onPress={() => { setPlanFilter("premium"); resetPage(); }} />
+            <Stat label="Ultra" n={countBy((u) => planOf(u) === "ultra")} on={planFilter === "ultra"} color={planAccent("ultra")} onPress={() => { setPlanFilter("ultra"); resetPage(); }} />
+          </View>
+
+          {/* Accountaanvragen: klein, klapt open */}
           <View style={styles.card} testID="signup-approval">
+            <Pressable onPress={() => setSignupOpen((v) => !v)} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <Icon name="account-clock-outline" size={20} color={colors.brandPrimary} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.name}>Accounts eerst goedkeuren: {signupOn ? "aan" : "uit"}</Text>
+                {signupReqs.length ? <Text style={[styles.email, { color: colors.brandPrimary }]}>{signupReqs.length === 1 ? "1 aanvraag wacht" : `${signupReqs.length} aanvragen wachten`}</Text> : null}
+              </View>
+              <Icon name={signupOpen ? "chevron-up" : "chevron-down"} size={22} color={colors.muted} />
+            </Pressable>
+            {signupOpen ? (
             <Pressable
               testID="signup-approval-toggle"
               onPress={() => toggleSignup.mutate(!signupOn)}
@@ -174,7 +205,6 @@ export default function AdminUsersScreen() {
               style={{ flexDirection: "row", alignItems: "center", gap: 12 }}
             >
               <View style={{ flex: 1 }}>
-                <Text style={styles.name}>Accounts eerst goedkeuren</Text>
                 <Text style={styles.email}>
                   {signupOn
                     ? "Aan: wie zich registreert, komt hieronder als aanvraag te staan en kan pas inloggen na jouw goedkeuring."
@@ -183,11 +213,9 @@ export default function AdminUsersScreen() {
               </View>
               <Icon name={signupOn ? "toggle-switch" : "toggle-switch-off-outline"} size={40} color={signupOn ? colors.brandPrimary : colors.muted} />
             </Pressable>
+            ) : null}
             {signupReqs.length ? (
-              <View style={{ gap: 10, marginTop: 12 }}>
-                <Text style={styles.count}>
-                  {signupReqs.length === 1 ? "1 accountaanvraag" : `${signupReqs.length} accountaanvragen`}
-                </Text>
+              <View style={{ gap: 10 }}>
                 {signupReqs.map((r) => (
                   <View key={r.id} style={styles.signupRow} testID={`signup-${r.id}`}>
                     <Text style={styles.name} numberOfLines={1}>{r.name || r.email}</Text>
@@ -221,73 +249,64 @@ export default function AdminUsersScreen() {
               </View>
             ) : null}
           </View>
-          <Field testID="user-search" value={q} onChangeText={setQ} placeholder="Zoek op naam, e-mail, gebruikersnaam of telefoon" autoCapitalize="none" />
+
+          <Field testID="user-search" value={q} onChangeText={(t) => { setQ(t); resetPage(); }} placeholder="Zoek op naam, e-mail, gebruikersnaam of telefoon" autoCapitalize="none" />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+            {[{ name: "all", label: "Alle rollen" }, ...allRoles].map((r) => {
+              const n = r.name === "all" ? allUsers.length : countBy((u) => u.role === r.name);
+              if (r.name !== "all" && !n) return null;
+              const active = roleFilter === r.name;
+              return (
+                <Pressable key={r.name} testID={`role-filter-${r.name}`} onPress={() => { setRoleFilter(r.name); resetPage(); }} style={[styles.chip, active && styles.chipActive]}>
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{r.label} ({n})</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
           <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
             <Text style={styles.count}>
               {users.length === allUsers.length ? `${allUsers.length} gebruikers` : `${users.length} van ${allUsers.length} gebruikers`}
             </Text>
-            <Pressable onPress={() => setOnlyPremium((v) => !v)} style={{ flexDirection: "row", alignItems: "center", gap: 6 }} hitSlop={6}>
-              <Icon name={onlyPremium ? "checkbox-marked" : "checkbox-blank-outline"} size={20} color={colors.brandPrimary} />
-              <Text style={styles.count}>Alleen Premium</Text>
+            <Pressable onPress={() => setSort((v) => (v === "new" ? "name" : "new"))} style={{ flexDirection: "row", alignItems: "center", gap: 4 }} hitSlop={6} testID="user-sort">
+              <Icon name="sort" size={18} color={colors.brandPrimary} />
+              <Text style={[styles.count, { color: colors.brandPrimary }]}>{sort === "new" ? "Nieuwste eerst" : "Naam A-Z"}</Text>
             </Pressable>
           </View>
-          {users.map((u) => (
-            <View key={u.id} style={styles.card} testID={`user-${u.id}`}>
-              <View style={styles.userRow}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>{(u.name ?? u.email).charAt(0).toUpperCase()}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={styles.nameRow}>
-                    <Text style={[styles.name, { flexShrink: 1 }]} numberOfLines={1}>
-                      {u.name}
+
+          <View style={styles.listCard}>
+            {users.slice(0, shown).map((u, i) => {
+              const plan = planOf(u);
+              const pc = plan === "standaard" ? null : planAccent(plan);
+              return (
+                <Pressable key={u.id} testID={`user-${u.id}`} onPress={() => openEdit(u)} style={({ pressed }) => [styles.userRow, i > 0 && styles.rowLine, pressed && { opacity: 0.7 }]}>
+                  <View style={[styles.avatar, pc && { backgroundColor: pc.icon }]}>
+                    <Text style={styles.avatarText}>{(u.name || u.email || "?").charAt(0).toUpperCase()}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.name} numberOfLines={1}>{u.name || u.email}</Text>
+                    <Text style={styles.email} numberOfLines={1}>
+                      {u.email}
+                      {!u.terms_ok ? " · voorwaarden open" : ""}
                     </Text>
-                    {u.premium ? (
-                      <View style={styles.premiumPill}>
-                        <Icon name="star" size={11} color={colors.onBrandSecondary} />
-                        <Text style={styles.premiumText}>{u.plan === "ultra" ? "Ultra" : "Premium"}</Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end", gap: 4 }}>
+                    <Text style={styles.rolePill} numberOfLines={1}>{roleLabel(u.role)}</Text>
+                    {pc ? (
+                      <View style={[styles.premiumPill, { backgroundColor: pc.icon }]}>
+                        <Icon name={planIcon(plan)} size={11} color="#FFFFFF" />
+                        <Text style={styles.premiumText}>{PLAN_LABEL[plan]}</Text>
                       </View>
                     ) : null}
                   </View>
-                  <Text style={styles.email} numberOfLines={1}>
-                    {u.email}
-                  </Text>
-                  <Text style={[styles.email, { color: u.terms_ok ? colors.muted : colors.error }]} numberOfLines={2}>
-                    {u.terms_accepted_at
-                      ? `Voorwaarden akkoord: ${nlDate(u.terms_accepted_at)}${u.terms_ok ? "" : ` (oude versie ${u.terms_version ?? "?"})`}`
-                      : "Voorwaarden nog niet geaccepteerd"}
-                  </Text>
-                </View>
-                <Pressable
-                  testID={`user-premium-${u.id}`}
-                  onPress={() => setPremium.mutate({ id: u.id, plan: NEXT_PLAN[u.plan ?? (u.premium ? "premium" : "standaard")] })}
-                  hitSlop={8}
-                  style={styles.editBtn}
-                >
-                  <Icon name={u.plan === "ultra" ? "star-shooting" : u.premium ? "star" : "star-outline"} size={22} color={u.premium ? colors.brandSecondary : colors.muted} />
+                  <Icon name="chevron-right" size={20} color={colors.muted} />
                 </Pressable>
-                <Pressable testID={`user-edit-${u.id}`} onPress={() => openEdit(u)} hitSlop={8} style={styles.editBtn}>
-                  <Icon name="pencil-outline" size={20} color={colors.brandPrimary} />
-                </Pressable>
-              </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                {roles.map((r) => {
-                  const active = u.role === r.name;
-                  return (
-                    <Pressable
-                      key={r.name}
-                      testID={`user-${u.id}-role-${r.name}`}
-                      disabled={active}
-                      onPress={() => setRole.mutate({ id: u.id, role: r.name })}
-                      style={[styles.chip, active && styles.chipActive]}
-                    >
-                      <Text style={[styles.chipText, active && styles.chipTextActive]}>{r.label}</Text>
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-            </View>
-          ))}
+              );
+            })}
+            {!users.length ? <Text style={[styles.email, { padding: 14 }]}>Niemand gevonden.</Text> : null}
+          </View>
+          {users.length > shown ? (
+            <Button label={`Meer tonen (${users.length - shown} over)`} variant="secondary" onPress={() => setShown((n) => n + PAGE)} testID="users-more" />
+          ) : null}
         </ScrollView>
       )}
 
@@ -304,6 +323,41 @@ export default function AdminUsersScreen() {
                 <Icon name="close" size={22} color={colors.onSurface} />
               </Pressable>
             </View>
+            {edit ? (
+              <View style={{ gap: 8 }}>
+                <Text style={styles.pwTitle}>Rol</Text>
+                <View style={[styles.chipRow, { flexWrap: "wrap" }]}>
+                  {roles.map((r) => {
+                    const active = (allUsers.find((x) => x.id === edit.id)?.role ?? edit.role) === r.name;
+                    return (
+                      <Pressable key={r.name} testID={`user-${edit.id}-role-${r.name}`} disabled={active} onPress={() => setRole.mutate({ id: edit.id, role: r.name })} style={[styles.chip, active && styles.chipActive]}>
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{r.label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Text style={styles.pwTitle}>Abonnement</Text>
+                <View style={[styles.chipRow, { flexWrap: "wrap" }]}>
+                  {(["standaard", "premium", "ultra"] as const).map((pl) => {
+                    const cur = allUsers.find((x) => x.id === edit.id) ?? edit;
+                    const active = planOf(cur) === pl;
+                    const pc = pl === "standaard" ? null : planAccent(pl);
+                    return (
+                      <Pressable key={pl} testID={`user-premium-${edit.id}-${pl}`} disabled={active} onPress={() => setPremium.mutate({ id: edit.id, plan: pl })}
+                        style={[styles.chip, active && (pc ? { backgroundColor: pc.icon, borderColor: pc.icon } : styles.chipActive)]}>
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{PLAN_LABEL[pl]}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Text style={styles.email}>
+                  {edit.terms_accepted_at
+                    ? `Voorwaarden akkoord: ${nlDate(edit.terms_accepted_at)}${edit.terms_ok ? "" : ` (oude versie ${edit.terms_version ?? "?"})`}`
+                    : "Voorwaarden nog niet geaccepteerd"}
+                  {edit.created_at ? ` · lid sinds ${nlDate(edit.created_at)}` : ""}
+                </Text>
+              </View>
+            ) : null}
             <Field label="Naam" testID="admin-user-name" value={form.name} onChangeText={(t) => setForm((f) => ({ ...f, name: t }))} />
             <Field label="Gebruikersnaam" testID="admin-user-username" value={form.username} onChangeText={(t) => setForm((f) => ({ ...f, username: t }))} autoCapitalize="none" />
             <Field label="E-mail" testID="admin-user-email" value={form.email} onChangeText={(t) => setForm((f) => ({ ...f, email: t }))} autoCapitalize="none" keyboardType="email-address" />
@@ -329,7 +383,25 @@ export default function AdminUsersScreen() {
   );
 }
 
+function Stat({ label, n, on, onPress, color }: { label: string; n: number; on: boolean; onPress: () => void; color?: { bg: string; border: string; text: string } }) {
+  const styles = useStyles();
+  return (
+    <Pressable onPress={onPress} style={[styles.stat, color && { backgroundColor: color.bg, borderColor: color.border }, on && styles.statOn]} testID={`stat-${label}`}>
+      <Text style={[styles.statN, color && { color: color.text }]}>{n}</Text>
+      <Text style={[styles.statLabel, color && { color: color.text }]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 const useStyles = makeStyles((colors) => ({
+  stats: { flexDirection: "row", gap: 8 },
+  stat: { flex: 1, alignItems: "center", paddingVertical: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary },
+  statOn: { borderWidth: 2, borderColor: colors.brandPrimary },
+  statN: { fontSize: 20, fontFamily: fonts.bold, color: colors.onSurface },
+  statLabel: { fontSize: 11, fontFamily: fonts.semibold, color: colors.muted },
+  listCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
+  rowLine: { borderTopWidth: 1, borderTopColor: colors.divider },
+  rolePill: { fontSize: 11, fontFamily: fonts.semibold, color: colors.onBrandTertiary, backgroundColor: colors.brandTertiary, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, overflow: "hidden", maxWidth: 110 },
   count: { fontSize: 13, fontFamily: fonts.medium, color: colors.muted },
   root: { flex: 1, backgroundColor: colors.surface },
   header: {
@@ -345,10 +417,10 @@ const useStyles = makeStyles((colors) => ({
   headerTitle: { flex: 1, textAlign: "center", fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   center: { flex: 1, alignItems: "center", justifyContent: "center", paddingTop: 40 },
   card: { backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 12 },
-  userRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  userRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 10 },
   avatar: {
-    width: 42,
-    height: 42,
+    width: 36,
+    height: 36,
     borderRadius: 999,
     backgroundColor: colors.brandPrimary,
     alignItems: "center",
@@ -366,7 +438,7 @@ const useStyles = makeStyles((colors) => ({
     paddingVertical: 2,
     borderRadius: 999,
   },
-  premiumText: { fontSize: 11, fontFamily: fonts.semibold, color: colors.onBrandSecondary },
+  premiumText: { fontSize: 11, fontFamily: fonts.semibold, color: "#FFFFFF" },
   email: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
   chipRow: { gap: 8, alignItems: "center" },
   chip: {

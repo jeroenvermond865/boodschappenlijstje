@@ -21,7 +21,7 @@ import type { Package } from "@/app/package/edit";
 import type { Product } from "@/app/(tabs)/products";
 import { useAuth } from "@/src/auth";
 import { dietConflicts, useDiet } from "@/src/diet";
-import { GOLD, useFeature } from "@/src/premium";
+import { GOLD, useFeature, useFeatureAccent } from "@/src/premium";
 import { useSwipePages } from "@/src/useSwipePages";
 import { goBack } from "@/src/nav";
 import { VegaPicker } from "@/src/VegaPicker";
@@ -57,6 +57,7 @@ type Camp = {
 };
 
 export default function CampDetailScreen() {
+  const menuAcc = useFeatureAccent("weekmenu");
   const styles = useStyles();
   const T = useTerms();
   const { colors } = useTheme();
@@ -374,10 +375,10 @@ export default function CampDetailScreen() {
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetchCamp(); qc.invalidateQueries({ queryKey: ["dishes"] }); qc.invalidateQueries({ queryKey: ["budget", id] }); }} tintColor={colors.brandPrimary} />}
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32, gap: 14 }}
       >
-        <Pressable testID="auto-menu-button" onPress={() => (premium ? setMenuOpen(true) : router.push("/premium"))} style={styles.autoMenuBtn}>
-          <Icon name="calendar-star" size={18} color={GOLD.icon} />
-          <Text style={styles.autoMenuText}>Menu automatisch invullen</Text>
-          <Icon name={premium ? "chevron-right" : "star"} size={18} color={GOLD.icon} />
+        <Pressable testID="auto-menu-button" onPress={() => (premium ? setMenuOpen(true) : router.push("/premium"))} style={[styles.autoMenuBtn, { backgroundColor: menuAcc.c.bg, borderColor: menuAcc.c.border }]}>
+          <Icon name="calendar-star" size={18} color={menuAcc.c.icon} />
+          <Text style={[styles.autoMenuText, { color: menuAcc.c.text }]}>Menu automatisch invullen</Text>
+          <Icon name={premium ? "chevron-right" : menuAcc.icon} size={18} color={menuAcc.c.icon} />
         </Pressable>
         {canViewBudget && budget ? (
           budget.budget_target > 0 ? (

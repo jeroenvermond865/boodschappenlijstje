@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Linking, Platform, Pressable, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -39,6 +39,7 @@ export default function AppSettingsScreen() {
   const [subDishes, setSubDishes] = useState("");
   const [subProducts, setSubProducts] = useState("");
   const [subAccount, setSubAccount] = useState("");
+  const [open, setOpen] = useState<string | null>("naam");
 
   useEffect(() => {
     if (data) {
@@ -84,48 +85,39 @@ export default function AppSettingsScreen() {
         <Text style={styles.headerTitle}>App aanpassen</Text>
         <View style={styles.headerBtn} />
       </View>
-      <KeyboardAwareScrollView bottomOffset={20} contentContainerStyle={{ padding: 16, gap: 16 }} keyboardShouldPersistTaps="handled">
-        <Text style={styles.group}>Voorpagina & naam</Text>
-        <Field label="App-naam" testID="settings-appname" value={appName} onChangeText={setAppName} />
-        <Field label="Ondertitel" testID="settings-tagline" value={tagline} onChangeText={setTagline} multiline />
-        <ImageUploadField
-          label="Achtergrondafbeelding inlogscherm"
-          testID="settings-hero-pick"
-          value={heroUrl}
-          onChange={setHeroUrl}
-          aspect={16 / 9}
-        />
-        <ImageUploadField
-          label="Klein logo"
-          testID="settings-logo-pick"
-          value={logoUrl}
-          onChange={setLogoUrl}
-          circle
-        />
-        <Text style={styles.hint}>Dit is wat gebruikers zien op het inlogscherm.</Text>
+      <KeyboardAwareScrollView bottomOffset={20} contentContainerStyle={{ padding: 16, gap: 12, width: "100%", maxWidth: 720, alignSelf: "center" }} keyboardShouldPersistTaps="handled">
+        {/* Vier onderdelen die je openklapt; er staat er steeds één open, dan blijft het overzichtelijk */}
+        <Panel id="naam" open={open} setOpen={setOpen} icon="palette-outline" title="Naam & inlogscherm" sub={appName || "Naam, ondertitel, achtergrond en logo"}>
+          <Field label="App-naam" testID="settings-appname" value={appName} onChangeText={setAppName} />
+          <Field label="Ondertitel" testID="settings-tagline" value={tagline} onChangeText={setTagline} multiline />
+          <ImageUploadField label="Achtergrond inlogscherm" testID="settings-hero-pick" value={heroUrl} onChange={setHeroUrl} aspect={16 / 9} />
+          <ImageUploadField label="Klein logo" testID="settings-logo-pick" value={logoUrl} onChange={setLogoUrl} circle />
+          <Button label="Opslaan" icon="content-save-outline" onPress={() => save.mutate()} loading={save.isPending} testID="settings-save" />
+        </Panel>
 
-        <Text style={styles.group}>Tabbladen (naam + ondertitel)</Text>
-        <Field label="Tab 1 – naam (meervoud)" testID="settings-tab-camps" value={tabCamps} onChangeText={setTabCamps} />
-        <Field
-          label="Tab 1 – enkelvoud"
-          testID="settings-term-one"
-          value={termOne}
-          onChangeText={setTermOne}
-          placeholder={singularOf(tabCamps || "Kampen")}
-        />
-        <Text style={styles.hint}>Zo heet één {(termOne || singularOf(tabCamps || "Kampen")).toLowerCase()} overal in de app. Leeg laten = automatisch.</Text>
-        <Field label="Tab 1 – ondertitel" testID="settings-sub-camps" value={subCamps} onChangeText={setSubCamps} />
-        <Field label="Tab 2 – naam (gerechten)" testID="settings-tab-dishes" value={tabDishes} onChangeText={setTabDishes} />
-        <Field label="Tab 2 – ondertitel" testID="settings-sub-dishes" value={subDishes} onChangeText={setSubDishes} />
-        <Field label="Tab 3 – naam (producten)" testID="settings-tab-products" value={tabProducts} onChangeText={setTabProducts} />
-        <Field label="Tab 3 – ondertitel" testID="settings-sub-products" value={subProducts} onChangeText={setSubProducts} />
-        <Field label="Tab 4 – naam (account)" testID="settings-tab-account" value={tabAccount} onChangeText={setTabAccount} />
-        <Field label="Tab 4 – ondertitel" testID="settings-sub-account" value={subAccount} onChangeText={setSubAccount} />
-        <Text style={styles.hint}>De naam én de ondertitel bovenaan elk tabblad passen zich hierop aan.</Text>
+        <Panel id="tabs" open={open} setOpen={setOpen} icon="tab" title="Tabbladen" sub={[tabCamps, tabDishes, tabProducts, tabAccount].filter(Boolean).join(" · ")}>
+          <Text style={styles.hint}>Naam en ondertitel bovenaan elk tabblad.</Text>
+          <TabFields n={1} name={tabCamps} setName={setTabCamps} sub={subCamps} setSub={setSubCamps} idName="settings-tab-camps" idSub="settings-sub-camps" />
+          <Field
+            label="Tab 1 – één ervan heet"
+            testID="settings-term-one"
+            value={termOne}
+            onChangeText={setTermOne}
+            placeholder={singularOf(tabCamps || "Kampen")}
+          />
+          <TabFields n={2} name={tabDishes} setName={setTabDishes} sub={subDishes} setSub={setSubDishes} idName="settings-tab-dishes" idSub="settings-sub-dishes" />
+          <TabFields n={3} name={tabProducts} setName={setTabProducts} sub={subProducts} setSub={setSubProducts} idName="settings-tab-products" idSub="settings-sub-products" />
+          <TabFields n={4} name={tabAccount} setName={setTabAccount} sub={subAccount} setSub={setSubAccount} idName="settings-tab-account" idSub="settings-sub-account" />
+          <Button label="Opslaan" icon="content-save-outline" onPress={() => save.mutate()} loading={save.isPending} testID="settings-save-tabs" />
+        </Panel>
 
-        <Button label="Opslaan" onPress={() => save.mutate()} loading={save.isPending} testID="settings-save" />
-        <SourcesCard />
-        <BackupCard />
+        <Panel id="bronnen" open={open} setOpen={setOpen} icon="storefront-outline" title="Supermarktbronnen" sub="Wat de app van de winkels mag tonen en ophalen">
+          <SourcesCard />
+        </Panel>
+
+        <Panel id="backup" open={open} setOpen={setOpen} icon="cloud-upload-outline" title="Back-up & e-mail" sub="Nachtelijke back-up en Gmail als afzender">
+          <BackupCard />
+        </Panel>
       </KeyboardAwareScrollView>
     </View>
   );
@@ -155,8 +147,7 @@ function SourcesCard() {
     onError: (e: any) => toast.show(e?.message ?? "Opslaan lukte niet", "error"),
   });
   return (
-    <View style={{ gap: 10, marginTop: 12 }}>
-      <Text style={styles.group}>Supermarktbronnen</Text>
+    <View style={{ gap: 10 }}>
       <Text style={[styles.hint, { marginTop: 0 }]}>
         Zolang er geen toestemming is, staat dit uit. Heeft een supermarkt ja gezegd, dan zet je het hier weer aan. Het geldt voor alle winkels tegelijk.
       </Text>
@@ -223,8 +214,7 @@ function BackupCard() {
   const s = status.data;
   const stale = !!s && (!s.ok_at || Date.now() - new Date(s.ok_at).getTime() > BACKUP_STALE_MS);
   return (
-    <View style={{ gap: 10, marginTop: 12 }}>
-      <Text style={styles.group}>Back-up</Text>
+    <View style={{ gap: 10 }}>
       <Text style={[styles.hint, { marginTop: 0 }]}>
         Elke nacht gaat er een back-up van alle gegevens (gebruikers, lijstjes, gerechten, voorraad) naar {s?.to ?? "je mail"}.
         Winkelproducten zitten er niet in, die haalt de app zelf weer op.
@@ -272,7 +262,47 @@ function BackupCard() {
   );
 }
 
+// Een onderdeel dat openklapt
+function Panel({ id, open, setOpen, icon, title, sub, children }: { id: string; open: string | null; setOpen: (v: string | null) => void; icon: any; title: string; sub?: string; children: ReactNode }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const isOpen = open === id;
+  return (
+    <View style={[styles.panel, isOpen && { borderColor: colors.brandPrimary }]}>
+      <Pressable testID={`panel-${id}`} onPress={() => setOpen(isOpen ? null : id)} style={styles.panelHead}>
+        <View style={styles.panelIcon}>
+          <Icon name={icon} size={20} color={colors.brandPrimary} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.panelTitle}>{title}</Text>
+          {sub && !isOpen ? <Text style={[styles.hint, { marginTop: 1 }]} numberOfLines={1}>{sub}</Text> : null}
+        </View>
+        <Icon name={isOpen ? "chevron-up" : "chevron-down"} size={22} color={colors.muted} />
+      </Pressable>
+      {isOpen ? <View style={{ gap: 14, marginTop: 12 }}>{children}</View> : null}
+    </View>
+  );
+}
+
+// Naam en ondertitel van één tabblad naast elkaar (op een smal scherm onder elkaar)
+function TabFields({ n, name, setName, sub, setSub, idName, idSub }: { n: number; name: string; setName: (v: string) => void; sub: string; setSub: (v: string) => void; idName: string; idSub: string }) {
+  return (
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+      <View style={{ flexGrow: 1, flexBasis: 160 }}>
+        <Field label={`Tab ${n} – naam`} testID={idName} value={name} onChangeText={setName} />
+      </View>
+      <View style={{ flexGrow: 2, flexBasis: 220 }}>
+        <Field label={`Tab ${n} – ondertitel`} testID={idSub} value={sub} onChangeText={setSub} />
+      </View>
+    </View>
+  );
+}
+
 const useStyles = makeStyles((colors) => ({
+  panel: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, backgroundColor: colors.surface },
+  panelHead: { flexDirection: "row", alignItems: "center", gap: 12 },
+  panelIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
+  panelTitle: { fontSize: 16, fontFamily: fonts.bold, color: colors.onSurface },
   root: { flex: 1, backgroundColor: colors.surface },
   header: {
     flexDirection: "row",
@@ -286,5 +316,5 @@ const useStyles = makeStyles((colors) => ({
   headerBtn: { width: 44, height: 40, alignItems: "center", justifyContent: "center" },
   headerTitle: { flex: 1, textAlign: "center", fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   group: { fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface, marginTop: 4 },
-  hint: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted, marginTop: -8 },
+  hint: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
 }));

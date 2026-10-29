@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
+import { useRouter } from "expo-router";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -34,6 +35,7 @@ export default function AdminFeedbackScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const qc = useQueryClient();
+  const router = useRouter();
 
   const { data, isLoading } = useQuery({
     queryKey: ["admin-feedback"],
@@ -84,7 +86,7 @@ export default function AdminFeedbackScreen() {
         <Pressable testID="back-button" onPress={() => goBack("/")} hitSlop={10} style={styles.headerBtn}>
           <Icon name="chevron-left" size={28} color={colors.onSurface} />
         </Pressable>
-        <Text style={styles.headerTitle}>Feedback van gebruikers</Text>
+        <Text style={styles.headerTitle}>Feedback & aanvragen</Text>
         <View style={styles.headerBtn} />
       </View>
 
@@ -94,6 +96,11 @@ export default function AdminFeedbackScreen() {
         </View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 24, gap: 12 }} keyboardShouldPersistTaps="handled">
+          <Pressable testID="admin-store-requests-link" onPress={() => router.push("/admin/store-requests")} style={[styles.tab, { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "stretch" }]}>
+            <Icon name="storefront-outline" size={18} color={colors.brandPrimary} />
+            <Text style={[styles.tabText, { flex: 1 }]}>Supermarkt-aanvragen</Text>
+            <Icon name="chevron-right" size={20} color={colors.muted} />
+          </Pressable>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
             {TABS.map((t) => {
               const n = (data?.feedback ?? []).filter((f) => (t.key === "open" ? !f.folder : f.folder === t.key)).length;

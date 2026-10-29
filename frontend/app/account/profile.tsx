@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import Modal from "@/src/components/Modal";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
@@ -36,6 +36,7 @@ export default function ProfileScreen() {
   const [emailOn, setEmailOn] = useState(!(user?.email_opt_out ?? false));
   const [personalOn, setPersonalOn] = useState(!(user?.no_personal ?? false));
   const [savingProfile, setSavingProfile] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false); // wachtwoordvelden pas tonen als je wilt wijzigen
 
   const [current, setCurrent] = useState("");
   const [newPw, setNewPw] = useState("");
@@ -128,6 +129,7 @@ export default function ProfileScreen() {
       });
       setCurrent("");
       setNewPw("");
+      setPwOpen(false);
       setConfirmPw("");
       toast.show("Wachtwoord gewijzigd", "success");
     } catch (e: any) {
@@ -149,11 +151,11 @@ export default function ProfileScreen() {
 
       <KeyboardAwareScrollView
         bottomOffset={20}
-        contentContainerStyle={{ padding: 16, gap: 22 }}
+        contentContainerStyle={{ padding: 16, gap: 16, width: "100%", maxWidth: 640, alignSelf: "center" }}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Gegevens</Text>
+        {/* Overzichtelijk in kaarten: wie je bent, contact, winkel, privacy, wachtwoord en als laatste verwijderen */}
+        <Section icon="account-circle-outline" title="Over jou">
           <ImageUploadField label="Profielfoto" testID="profile-photo" value={picture} onChange={setPicture} circle />
           <Field label="Naam" testID="profile-name" value={name} onChangeText={setName} />
           <Field
@@ -164,6 +166,9 @@ export default function ProfileScreen() {
             onChangeText={setUsername}
             autoCapitalize="none"
           />
+        </Section>
+
+        <Section icon="card-account-mail-outline" title="Contact">
           <Field
             label="E-mail"
             testID="profile-email"
@@ -180,11 +185,14 @@ export default function ProfileScreen() {
             onChangeText={setPhone}
             keyboardType="phone-pad"
           />
-          <View style={{ gap: 8 }}>
-            <Text style={styles.fieldLabel}>Favoriete winkel</Text>
-            <Select testID="profile-store" value={store} options={stores} icon="storefront-outline" onChange={setStore} />
-            <Text style={styles.storeHint}>Deze winkel staat overal in de app vooraan: bij producten, folders, recepten en aanbiedingen. Prijzen en budget rekenen ook met deze winkel.</Text>
-          </View>
+        </Section>
+
+        <Section icon="storefront-outline" title="Jouw winkel">
+          <Select testID="profile-store" value={store} options={stores} icon="storefront-outline" onChange={setStore} />
+          <Text style={styles.storeHint}>Staat overal in de app vooraan. Prijzen en budget rekenen met deze winkel.</Text>
+        </Section>
+
+        <Section icon="shield-lock-outline" title="Privacy & e-mail">
           <Pressable testID="email-toggle" onPress={() => setEmailOn((v) => !v)} style={styles.emailToggle}>
             <Icon name={emailOn ? "checkbox-marked" : "checkbox-blank-outline"} size={22} color={emailOn ? colors.brandPrimary : colors.muted} />
             <View style={{ flex: 1 }}>
@@ -201,11 +209,14 @@ export default function ProfileScreen() {
               </Text>
             </View>
           </Pressable>
-          <Button label="Gegevens opslaan" onPress={saveProfile} loading={savingProfile} testID="save-profile-button" />
-        </View>
+        </Section>
+        <Button label="Gegevens opslaan" icon="content-save-outline" onPress={saveProfile} loading={savingProfile} testID="save-profile-button" />
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Wachtwoord wijzigen</Text>
+        <Section icon="lock-outline" title="Wachtwoord">
+          {!pwOpen ? (
+            <Button label="Wachtwoord wijzigen" variant="secondary" icon="lock-reset" onPress={() => setPwOpen(true)} testID="open-password" />
+          ) : (
+          <>
           <PasswordField
             label="Huidig wachtwoord"
             testID="profile-current-pw"
@@ -234,10 +245,11 @@ export default function ProfileScreen() {
             loading={savingPw}
             testID="save-password-button"
           />
-        </View>
+          </>
+          )}
+        </Section>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Account verwijderen</Text>
+        <Section icon="alert-outline" title="Account verwijderen" danger>
           <Text style={styles.storeHint}>
             Je account en alles wat van jou is, worden direct en definitief gewist. Gedeelde planningen blijven bestaan voor de anderen. Dit kun je niet ongedaan maken.
           </Text>
@@ -245,7 +257,7 @@ export default function ProfileScreen() {
             <Icon name="account-remove-outline" size={18} color={colors.error} />
             <Text style={styles.dangerText}>Account verwijderen</Text>
           </Pressable>
-        </View>
+        </Section>
       </KeyboardAwareScrollView>
 
       <Modal visible={deleteOpen} transparent animationType="fade" onRequestClose={() => setDeleteOpen(false)}>
@@ -310,7 +322,26 @@ export default function ProfileScreen() {
   );
 }
 
+function Section({ icon, title, danger, children }: { icon: string; title: string; danger?: boolean; children: ReactNode }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  return (
+    <View style={[styles.card, danger && { borderColor: colors.error }]}>
+      <View style={styles.cardHead}>
+        <View style={[styles.cardIcon, danger && { backgroundColor: "transparent" }]}>
+          <Icon name={icon} size={18} color={danger ? colors.error : colors.brandPrimary} />
+        </View>
+        <Text style={[styles.sectionTitle, danger && { color: colors.error }]}>{title}</Text>
+      </View>
+      {children}
+    </View>
+  );
+}
+
 const useStyles = makeStyles((colors) => ({
+  card: { gap: 12, borderRadius: 18, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 14 },
+  cardHead: { flexDirection: "row", alignItems: "center", gap: 10 },
+  cardIcon: { width: 32, height: 32, borderRadius: 10, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
   root: { flex: 1, backgroundColor: colors.surface },
   header: {
     flexDirection: "row",

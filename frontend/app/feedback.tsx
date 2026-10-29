@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
+import { useRouter } from "expo-router";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -16,6 +17,7 @@ export default function FeedbackScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const [message, setMessage] = useState("");
+  const router = useRouter();
   const qc = useQueryClient();
   // Je eerdere berichten, met de reactie van de beheerder
   const mine = useQuery({
@@ -40,13 +42,23 @@ export default function FeedbackScreen() {
         <Pressable testID="back-button" onPress={() => goBack("/")} hitSlop={10} style={styles.headerBtn}>
           <Icon name="chevron-left" size={28} color={colors.onSurface} />
         </Pressable>
-        <Text style={styles.headerTitle}>Feedback & verbeteringen</Text>
+        <Text style={styles.headerTitle}>Feedback & ideeën</Text>
         <View style={styles.headerBtn} />
       </View>
       <KeyboardAwareScrollView bottomOffset={20} contentContainerStyle={{ padding: 16, gap: 14 }} keyboardShouldPersistTaps="handled">
         <Text style={styles.intro}>
-          Heb je een tip, idee of loop je ergens tegenaan? Laat het hier weten — de beheerder leest het in de app.
+          Een tip, idee of iets dat niet goed werkt? Laat het hier weten. De beheerder leest het en reageert in de app.
         </Text>
+        <Pressable testID="store-request-link" onPress={() => router.push("/store-request")} style={styles.card}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+            <Icon name="storefront-plus-outline" size={22} color={colors.brandPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.msg, { fontFamily: fonts.semibold }]}>Supermarkt aanvragen</Text>
+              <Text style={styles.wait}>Mis je jouw winkel? Vraag hem hier aan.</Text>
+            </View>
+            <Icon name="chevron-right" size={22} color={colors.muted} />
+          </View>
+        </Pressable>
         <View style={{ gap: 7 }}>
           <Text style={styles.label}>Jouw bericht</Text>
           <TextInput

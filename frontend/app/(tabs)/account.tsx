@@ -11,7 +11,8 @@ import { useAuth } from "@/src/auth";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings } from "@/src/settings";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
-import { GOLD } from "@/src/premium";
+import { planAccent, planIcon } from "@/src/premium";
+import { APP_VERSION } from "@/src/changelog";
 import { usePrivateSource } from "@/src/components/SafeImage";
 
 export default function AccountScreen() {
@@ -20,6 +21,7 @@ export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user, logout, has } = useAuth();
+  const pc = planAccent(user?.plan as any); // Premium goud, Ultra paars
   // Je profielfoto is alleen met je inlog op te halen
   const picUri = user?.picture ? mediaUrl(user.picture) : undefined;
   const picPriv = usePrivateSource(picUri);
@@ -106,8 +108,8 @@ export default function AccountScreen() {
             )}
           </View>
             {user?.premium ? (
-              <View style={styles.avatarStar}>
-                <Icon name="star" size={13} color={colors.onBrandSecondary} />
+              <View style={[styles.avatarStar, { backgroundColor: pc.icon }]}>
+                <Icon name={planIcon(user.plan as any)} size={13} color="#FFFFFF" />
               </View>
             ) : null}
           </View>
@@ -121,7 +123,7 @@ export default function AccountScreen() {
             <View style={styles.rolePill}>
               <Icon name="shield-account-outline" size={13} color={colors.onBrandTertiary} />
               <Text style={styles.rolePillText}>{roleLabel}</Text>
-              {user?.premium ? <Text style={styles.rolePillText}> · {user.plan === "ultra" ? "Ultra" : "Premium"}</Text> : null}
+              {user?.premium ? <Text style={[styles.rolePillText, { color: pc.icon, fontFamily: fonts.bold }]}> · {user.plan === "ultra" ? "Ultra" : "Premium"}</Text> : null}
             </View>
           </View>
           <Icon name="chevron-right" size={22} color={colors.muted} />
@@ -129,13 +131,13 @@ export default function AccountScreen() {
         </Pressable>
 
         {user?.premium ? (
-          <Pressable style={styles.premiumCard} testID="premium-card" onPress={() => router.push("/premium")}>
-            <View style={styles.premiumIcon}>
-              <Icon name="star" size={18} color={colors.onBrandSecondary} />
+          <Pressable style={[styles.premiumCard, { backgroundColor: pc.bg, borderColor: pc.border }]} testID="premium-card" onPress={() => router.push("/premium")}>
+            <View style={[styles.premiumIcon, { backgroundColor: pc.icon }]}>
+              <Icon name={planIcon(user.plan as any)} size={18} color="#FFFFFF" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.premiumTitle}>{user.plan === "ultra" ? "Ultra" : "Premium"}</Text>
-              <Text style={styles.premiumText}>
+              <Text style={[styles.premiumTitle, { color: pc.text }]}>{user.plan === "ultra" ? "Ultra" : "Premium"}</Text>
+              <Text style={[styles.premiumText, { color: pc.text }]}>
                 {(user as any).trial
                   ? "Je probeert het 14 dagen gratis. "
                   : (user as any).premium_household
@@ -151,7 +153,7 @@ export default function AccountScreen() {
                     : "Bedankt voor je steun! "}Bekijk wat je allemaal extra hebt.
               </Text>
             </View>
-            <Icon name="chevron-right" size={22} color={GOLD.text} />
+            <Icon name="chevron-right" size={22} color={pc.text} />
           </Pressable>
         ) : (
           <Pressable style={[styles.premiumCard, { borderStyle: "dashed" }]} testID="premium-info-card" onPress={() => router.push("/premium")}>
@@ -162,7 +164,7 @@ export default function AccountScreen() {
               <Text style={styles.premiumTitle}>{user.plan === "ultra" ? "Ultra" : "Premium"}</Text>
               <Text style={styles.premiumText}>Gratis voor verenigingen. Bekijk wat je krijgt en vraag het aan.</Text>
             </View>
-            <Icon name="chevron-right" size={22} color={GOLD.text} />
+            <Icon name="chevron-right" size={22} color={planAccent("premium").text} />
           </Pressable>
         )}
         </View>
@@ -181,12 +183,11 @@ export default function AccountScreen() {
         </RowGroup>
         <RowGroup testID="group-help" icon="lifebuoy" title="Hulp & contact" badge={myReplies?.count}>
           <AdminRow testID="help-link" icon="help-circle-outline" label="Zo werkt de app" onPress={() => router.push("/help")} />
-          <AdminRow testID="feedback-link" icon="message-draw" label="Feedback & verbeteringen" badge={myReplies?.count} onPress={() => router.push("/feedback")} />
-          <AdminRow testID="store-request-link" icon="storefront-plus-outline" label="Supermarkt aanvragen" onPress={() => router.push("/store-request")} />
+          <AdminRow testID="feedback-link" icon="message-draw" label="Feedback & ideeën" sub="Tip, fout of supermarkt aanvragen" badge={myReplies?.count} onPress={() => router.push("/feedback")} />
           <AdminRow
             testID="legal-link"
             icon="file-document-outline"
-            label="Voorwaarden, privacy & cookies"
+            label="Voorwaarden, privacy, cookies & herroepen"
             onPress={() => router.push({ pathname: "/legal/[doc]", params: { doc: "voorwaarden" } })}
           />
         </RowGroup>
@@ -207,10 +208,7 @@ export default function AccountScreen() {
                 <AdminRow testID="admin-barcodes-link" icon="barcode" label="Barcode-voorstellen" badge={pendingBarcodes} onPress={() => router.push("/admin/barcodes")} />
               ) : null}
               {canSettings ? (
-                <AdminRow testID="admin-store-requests-link" icon="storefront-outline" label="Supermarkt-aanvragen" badge={pendingStores} onPress={() => router.push("/admin/store-requests")} />
-              ) : null}
-              {canSettings ? (
-                <AdminRow testID="admin-feedback-link" icon="message-text-outline" label="Feedback van gebruikers" badge={pendingFeedback} onPress={() => router.push("/admin/feedback")} />
+                <AdminRow testID="admin-feedback-link" icon="message-text-outline" label="Feedback & aanvragen" sub="Berichten, ideeën en supermarkt-aanvragen" badge={(pendingFeedback ?? 0) + (pendingStores ?? 0)} onPress={() => router.push("/admin/feedback")} />
               ) : null}
               {canProducts ? (
                 <AdminRow testID="admin-dirk-link" icon="store-plus-outline" label="Supermarkt importeren & prijzen" onPress={() => router.push("/admin/dirk")} />
@@ -242,7 +240,7 @@ export default function AccountScreen() {
         ) : null}
 
         <Button label="Uitloggen" variant="ghost" icon="logout" onPress={logout} testID="logout-button" />
-        <Text style={styles.version}>Slim Boodschappenlijstje · v1.0</Text>
+        <Text style={styles.version}>Slim Boodschappenlijstje · v{APP_VERSION}</Text>
       </ScrollView>
     </View>
   );
@@ -281,12 +279,14 @@ function RowGroup({ icon, title, badge, children, testID }: { icon: any; title: 
 function AdminRow({
   icon,
   label,
+  sub,
   badge,
   onPress,
   testID,
 }: {
   icon: any;
   label: string;
+  sub?: string; // korte uitleg onder de naam
   badge?: number;
   onPress: () => void;
   testID?: string;
@@ -300,7 +300,14 @@ function AdminRow({
         <View style={styles.adminIcon}>
           <Icon name={icon} size={20} color={colors.brandPrimary} />
         </View>
-        <Text style={styles.adminLabel}>{label}</Text>
+        {sub ? (
+          <View style={{ flex: 1 }}>
+            <Text style={styles.adminLabel}>{label}</Text>
+            <Text style={styles.adminSub}>{sub}</Text>
+          </View>
+        ) : (
+          <Text style={styles.adminLabel}>{label}</Text>
+        )}
         {badge && badge > 0 ? (
           <View style={styles.badge} testID={`${testID}-badge`}>
             <Text style={styles.badgeText}>{badge}</Text>
@@ -351,7 +358,7 @@ const useStyles = makeStyles((colors) => ({
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderRadius: 14,
-    backgroundColor: GOLD.bg,
+    backgroundColor: planAccent("premium").bg,
     borderWidth: 1,
     borderColor: colors.brandSecondary,
   },
@@ -363,8 +370,8 @@ const useStyles = makeStyles((colors) => ({
     alignItems: "center",
     justifyContent: "center",
   },
-  premiumTitle: { fontSize: 15, fontFamily: fonts.bold, color: GOLD.text },
-  premiumText: { fontSize: 12, fontFamily: fonts.regular, color: GOLD.text, marginTop: 1 },
+  premiumTitle: { fontSize: 15, fontFamily: fonts.bold, color: planAccent("premium").text },
+  premiumText: { fontSize: 12, fontFamily: fonts.regular, color: planAccent("premium").text, marginTop: 1 },
   avatarText: { fontSize: 24, fontFamily: fonts.bold, color: colors.onBrandPrimary },
   name: { fontSize: 18, fontFamily: fonts.semibold, color: colors.onSurface },
   email: { fontSize: 14, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },
@@ -391,6 +398,7 @@ const useStyles = makeStyles((colors) => ({
     justifyContent: "center",
   },
   adminLabel: { flex: 1, fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },
+  adminSub: { fontSize: 12, fontFamily: fonts.regular, color: colors.muted, marginTop: 1 },
   adminChevron: { padding: 2 },
   badge: { backgroundColor: colors.warning, borderRadius: 999, minWidth: 22, paddingHorizontal: 6, paddingVertical: 2, alignItems: "center" },
   badgeText: { fontSize: 12, fontFamily: fonts.bold, color: colors.onWarning },

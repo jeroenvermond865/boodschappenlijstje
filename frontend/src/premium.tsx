@@ -32,6 +32,16 @@ export const ULTRA = accent(
   { bg: "#231C33", border: "#4F407C", text: "#DCCFF7", icon: "#A88BE6" },
 );
 
+// Kleur en ster per abonnement: Premium goud, Ultra paars (overal hetzelfde)
+export const planAccent = (p?: PlanKey | null) => (p === "ultra" ? ULTRA : GOLD);
+export const planIcon = (p?: PlanKey | null) => (p === "ultra" ? "star-shooting" : "star");
+
+// Kleur van de functie: paars als hij bij Ultra hoort
+export function useFeatureAccent(key?: FeatureKey) {
+  const plan = usePlanOf(key);
+  return { plan, c: planAccent(plan), icon: planIcon(plan), name: PLAN_NAME[plan] };
+}
+
 export type FeatureKey = "prijsalarm" | "prijsgeschiedenis" | "extra_besparen" | "slim_splitsen" | "weekmenu" | "voorraadkast" | "slimme_hulp" | "looproute" | "geen_advertenties";
 export type PlanKey = "standaard" | "premium" | "ultra";
 
@@ -105,7 +115,7 @@ export function PremiumLock({ title, text, plural, feature }: { title: string; t
   const c = plan === "ultra" ? ULTRA : GOLD;
   return (
     <View style={[styles.lock, { backgroundColor: c.bg, borderColor: c.border }]} testID="premium-lock">
-      <Icon name="star-circle" size={30} color={c.icon} />
+      <Icon name={planIcon(plan)} size={30} color={c.icon} />
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={[styles.lockTitle, { color: c.text }]}>{title} {plural ? `zijn ${name}-functies` : `is een ${name}-functie`}</Text>
         {text ? <Text style={[styles.lockText, { color: c.text }]}>{text}</Text> : null}
