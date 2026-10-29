@@ -8,8 +8,12 @@ export const CHANGELOG: Release[] = [
     id: "2026-10-29-v111",
     version: "1.1.1",
     date: "29 oktober 2026",
-    title: "Betere vergelijkingen, wisselen vanuit elke pop-up en soepeler vegen",
+    title: "Betere vergelijkingen, personen per maaltijd, Heb ik al en soepeler vegen",
     changes: [
+      { kind: "nieuw", text: "Per maaltijd kun je nu een ander aantal personen kiezen. Tik bij de maaltijd op het poppetje: bijvoorbeeld lunchen met 2 en avondeten met 4. De boodschappen rekenen daarmee." },
+      { kind: "beter", text: "Het aantal personen van een dag staat nu klein bovenaan, samen met hoeveel er vega eten. Tik erop om het aan te passen." },
+      { kind: "opgelost", text: "Waarschijnlijk al in huis klopt beter. Alleen echte voorraadspullen zoals zout, olie en bloem staan er nog, en elk ding maar één keer." },
+      { kind: "nieuw", text: "Bij Waarschijnlijk al in huis: tik op + en het product gaat naar je boodschappenlijst bovenaan. Of tik op Heb ik al en kies hoe vol het nog is, dan staat het in je voorraadkast." },
       { kind: "opgelost", text: "De prijsvergelijking zette soms iets heel anders naast je product, zoals een chocoladereep met hazelnoten naast een zak hazelnoten. Producten waar het alleen in zit, tellen nu niet meer mee." },
       { kind: "nieuw", text: "Klopt een vergelijking niet? Tik op Klopt niet. De app laat het nakijken en kiest daarna iets beters, ook voor anderen." },
       { kind: "beter", text: "In de vergelijking en bij Bij andere winkels kun je nu op elk product tikken. Je ziet het groot, met Wissel en Terug. Met Zelf zoeken kies je een heel ander product." },

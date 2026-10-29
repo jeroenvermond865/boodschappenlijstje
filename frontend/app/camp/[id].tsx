@@ -41,6 +41,7 @@ type Day = {
   extras?: Extra[];
   leftovers?: Partial<Record<MealCategory, number>>; // restje van deze dag (één keer koken voor twee dagen)
   meal_names?: Partial<Record<MealCategory, string>>;
+  meal_people?: Partial<Record<MealCategory, { adults: number; children: number }>>; // anders dan de dag
 };
 type Camp = {
   id: string;
@@ -94,6 +95,8 @@ export default function CampDetailScreen() {
   const [extraMeal, setExtraMeal] = useState<MealCategory | null>(null); // los product bij een maaltijd (bijv. ontbijt)
   const [packOpen, setPackOpen] = useState(false);
   const [vegaDish, setVegaDish] = useState<Dish | null>(null);
+  const [peopleOpen, setPeopleOpen] = useState(false); // personen van de dag aanpassen
+  const [mealPeople, setMealPeople] = useState<MealCategory | null>(null); // personen voor één maaltijd
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -467,45 +470,59 @@ export default function CampDetailScreen() {
           </View>
         ) : (
         <>
-        {/* Headcount */}
-        <View style={styles.card}>
-          <View style={styles.counterRow}>
-            <View style={styles.rowLabel}>
-              <Icon name="account-group" size={20} color={colors.brandPrimary} />
-              <Text style={styles.counterLabel}>Volwassenen</Text>
-            </View>
-            <Stepper value={day.adults} onChange={(v) => patchDay({ adults: v })} min={0} max={500} testID="day-adults" />
-          </View>
-          <View style={styles.cardDivider} />
-          <View style={styles.counterRow}>
-            <View style={styles.rowLabel}>
-              <Icon name="account-child" size={20} color={colors.brandPrimary} />
-              <Text style={styles.counterLabel}>Kinderen</Text>
-            </View>
-            <Stepper value={day.children} onChange={(v) => patchDay({ children: v })} min={0} max={500} testID="day-children" />
-          </View>
-          <View style={styles.cardDivider} />
-          <View style={styles.counterRow}>
-            <View style={styles.rowLabel}>
-              <Icon name="cart-check" size={20} color={colors.brandPrimary} />
-              <View>
-                <Text style={styles.counterLabel}>Boodschappen deze dag</Text>
-                <Text style={styles.counterSub}>Meenemen in de lijst</Text>
+        {/* Personen: klein en overzichtelijk; tik om aan te passen. Per maaltijd kan het ook anders (bij de maaltijd zelf). */}
+        <View style={[styles.card, { paddingVertical: 10 }]}>
+          <Pressable testID="day-people-toggle" onPress={() => setPeopleOpen((v) => !v)} style={styles.peopleRow}>
+            <Icon name="account-group" size={18} color={colors.brandPrimary} />
+            <Text style={styles.peopleText} numberOfLines={1}>
+              {day.adults} {day.adults === 1 ? "volwassene" : "volwassenen"}
+              {day.children ? ` · ${day.children} ${day.children === 1 ? "kind" : "kinderen"}` : ""}
+            </Text>
+            {vegaA + vegaC > 0 ? (
+              <View style={styles.vegaMini}>
+                <Icon name="leaf" size={12} color={colors.success} />
+                <Text style={[styles.counterSub, { color: colors.success }]}>{vegaA + vegaC} vega</Text>
               </View>
+            ) : null}
+            {!day.is_shopping_day ? <Icon name="cart-off" size={16} color={colors.muted} /> : null}
+            <Icon name={peopleOpen ? "chevron-up" : "pencil-outline"} size={18} color={colors.brandPrimary} />
+          </Pressable>
+          {peopleOpen ? (
+            <View style={{ gap: 6, marginTop: 8 }}>
+              <View style={styles.counterRow}>
+                <Text style={styles.counterLabelSmall}>Volwassenen</Text>
+                <Stepper value={day.adults} onChange={(v) => patchDay({ adults: v })} min={0} max={500} testID="day-adults" />
+              </View>
+              <View style={styles.counterRow}>
+                <Text style={styles.counterLabelSmall}>Kinderen</Text>
+                <Stepper value={day.children} onChange={(v) => patchDay({ children: v })} min={0} max={500} testID="day-children" />
+              </View>
+              <View style={styles.counterRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.counterLabelSmall}>Vega volwassenen</Text>
+                  <Text style={styles.counterSub}>Geldt voor {T.de} hele {T.one}</Text>
+                </View>
+                <Stepper value={vegaA} onChange={(v) => patchCamp.mutate({ vega_adults: v })} min={0} max={500} testID="day-vega-adults" />
+              </View>
+              <View style={styles.counterRow}>
+                <Text style={styles.counterLabelSmall}>Vega kinderen</Text>
+                <Stepper value={vegaC} onChange={(v) => patchCamp.mutate({ vega_children: v })} min={0} max={500} testID="day-vega-children" />
+              </View>
+              <View style={styles.counterRow}>
+                <Text style={styles.counterLabelSmall}>Boodschappen voor deze dag</Text>
+                <Switch
+                  testID="day-shopping-toggle"
+                  value={day.is_shopping_day}
+                  onValueChange={(v) => patchDay({ is_shopping_day: v })}
+                  trackColor={{ true: colors.brandPrimary, false: colors.borderStrong }}
+                  thumbColor={colors.surface}
+                />
+              </View>
+              <Text style={styles.counterSub}>
+                Max {maxPerDay} per dag in {T.deze} {T.one}. Eet je bij één maaltijd met minder of meer mensen? Tik dan bij die maaltijd op het poppetje.
+              </Text>
             </View>
-            <Switch
-              testID="day-shopping-toggle"
-              value={day.is_shopping_day}
-              onValueChange={(v) => patchDay({ is_shopping_day: v })}
-              trackColor={{ true: colors.brandPrimary, false: colors.borderStrong }}
-              thumbColor={colors.surface}
-            />
-          </View>
-          <View style={styles.cardDivider} />
-          <Text style={styles.counterSub}>
-            {day.adults + day.children} personen vandaag · max {maxPerDay} per dag in {T.deze} {T.one}
-            {vegaA + vegaC > 0 ? ` · ${vegaA + vegaC} vega-eter(s)` : ""}
-          </Text>
+          ) : null}
         </View>
 
         {/* Meals */}
@@ -519,6 +536,16 @@ export default function CampDetailScreen() {
                     <Icon name={CATEGORY_ICONS[cat] as any} size={18} color={colors.brandPrimary} />
                   </View>
                   <Text style={styles.mealTitle}>{CATEGORY_LABELS[cat]}</Text>
+                  {(() => {
+                    const mp = day.meal_people?.[cat];
+                    const n = mp ? mp.adults + mp.children : day.adults + day.children;
+                    return (
+                      <Pressable testID={`meal-people-${cat}`} onPress={() => setMealPeople(cat)} hitSlop={6} style={[styles.mealPeople, mp && styles.mealPeopleOn]}>
+                        <Icon name="account" size={13} color={mp ? colors.onBrandPrimary : colors.muted} />
+                        <Text style={[styles.counterSub, mp && { color: colors.onBrandPrimary, fontFamily: fonts.semibold }]}>{n}</Text>
+                      </Pressable>
+                    );
+                  })()}
                 </View>
                 <View style={{ flexDirection: "row", gap: 6 }}>
                 <Pressable
@@ -666,6 +693,40 @@ export default function CampDetailScreen() {
       </Animated.View>
 
       <VegaPicker dish={vegaDish} onClose={() => setVegaDish(null)} />
+      <Modal visible={!!mealPeople} transparent animationType="fade" onRequestClose={() => setMealPeople(null)}>
+        <Pressable style={styles.mpBackdrop} onPress={() => setMealPeople(null)}>
+          <Pressable style={styles.mpCard} onPress={() => {}}>
+            {mealPeople ? (() => {
+              const mp = day?.meal_people?.[mealPeople] ?? { adults: day?.adults ?? 0, children: day?.children ?? 0 };
+              const setMp = (v: { adults: number; children: number } | null) => {
+                const { [mealPeople]: _old, ...rest } = day?.meal_people ?? {};
+                const same = v && v.adults === day?.adults && v.children === day?.children;
+                patchDay({ meal_people: v && !same ? { ...rest, [mealPeople]: v } : rest });
+              };
+              return (
+                <>
+                  <Text style={styles.mpTitle}>{CATEGORY_LABELS[mealPeople]}: met hoeveel?</Text>
+                  <Text style={styles.counterSub}>Alleen voor deze maaltijd op deze dag. De rest van de dag blijft {(day?.adults ?? 0) + (day?.children ?? 0)} personen.</Text>
+                  <View style={styles.counterRow}>
+                    <Text style={styles.counterLabelSmall}>Volwassenen</Text>
+                    <Stepper value={mp.adults} onChange={(v) => setMp({ ...mp, adults: v })} min={0} max={500} testID="meal-adults" />
+                  </View>
+                  <View style={styles.counterRow}>
+                    <Text style={styles.counterLabelSmall}>Kinderen</Text>
+                    <Stepper value={mp.children} onChange={(v) => setMp({ ...mp, children: v })} min={0} max={500} testID="meal-children" />
+                  </View>
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    {day?.meal_people?.[mealPeople] ? (
+                      <Button label="Zelfde als de dag" variant="secondary" onPress={() => setMp(null)} testID="meal-people-reset" style={{ flex: 1 }} />
+                    ) : null}
+                    <Button label="Klaar" onPress={() => setMealPeople(null)} testID="meal-people-done" style={{ flex: 1 }} />
+                  </View>
+                </>
+              );
+            })() : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
       <DishPreview
         campId={id}
         target={dishView ? { dish: dishView } : null}
@@ -1478,6 +1539,15 @@ const useStyles = makeStyles((colors) => ({
     borderColor: colors.border,
     padding: 16,
   },
+  peopleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  peopleText: { flex: 1, fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },
+  vegaMini: { flexDirection: "row", alignItems: "center", gap: 3 },
+  counterLabelSmall: { flex: 1, fontSize: 14, fontFamily: fonts.medium, color: colors.onSurface },
+  mealPeople: { flexDirection: "row", alignItems: "center", gap: 2, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999, borderWidth: 1, borderColor: colors.border, marginLeft: 4 },
+  mealPeopleOn: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  mpBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", padding: 20 },
+  mpCard: { backgroundColor: colors.surface, borderRadius: 20, padding: 18, gap: 12, width: "100%", maxWidth: 420, alignSelf: "center" },
+  mpTitle: { fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },
   counterRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 4 },
   rowLabel: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
   counterLabel: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface },

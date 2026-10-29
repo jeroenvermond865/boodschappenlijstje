@@ -630,6 +630,7 @@ class DayInput(BaseModel):
     extras: List[ExtraItem] = Field(default_factory=list)
     leftovers: Dict[str, int] = Field(default_factory=dict)  # maaltijd -> dag waarop je dit al kookte (restje)
     meal_names: Dict[str, str] = Field(default_factory=dict)  # maaltijd -> naam voor losse producten ("Brood met kaas en jam")
+    meal_people: Dict[str, Dict[str, int]] = Field(default_factory=dict)  # maaltijd -> {adults, children} als het anders is dan de dag
 
 
 class CampCreate(BaseModel):
@@ -1921,6 +1922,8 @@ def _build_days(day_inputs) -> list:
             "extras": [e.model_dump() for e in d.extras],
             "leftovers": {c: v for c, v in (d.leftovers or {}).items() if c in MEAL_CATEGORIES and 0 <= v < idx},
             "meal_names": {c: v[:80] for c, v in (d.meal_names or {}).items() if c in MEAL_CATEGORIES and v},
+            "meal_people": {c: {"adults": max(0, min(int(v.get("adults") or 0), 500)), "children": max(0, min(int(v.get("children") or 0), 500))}
+                            for c, v in (d.meal_people or {}).items() if c in MEAL_CATEGORIES and isinstance(v, dict)},
         })
     return days
 
@@ -2342,7 +2345,8 @@ def _meal_filled(day: dict, cat: str) -> bool:
 
 def _bread_meal(day: dict, cat: str, dish: dict, picks: set, avoid: list, counter: dict) -> str:
     # Brood met beleg als losse producten bij de maaltijd; elke keer twee andere soorten beleg
-    a, c = day.get("adults", 0), day.get("children", 0)
+    mp = (day.get("meal_people") or {}).get(cat)
+    a, c = (mp.get("adults", 0), mp.get("children", 0)) if mp else (day.get("adults", 0), day.get("children", 0))
     tops = [t for t in _TOPPINGS.get(cat) or _TOPPINGS["ontbijt"]
             if not any(w in _norm_text(t[0]) for w in avoid)
             and not (picks & {"vega", "vegan"} and _MEAT_RE.search(_norm_text(t[0])))
@@ -2853,9 +2857,11 @@ def _fmt_qty(v: float) -> str:
     return f"{round_qty(v):g}".replace(".", ",")
 
 
-def _diet_counts(day: dict, camp: dict) -> dict:
-    adults = day.get("adults", 0)
-    children = day.get("children", 0)
+def _diet_counts(day: dict, camp: dict, cat: Optional[str] = None) -> dict:
+    # Per maaltijd kan het aantal anders zijn dan de dag (met z'n tweeën lunchen, met z'n vieren avondeten)
+    mp = (day.get("meal_people") or {}).get(cat) if cat else None
+    adults = mp.get("adults", 0) if mp else day.get("adults", 0)
+    children = mp.get("children", 0) if mp else day.get("children", 0)
     va = min(camp.get("vega_adults", 0) or 0, adults)
     vc = min(camp.get("vega_children", 0) or 0, children)
     return {"all": (adults, children), "vega": (va, vc), "meat": (adults - va, children - vc)}
@@ -3005,9 +3011,9 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
     for day in camp.get("days", []):
         if not day.get("is_shopping_day"):
             continue
-        counts = _diet_counts(day, camp)
         day_store_map = day_maps.setdefault(day["index"], {})
         for cat in MEAL_CATEGORIES:
+            counts = _diet_counts(day, camp, cat)
             for did in day.get("meals", {}).get(cat, []):
                 dish = dishes_by_id.get(did)
                 if not dish:
@@ -3959,9 +3965,9 @@ async def camp_budget(camp_id: str, user: dict = Depends(get_current_user)):
     for day in camp.get("days", []):
         if not day.get("is_shopping_day"):
             continue
-        counts = _diet_counts(day, camp)
         day_cost = 0.0
         for cat in MEAL_CATEGORIES:
+            counts = _diet_counts(day, camp, cat)
             for did in day.get("meals", {}).get(cat, []):
                 dish = dishes_by_id.get(did)
                 if not dish:
@@ -8852,8 +8858,9 @@ def _ing_pantry(rec: dict, i: dict) -> bool:
     # Niet door de site gekoppeld (of typisch voorraadkast): waarschijnlijk al in huis
     if i.get("site_home"):
         return True  # de site zegt zelf: dit heb je al in huis
-    site_linked = bool(i.get("product")) or bool(i.get("site_linked"))
-    return (not site_linked and (rec["store"] != "ah" or _is_pantry(i["name"]))) or _norm_text(i["name"]) in _ALWAYS_HOME
+    # Alleen echte voorraadkast-spullen (zout, olie, bloem, ...). Vroeger telde bij Jumbo en Dirk alles wat de site niet
+    # koppelde als "al in huis", ook kipfilet of paprika; die zoekt de app nu gewoon zelf op.
+    return _is_pantry(i["name"]) or _norm_text(i["name"]) in _ALWAYS_HOME
 
 
 def _recipe_with_products(rec: dict, user: dict, matches: Optional[dict] = None) -> dict:

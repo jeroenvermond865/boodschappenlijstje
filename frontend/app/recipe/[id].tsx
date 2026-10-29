@@ -19,6 +19,7 @@ import { BetterPack, PackBetter, PackPlan, packText } from "@/src/packs";
 import { AltSwapList, slotOf, type AltSwap } from "@/src/DishPreview";
 import { NewListInline } from "@/src/NewListInline";
 import { ProductPopup } from "@/src/ProductPopup";
+import { useToast } from "@/src/toast";
 import { ProductBrowser } from "@/src/ProductBrowser";
 
 type Recipe = {
@@ -95,6 +96,25 @@ export default function RecipeScreen() {
   const amount = (i: Recipe["ingredients"][number]) =>
     n !== base && i.qty != null ? `${formatQty(scale(i.qty)!)} ${i.unit === "stuks" ? "" : i.unit + " "}${i.name}` : i.text;
   const [include, setInclude] = useState<number[]>([]);
+  const toggleInclude = (idx: number) => setInclude((x) => (x.includes(idx) ? x.filter((v) => v !== idx) : [...x, idx]));
+  // "Heb ik al": eerst kiezen hoe vol het nog is, dan gaat het in je voorraadkast
+  const [have, setHave] = useState<number | null>(null);
+  const [haveDone, setHaveDone] = useState<number[]>([]);
+  const toast = useToast();
+  const toPantry = useMutation({
+    mutationFn: (v: { idx: number; pct: number }) => {
+      const i = r!.ingredients[v.idx];
+      return api<{ added: number }>("/pantry/bulk", { method: "POST", body: { items: [{ name: i.name, qty: v.pct, unit: "%", product_id: i.product?.id ?? null }] } });
+    },
+    onSuccess: (res, v) => {
+      setHave(null);
+      setHaveDone((x) => [...x, v.idx]);
+      setInclude((x) => x.filter((k) => k !== v.idx));
+      qc.invalidateQueries({ queryKey: ["pantry"] });
+      toast.show(res.added ? "Staat nu in je voorraadkast" : "Stond al in je voorraadkast", "success");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Dat lukte niet", "error"),
+  });
   // Tik op een ingrediënt: popup met het product (wisselen, andere winkels); daarna eventueel zelf een ander product zoeken
   const [popup, setPopup] = useState<number | null>(null);
   const [picker, setPicker] = useState<number | null>(null);
@@ -222,8 +242,18 @@ export default function RecipeScreen() {
                 </View>
               ) : null}
               <View style={styles.card}>
-                {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => !x.i.pantry && x.i.alt_for == null).map(({ i, idx }, k) => (
-                  <IngRow key={idx} i={i} first={k === 0} label={amount(i)} plan={plans.data?.[idx]} onSwap={(b) => swapTo(idx, b)} onOpen={() => openIng(idx)} />
+                {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => (!x.i.pantry || include.includes(x.idx)) && x.i.alt_for == null).map(({ i, idx }, k) => (
+                  <IngRow
+                    key={idx}
+                    i={i}
+                    first={k === 0}
+                    label={amount(i)}
+                    plan={plans.data?.[idx]}
+                    onSwap={(b) => swapTo(idx, b)}
+                    onOpen={() => openIng(idx)}
+                    // Uit "al in huis" naar boven gehaald: met het vinkje zet je het weer terug
+                    toggle={i.pantry ? { on: true, onPress: () => toggleInclude(idx) } : undefined}
+                  />
                 ))}
                 {added.map((a) => (
                   <View key={a.slot} style={[styles.ingRow, styles.ingBorder]} testID={`recipe-added-${a.slot}`}>
@@ -247,26 +277,51 @@ export default function RecipeScreen() {
                 ))}
               </View>
 
-              {r.ingredients.some((i) => i.pantry) ? (
-                <>
-                  <Text style={styles.section}>Waarschijnlijk al in huis</Text>
-                  <Text style={styles.muted}>Deze gaan niet mee op je boodschappenlijst. Tik op + als je ze toch wilt kopen.</Text>
-                  <View style={styles.card}>
-                    {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => x.i.pantry).map(({ i, idx }, k) => (
-                      <IngRow
-                        key={idx}
-                        i={i}
-                        first={k === 0}
-                        label={amount(i)}
-                        plan={plans.data?.[idx]}
-                        onSwap={(b) => swapTo(idx, b)}
-                        onOpen={() => openIng(idx)}
-                        toggle={{ on: include.includes(idx), onPress: () => setInclude((x) => (x.includes(idx) ? x.filter((v) => v !== idx) : [...x, idx])) }}
-                      />
-                    ))}
-                  </View>
-                </>
-              ) : null}
+              {(() => {
+                // Elk ding één keer (geen "zout" en "zout en peper" dubbel), en niet wat je al naar boven haalde
+                const seen = new Set<string>();
+                const rows = r.ingredients
+                  .map((i, idx) => ({ i, idx }))
+                  .filter((x) => x.i.pantry && x.i.alt_for == null && !include.includes(x.idx))
+                  .filter((x) => {
+                    const k = x.i.name.toLowerCase().trim();
+                    if (seen.has(k)) return false;
+                    seen.add(k);
+                    return true;
+                  });
+                if (!rows.length) return null;
+                return (
+                  <>
+                    <Text style={styles.section}>Waarschijnlijk al in huis</Text>
+                    <Text style={styles.muted}>Niet op je boodschappenlijst. Tik op + om het toch te kopen, of op Heb ik al om het in je voorraadkast te zetten.</Text>
+                    <View style={styles.card}>
+                      {rows.map(({ i, idx }, k) => (
+                        <View key={idx}>
+                          <IngRow
+                            i={i}
+                            first={k === 0}
+                            label={amount(i)}
+                            plan={plans.data?.[idx]}
+                            onSwap={(b) => swapTo(idx, b)}
+                            onOpen={() => openIng(idx)}
+                            toggle={{ on: false, onPress: () => toggleInclude(idx) }}
+                          />
+                          {i.stock !== "yes" ? (
+                            haveDone.includes(idx) ? (
+                              <Text style={[styles.muted, styles.haveRow, { color: colors.success }]}>In je voorraadkast gezet</Text>
+                            ) : (
+                              <Pressable onPress={() => setHave(idx)} style={[styles.haveRow, styles.haveBtn]} testID={`recipe-have-${idx}`}>
+                                <Icon name="fridge-outline" size={15} color={colors.brandPrimary} />
+                                <Text style={styles.haveText}>Heb ik al</Text>
+                              </Pressable>
+                            )
+                          ) : null}
+                        </View>
+                      ))}
+                    </View>
+                  </>
+                );
+              })()}
 
               {r.in_stock?.length ? (
                 <>
@@ -401,6 +456,33 @@ export default function RecipeScreen() {
                 ))}
                 {importMut.isPending ? <ActivityIndicator color={colors.brandPrimary} /> : null}
                 {importMut.isError ? <Text style={{ color: colors.error }}>{(importMut.error as Error).message}</Text> : null}
+              </Pressable>
+            </Pressable>
+          </Modal>
+          <Modal visible={have != null} transparent animationType="fade" onRequestClose={() => setHave(null)}>
+            <Pressable style={styles.haveBackdrop} onPress={() => setHave(null)}>
+              <Pressable style={styles.haveCard} onPress={() => {}}>
+                <Text style={styles.section}>Hoe vol is {have != null ? r.ingredients[have]?.name.toLowerCase() : ""} nog?</Text>
+                <Text style={styles.muted}>Dan weet de voorraadkast wanneer het bijna op is.</Text>
+                {[
+                  { pct: 100, label: "Vol", icon: "circle-slice-8" },
+                  { pct: 75, label: "Driekwart", icon: "circle-slice-6" },
+                  { pct: 50, label: "Half", icon: "circle-slice-4" },
+                  { pct: 25, label: "Bijna op", icon: "circle-slice-2" },
+                ].map((o) => (
+                  <Pressable
+                    key={o.pct}
+                    disabled={toPantry.isPending}
+                    onPress={() => have != null && toPantry.mutate({ idx: have, pct: o.pct })}
+                    style={styles.haveOption}
+                    testID={`recipe-have-${o.pct}`}
+                  >
+                    <Icon name={o.icon as any} size={22} color={colors.brandPrimary} />
+                    <Text style={[styles.haveText, { flex: 1, color: colors.onSurface }]}>{o.label}</Text>
+                    <Text style={styles.muted}>{o.pct}%</Text>
+                  </Pressable>
+                ))}
+                {toPantry.isPending ? <ActivityIndicator color={colors.brandPrimary} /> : null}
               </Pressable>
             </Pressable>
           </Modal>
@@ -629,6 +711,12 @@ function Meta({ icon, text }: { icon: string; text: string }) {
 }
 
 const useStyles = makeStyles((colors) => ({
+  haveRow: { marginLeft: 66, marginTop: -6, marginBottom: 10 },
+  haveBtn: { flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "flex-start", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1, borderColor: colors.brandPrimary },
+  haveText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  haveBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", padding: 20 },
+  haveCard: { backgroundColor: colors.surface, borderRadius: 20, padding: 18, gap: 10, width: "100%", maxWidth: 420, alignSelf: "center" },
+  haveOption: { flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderRadius: 12, backgroundColor: colors.surfaceSecondary },
   root: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 8, paddingBottom: 8, gap: 4 },
   headerBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },

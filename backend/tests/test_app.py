@@ -1077,3 +1077,21 @@ def test_chocoladereep_is_geen_hazelnoten():
     assert not S._same_kind(base, {"name": "Milka Chocoladereep gebroken hazelnoten"})
     assert S._same_kind(base, {"name": "1 de Beste Hazelnoten"}, strict=False)
     assert S._same_kind({"name": "Verse gnocchi"}, {"name": "Pasta gnocchi"}, strict=False)
+
+
+# --- Personen per maaltijd ---
+def test_personen_per_maaltijd():
+    day = {"adults": 4, "children": 0, "meal_people": {"lunch": {"adults": 2, "children": 0}}}
+    camp = {"vega_adults": 1}
+    assert S._diet_counts(day, camp, "lunch")["all"] == (2, 0)
+    assert S._diet_counts(day, camp, "avondeten")["all"] == (4, 0)
+    assert S._diet_counts(day, camp)["vega"] == (1, 0)
+    days = S._build_days([S.DayInput(adults=4, meal_people={"lunch": {"adults": 2}, "niks": {"adults": 9}})])
+    assert days[0]["meal_people"] == {"lunch": {"adults": 2, "children": 0}}
+
+
+def test_al_in_huis_alleen_voorraad():
+    rec = {"store": "jumbo"}
+    assert S._ing_pantry(rec, {"name": "zout"})
+    assert S._ing_pantry(rec, {"name": "olijfolie"})
+    assert not S._ing_pantry(rec, {"name": "kipfilet"})
