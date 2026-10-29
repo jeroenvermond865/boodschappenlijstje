@@ -7746,12 +7746,17 @@ async def _recipe_detail(rid: str) -> dict:
             ings.append({"text": desc, "name": name, "qty": qty, "unit": unit, "site_linked": bool(i.get("productNumber")),
                          "site_packs": i.get("quantity") if isinstance(i.get("quantity"), (int, float)) and i.get("quantity") > 0 else None,
                          "product": {"store": "Dirk", "sid": str(p["productId"])} if p.get("productId") else None})
-        # "Wij gaan er vanuit dat je dit in huis hebt"
+        # "Wij gaan er vanuit dat je dit in huis hebt": als ingrediënt erbij, zodat de app er een product van Dirk bij zoekt
+        # en je het met één tik toch kunt kopen (of wisselen)
         in_stock = []
         for x in r.get("ingredientsInStock") or []:
             t = x if isinstance(x, str) else (x.get("description") or x.get("name") or "") if isinstance(x, dict) else ""
-            if t.strip():
-                in_stock.append(t.strip())
+            t = t.strip()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            qty, unit, name = _parse_amount(t)
+            ings.append({"text": t, "name": name, "qty": qty, "unit": unit, "site_home": True, "product": None})
         steps = []
         for s in r.get("steps") or []:
             steps.append(s if isinstance(s, str) else (s.get("description") or s.get("text") or "") if isinstance(s, dict) else "")
@@ -8429,6 +8434,8 @@ def _is_pantry(name: str) -> bool:
 
 def _ing_pantry(rec: dict, i: dict) -> bool:
     # Niet door de site gekoppeld (of typisch voorraadkast): waarschijnlijk al in huis
+    if i.get("site_home"):
+        return True  # de site zegt zelf: dit heb je al in huis
     site_linked = bool(i.get("product")) or bool(i.get("site_linked"))
     return (not site_linked and (rec["store"] != "ah" or _is_pantry(i["name"]))) or _norm_text(i["name"]) in _ALWAYS_HOME
 

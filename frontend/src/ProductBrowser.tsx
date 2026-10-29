@@ -76,21 +76,25 @@ export function ProductBrowser({
   header,
   bottomPadding = 96,
   pickedIds,
+  initialSearch,
+  initialStore,
 }: {
   onPick?: (p: Product) => void;
   header?: ReactNode;
   bottomPadding?: number;
   pickedIds?: string[];
+  initialSearch?: string; // bijv. het ingrediënt waarvoor je een ander product zoekt
+  initialStore?: "Dirk" | "Albert Heijn" | "Jumbo"; // meteen gefilterd op de winkel van het recept
 }) {
   const styles = useStyles();
   const grid = useGrid(150);
   const { colors } = useTheme();
 
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSearch ?? "");
   const [onlyFavorites, setOnlyFavorites] = useState(false);
   const qc = useQueryClient();
   const [aisle, setAisle] = useState<string>("all");
-  const [storeFilter, setStoreFilter] = useState<"all" | "Dirk" | "Albert Heijn" | "Jumbo">("all");
+  const [storeFilter, setStoreFilter] = useState<"all" | "Dirk" | "Albert Heijn" | "Jumbo">(initialStore ?? "all");
   const [storeOpen, setStoreOpen] = useState(false);
   const [filters, setFilters] = useState<ProductFilters>(NO_FILTERS);
   const [filtersOpen, setFiltersOpen] = useState(false);

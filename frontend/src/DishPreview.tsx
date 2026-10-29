@@ -177,10 +177,10 @@ export function PrepSteps({ dishId, campId }: { dishId: string; campId?: string 
   );
 }
 
-// Het volledige scherm van een gerecht, zoals bij Gerechten: online recepten openen als recept, de rest als gerecht
+// Het volledige scherm van een gerecht: online recepten openen als recept, de rest als gerecht (met foto en bereiding; bewerken kan daar)
 export function fullDishRoute(d: Pick<Dish, "id" | "source">) {
   const rid = d.source?.recipe_id;
-  return rid ? { pathname: "/recipe/[id]" as const, params: { id: rid.replace(":", "-") } } : { pathname: "/dish/edit" as const, params: { id: d.id } };
+  return rid ? { pathname: "/recipe/[id]" as const, params: { id: rid.replace(":", "-") } } : { pathname: "/dish/[id]" as const, params: { id: d.id } };
 }
 
 export function DishPreview({

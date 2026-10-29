@@ -18,6 +18,8 @@ import type { Product } from "@/app/(tabs)/products";
 import { BetterPack, PackBetter, PackPlan, packText } from "@/src/packs";
 import { AltSwapList, slotOf, type AltSwap } from "@/src/DishPreview";
 import { NewListInline } from "@/src/NewListInline";
+import { ProductPopup } from "@/src/ProductPopup";
+import { ProductBrowser } from "@/src/ProductBrowser";
 
 type Recipe = {
   id: string;
@@ -41,6 +43,7 @@ type Recipe = {
 };
 
 const SITE: Record<string, string> = { ah: "Allerhande", jumbo: "jumbo.com", dirk: "dirk.nl" };
+const SHOP: Record<string, "Albert Heijn" | "Jumbo" | "Dirk"> = { ah: "Albert Heijn", jumbo: "Jumbo", dirk: "Dirk" };
 
 // Gang op de site -> categorie in de app; de titel weegt mee ("Paddenstoelenkoekjes" is geen avondeten)
 const SNACK_RE = /borrel|snack|hapje|tussendoor|toetje|dessert|nagerecht|koffietijd|gebak|koek|cookie|cake|taart|brownie|muffin|cupcake|bonbon|truffel|ijs\b|ijsjes|traktatie|smoothie|cocktail|mocktail|limonade|drankje|bonbons|snoep|fudge|wafel|donut|scone|crumble|tiramisu|mousse|pudding|bavarois|chips|dip\b|nacho|bitterbal|kroket|popcorn|energieballetjes|granolareep/;
@@ -92,6 +95,10 @@ export default function RecipeScreen() {
   const amount = (i: Recipe["ingredients"][number]) =>
     n !== base && i.qty != null ? `${formatQty(scale(i.qty)!)} ${i.unit === "stuks" ? "" : i.unit + " "}${i.name}` : i.text;
   const [include, setInclude] = useState<number[]>([]);
+  // Tik op een ingrediënt: popup met het product (wisselen, andere winkels); daarna eventueel zelf een ander product zoeken
+  const [popup, setPopup] = useState<number | null>(null);
+  const [picker, setPicker] = useState<number | null>(null);
+  const openIng = (idx: number) => (r?.ingredients[idx].product ? setPopup(idx) : setPicker(idx));
   // Verpakkingen voor het gekozen aantal personen: de zak wordt niet groter, je hebt er meer van nodig (of een grotere)
   const planItems = (r?.ingredients ?? []).map((i) =>
     i.product && (i.qty != null || i.site_packs)
@@ -216,7 +223,7 @@ export default function RecipeScreen() {
               ) : null}
               <View style={styles.card}>
                 {r.ingredients.map((i, idx) => ({ i, idx })).filter((x) => !x.i.pantry && x.i.alt_for == null).map(({ i, idx }, k) => (
-                  <IngRow key={idx} i={i} first={k === 0} label={amount(i)} plan={plans.data?.[idx]} onSwap={(b) => swapTo(idx, b)} />
+                  <IngRow key={idx} i={i} first={k === 0} label={amount(i)} plan={plans.data?.[idx]} onSwap={(b) => swapTo(idx, b)} onOpen={() => openIng(idx)} />
                 ))}
                 {added.map((a) => (
                   <View key={a.slot} style={[styles.ingRow, styles.ingBorder]} testID={`recipe-added-${a.slot}`}>
@@ -253,6 +260,7 @@ export default function RecipeScreen() {
                         label={amount(i)}
                         plan={plans.data?.[idx]}
                         onSwap={(b) => swapTo(idx, b)}
+                        onOpen={() => openIng(idx)}
                         toggle={{ on: include.includes(idx), onPress: () => setInclude((x) => (x.includes(idx) ? x.filter((v) => v !== idx) : [...x, idx])) }}
                       />
                     ))}
@@ -328,6 +336,49 @@ export default function RecipeScreen() {
               </Pressable>
             </View>
           </View>
+
+          {/* Ingrediënt aangetikt: het product met wisselen en andere winkels */}
+          <ProductPopup
+            productId={popup != null ? r.ingredients[popup]?.product?.id ?? null : null}
+            onClose={() => setPopup(null)}
+            swapLabel={`Ander product bij ${SHOP[r.store] ?? "de winkel"}`}
+            onSwap={() => {
+              setPicker(popup);
+              setPopup(null);
+            }}
+          />
+          {/* Zelf een ander product zoeken, meteen bij de winkel van het recept */}
+          <Modal visible={picker != null} transparent animationType="fade" onRequestClose={() => setPicker(null)}>
+            <View style={styles.backdrop}>
+              <View style={[styles.sheet, { height: "92%", paddingBottom: insets.bottom + 12 }]}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Text style={[styles.sheetTitle, { flex: 1 }]} numberOfLines={1}>
+                    {picker != null ? `Product voor ${r.ingredients[picker]?.name ?? ""}` : ""}
+                  </Text>
+                  <Pressable onPress={() => setPicker(null)} hitSlop={8} testID="recipe-picker-close">
+                    <Icon name="close" size={22} color={colors.onSurface} />
+                  </Pressable>
+                </View>
+                {picker != null ? (
+                  <View style={{ flex: 1, marginHorizontal: -16 }}>
+                    <ProductBrowser
+                      key={picker}
+                      bottomPadding={16}
+                      initialSearch={r.ingredients[picker]?.name ?? ""}
+                      initialStore={SHOP[r.store]}
+                      onPick={(p) => {
+                        const idx = picker;
+                        setSwaps((x) => ({ ...x, [idx]: p }));
+                        // Uit "al in huis" gekozen: dan wil je het ook kopen
+                        if (r.ingredients[idx]?.pantry) setInclude((x) => (x.includes(idx) ? x : [...x, idx]));
+                        setPicker(null);
+                      }}
+                    />
+                  </View>
+                ) : null}
+              </View>
+            </View>
+          </Modal>
 
           <Modal visible={pick} transparent animationType="fade" onRequestClose={() => setPick(false)}>
             <Pressable style={styles.backdrop} onPress={() => setPick(false)}>
@@ -492,6 +543,7 @@ function IngRow({
   toggle,
   plan,
   onSwap,
+  onOpen,
 }: {
   i: Recipe["ingredients"][number];
   first: boolean;
@@ -499,6 +551,7 @@ function IngRow({
   plan?: PackPlan | null;
   toggle?: { on: boolean; onPress: () => void };
   onSwap?: (b: PackBetter) => void;
+  onOpen?: () => void;
 }) {
   const styles = useStyles();
   const T = useTerms();
@@ -508,8 +561,8 @@ function IngRow({
     <View style={!first && styles.ingBorder}>
     <View style={styles.ingRow}>
       <Pressable
-        disabled={!i.product}
-        onPress={() => i.product && router.push(`/product/${i.product.id}`)}
+        disabled={!i.product && !onOpen}
+        onPress={() => (onOpen ? onOpen() : i.product && router.push(`/product/${i.product.id}`))}
         style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }}
       >
         {i.product?.image ? (
