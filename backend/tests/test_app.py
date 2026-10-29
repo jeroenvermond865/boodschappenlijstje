@@ -776,18 +776,20 @@ def test_proef_van_14_dagen_en_daarna_standaard():
     assert S.public_user({**doc, "email": "a@b.nl"})["trial_ended"] is True
 
 
-def test_ultra_geldt_voor_het_hele_huishouden():
-    S._household_cache.clear()
-
+def test_rechten_per_lijstje_van_de_eigenaar():
     async def t():
-        await S.db.users.insert_many([{"user_id": "ultra", "name": "Sanne", "premium": True, "plan": "ultra", "deleted_at": None},
-                                      {"user_id": "gast", "name": "Gast", "deleted_at": None},
-                                      {"user_id": "los", "name": "Los", "deleted_at": None}])
-        await S.db.camps.insert_one({"camp_id": "c1", "owner_id": "ultra", "member_ids": ["gast"], "deleted_at": None})
-        return await S._household_premium({"user_id": "gast"}), await S._household_premium({"user_id": "los"})
-    via, none = run(t())
-    assert via == "Sanne" and none is None
-    assert S.user_plan({"premium": True, "premium_household": "Sanne"}) == "premium"  # Premium, geen Ultra
+        await S.db.users.insert_many([{"user_id": "ultra", "premium": True, "plan": "ultra", "deleted_at": None},
+                                      {"user_id": "std", "deleted_at": None}])
+        van_moeder = {"camp_id": "c1", "owner_id": "ultra", "member_ids": ["std"]}
+        van_mij = {"camp_id": "c2", "owner_id": "std", "member_ids": ["ultra"]}
+        in_haar_lijst = await S._list_user({"user_id": "std"}, van_moeder)
+        in_mijn_lijst = await S._list_user({"user_id": "std"}, van_mij)
+        zij_in_mijn_lijst = await S._list_user({"user_id": "ultra", "premium": True, "plan": "ultra"}, van_mij)
+        return in_haar_lijst, in_mijn_lijst, zij_in_mijn_lijst
+    a, b, c = run(t())
+    assert S.has_feature(a, "slim_splitsen") and S.user_plan(a) == "ultra"  # in het lijstje van de Ultra-eigenaar: alle functies
+    assert not S.has_feature(b, "slim_splitsen")  # in je eigen lijstje: je eigen abonnement
+    assert S.has_feature(c, "slim_splitsen")  # de Ultra-gebruiker houdt overal haar eigen functies
 
 
 def test_jaarprijs_en_gratis_vragen_voor_standaard(monkeypatch):

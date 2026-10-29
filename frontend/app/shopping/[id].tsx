@@ -38,7 +38,7 @@ type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: num
 
 const euro = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
 type PerDay = { index: number; adults: number; children: number; by_store: StoreBlock[] };
-type ShoppingData = { premium_value?: number; by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean; shop_day?: string | null; promo_then?: number; shop_store?: string | null; split_stores?: string[] };
+type ShoppingData = { premium_value?: number; features?: string[]; by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean; shop_day?: string | null; promo_then?: number; shop_store?: string | null; split_stores?: string[] };
 
 const key = (store: string, i: Item) => `${store}|${i.name.toLowerCase()}|${i.unit}`;
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -187,8 +187,11 @@ export default function ShoppingScreen() {
   };
 
   const multi = data?.multi_store ?? false;
-  const premium = useFeature("voorraadkast");
-  const routeOk = useFeature("looproute");
+  // In andermans lijstje mag je de functies van de eigenaar gebruiken: die stuurt de server mee
+  const ownPantry = useFeature("voorraadkast");
+  const ownRoute = useFeature("looproute");
+  const premium = data?.features ? data.features.includes("voorraadkast") : ownPantry;
+  const routeOk = data?.features ? data.features.includes("looproute") : ownRoute;
   const route = useRoute();
   const onRoute = routeOk && route.on;
   const [routeEdit, setRouteEdit] = useState<string | null>(null);
@@ -483,7 +486,7 @@ export default function ShoppingScreen() {
           contentContainerStyle={{ padding: 16, paddingTop: 16 + hide.padTop, paddingBottom: insets.bottom + 32, gap: 16 }}
         >
           {quick ? <TodayPicks stores={data?.stores ?? []} /> : null}
-          <PremiumValue value={data?.premium_value} />
+          <PremiumValue value={data?.premium_value} has={data?.features ? data.features.includes("extra_besparen") : undefined} />
           {id ? <RestockCard campId={String(id)} /> : null}
           {data?.offline_at ? (
             <View style={styles.multiBanner}>
@@ -534,6 +537,7 @@ export default function ShoppingScreen() {
                   pending={cmp.data.compare_pending}
                   shopStore={data?.shop_store}
                   noTitle
+                  canSplit={data?.features ? data.features.includes("slim_splitsen") : undefined}
                 />
               ) : null}
             </View>

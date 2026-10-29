@@ -89,6 +89,7 @@ export function CompareCard({
   pending,
   shopStore,
   noTitle,
+  canSplit,
 }: {
   campId: string;
   campName: string;
@@ -96,6 +97,7 @@ export function CompareCard({
   pending?: boolean;
   shopStore?: string | null;
   noTitle?: boolean;
+  canSplit?: boolean; // in een gedeeld lijstje: mag dit via de eigenaar
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -110,7 +112,8 @@ export function CompareCard({
   const fairTotal = (c: CompareStore) => c.total_fair ?? c.total;
   const best = compare.length > 1 ? compare.reduce((a, b) => (fairTotal(b) < fairTotal(a) ? b : a)) : null;
   const maxTotal = Math.max(1, ...compare.map(fairTotal));
-  const premium = useFeature("slim_splitsen");
+  const own = useFeature("slim_splitsen");
+  const premium = canSplit ?? own;
   const router = useRouter();
   const auto = bestSplit(compare, best ? fairTotal(best) : 0);
   const split = splitPick ? splitFor(compare, splitPick, best ? fairTotal(best) : 0) : auto;

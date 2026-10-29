@@ -96,7 +96,7 @@ export default function CampDetailScreen() {
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
-  const premium = useFeature("weekmenu");
+  const ownMenu = useFeature("weekmenu");
   const { selected: diet } = useDiet();
 
   const canViewBudget = has("view_budget");
@@ -118,6 +118,9 @@ export default function CampDetailScreen() {
     queryKey: ["camp", id],
     queryFn: () => cachedApi<Camp>(`/camps/${id}`),
   });
+  // In andermans lijstje: het weekmenu mag als de eigenaar dat heeft
+  const listFeatures = (camp as any)?.features as string[] | undefined;
+  const premium = listFeatures ? listFeatures.includes("weekmenu") : ownMenu;
 
   const { data: dishesData } = useQuery({
     queryKey: ["dishes"],

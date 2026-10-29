@@ -120,10 +120,11 @@ export function PremiumLock({ title, text, plural, feature }: { title: string; t
 const eur = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
 
 // Wat Premium je oplevert, bij een lijstje: met Premium "dit scheelt je", zonder Premium "dit had je extra bespaard"
-export function PremiumValue({ value }: { value?: number | null }) {
+export function PremiumValue({ value, has: listHas }: { value?: number | null; has?: boolean }) {
   const styles = useStyles();
   const router = useRouter();
-  const has = useFeature("extra_besparen");
+  const own = useFeature("extra_besparen");
+  const has = listHas ?? own;
   if (!value || value < 0.5) return null;
   return (
     <Pressable onPress={() => router.push(has ? "/savings" : "/premium")} style={[styles.value, { backgroundColor: GOLD.bg, borderColor: GOLD.border }]} testID="premium-value">

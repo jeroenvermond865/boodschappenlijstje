@@ -485,15 +485,26 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         raise HTTPException(status_code=401, detail="Gebruiker niet gevonden")
     if user.get("premium") and user.get("premium_until") and ensure_aware(user["premium_until"]) < now_utc():
         user = await _premium_expired(user)
-    if not user.get("premium"):
-        via = await _household_premium(user)
-        if via:
-            user = {**user, "premium": True, "premium_household": via}  # alleen voor dit verzoek, niet opgeslagen
+
     seen = user.get("last_seen_at")
     if not seen or ensure_aware(seen) < now_utc() - timedelta(hours=12):
         await _mark_seen(user["user_id"])
     await _mark_active(user)
     return user
+
+
+async def _list_user(user: dict, camp: dict) -> dict:
+    # In een gedeeld lijstje mag je in dát lijstje de functies van de eigenaar gebruiken (bijv. slim splitsen in het lijstje
+    # van je moeder). Andersom niet: deel jij als Standaard een lijstje met iemand met Premium, dan houdt die zijn eigen functies.
+    owner = camp.get("owner_id")
+    if not owner or owner == user["user_id"]:
+        return user
+    o = await db.users.find_one({"user_id": owner, "deleted_at": None}, {"_id": 0, "premium": 1, "plan": 1, "premium_until": 1})
+    if not o or not o.get("premium") or (o.get("premium_until") and ensure_aware(o["premium_until"]) < now_utc()):
+        return user
+    if PLAN_LEVELS.index(user_plan(o)) <= PLAN_LEVELS.index(user_plan(user)):
+        return user
+    return {**user, "premium": True, "plan": o.get("plan"), "list_plan_via": owner}
 
 
 _household_cache: Dict[str, tuple] = {}
@@ -1985,7 +1996,7 @@ async def get_camp(camp_id: str, user: dict = Depends(get_current_user)):
     doc = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
-    return camp_public(doc, user["user_id"])
+    return {**camp_public(doc, user["user_id"]), "features": user_features(await _list_user(user, doc))}
 
 
 @api_router.put("/camps/{camp_id}")
@@ -2062,11 +2073,12 @@ def _dish_cost(d: dict, by_pid: dict) -> Optional[float]:
 @api_router.post("/camps/{camp_id}/auto-menu")
 async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_current_user)):
     # Premium: lege maaltijden vullen met gerechten die bij je passen: je voorkeuren, wat je eerder at, en aanbiedingen
-    await require_feature(user, "weekmenu")
     uid = user["user_id"]
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(uid)}, {"_id": 0})
     if not camp:
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
+    user = await _list_user(user, camp)
+    await require_feature(user, "weekmenu")
     day_cats = {int(k): [c for c in v if c in MEAL_CATEGORIES] for k, v in (data.day_categories or {}).items()}
     base_cats = [c for c in data.categories if c in MEAL_CATEGORIES]
     cats = [c for c in MEAL_CATEGORIES if c in base_cats or any(c in v for v in day_cats.values())]
@@ -2950,6 +2962,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
     camp = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not camp:
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
+    user = await _list_user(user, camp)  # in andermans lijstje: de functies van de eigenaar
 
     active = await get_active_stores()
     primary_store = user.get("store", DEFAULT_STORE)
@@ -3198,6 +3211,7 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
         "by_store": by_store,
         "general": general,
         "per_day": per_day,
+        "features": user_features(user),  # wat je in dít lijstje mag (ook via de eigenaar)
         # Wat de Premium-functies bij dit lijstje schelen (zonder Premium: wat het had opgeleverd)
         "premium_value": round(float(sv.get("pantry") or 0) + float(sv.get("promo_day") or 0) + float(sv.get("split") or 0) + float(sv.get("split_can") or 0), 2),
         "stores": stores,
@@ -9858,6 +9872,7 @@ async def camp_shop_store(camp_id: str, data: ShopStoreInput, user: dict = Depen
     c = await db.camps.find_one({"camp_id": camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
+    user = await _list_user(user, c)
     split = [x for x in dict.fromkeys(data.split) if x in COMPARE_STORES]
     if len(split) >= 2 and not has_feature(user, "slim_splitsen"):
         raise HTTPException(status_code=403, detail="Slim splitsen over winkels is een Premium-functie")

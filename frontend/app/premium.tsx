@@ -131,6 +131,8 @@ export default function PremiumScreen() {
           </Text>
         </View>
 
+        <PlanCompare levels={levels} />
+
         {/* Per maand of per jaar: een jaar is voordeliger */}
         {levels.some((l) => l.price_year) ? (
           <View style={styles.periodRow}>
@@ -170,7 +172,7 @@ export default function PremiumScreen() {
                 ) : null}
                 {l.key === "ultra" ? (
                   <Text style={[styles.planLine, { fontFamily: fonts.bold }, c && { color: c.text }]}>
-                    Voor het hele huishouden: iedereen met wie je een lijstje deelt, krijgt Premium
+                    Voor het hele huishouden: wie jouw lijstjes gebruikt, heeft daarin ook alle functies
                   </Text>
                 ) : null}
                 <Text style={styles.featureText}>
@@ -297,7 +299,53 @@ export default function PremiumScreen() {
   );
 }
 
+// Kort overzicht: wat elk abonnement jou oplevert, met je eigen lijstjes (gemiddeld per maand over de laatste maanden)
+function PlanCompare({ levels }: { levels: { key: PlanKey; price?: number | null; ai_limit: number }[] }) {
+  const styles = useStyles();
+  const sv = useQuery({ queryKey: ["savings"], queryFn: () => api<{ months: { standard: number; premium: number }[] }>("/savings") });
+  const months = (sv.data?.months ?? []).slice(0, 3);
+  if (!levels.length) return null;
+  const avg = (k: "standard" | "premium") => (months.length ? months.reduce((n, m) => n + (m[k] || 0), 0) / months.length : 0);
+  const std = avg("standard");
+  const extra = avg("premium");
+  const eur = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
+  const get = (k: PlanKey) => levels.find((l) => l.key === k);
+  const rows: [string, string, string, string][] = [
+    ["Prijs", "Gratis", get("premium")?.price ? `${eur(get("premium")!.price!)} p/m` : "–", get("ultra")?.price ? `${eur(get("ultra")!.price!)} p/m` : "–"],
+    ...(months.length ? [["Bespaart jou ca.", `${eur(std)} p/m`, `${eur(std + extra)} p/m`, `${eur(std + extra)} p/m`] as [string, string, string, string]] : []),
+    ["Slimme hulp", `${get("standaard")?.ai_limit ?? 0} vragen`, `${get("premium")?.ai_limit ?? 0} vragen`, `${get("ultra")?.ai_limit ?? 0} vragen`],
+    ["Gedeelde lijstjes", "Jouw functies", "Jouw functies", "Iedereen erin alle functies"],
+  ];
+  return (
+    <View style={styles.cmp} testID="plan-compare">
+      <Text style={styles.cmpTitle}>Wat levert het jou op?</Text>
+      <View style={styles.cmpRow}>
+        <Text style={[styles.cmpCell, styles.cmpHead, { flex: 1.3 }]} />
+        {["Standaard", "Premium", "Ultra"].map((h) => (
+          <Text key={h} style={[styles.cmpCell, styles.cmpHead]}>{h}</Text>
+        ))}
+      </View>
+      {rows.map((r) => (
+        <View key={r[0]} style={styles.cmpRow}>
+          <Text style={[styles.cmpCell, styles.cmpLabel, { flex: 1.3 }]}>{r[0]}</Text>
+          {r.slice(1).map((v, k) => (
+            <Text key={k} style={styles.cmpCell}>{v}</Text>
+          ))}
+        </View>
+      ))}
+      {months.length ? <Text style={styles.cmpNote}>Op basis van je eigen lijstjes van de laatste {months.length === 1 ? "maand" : `${months.length} maanden`}.</Text> : null}
+    </View>
+  );
+}
+
 const useStyles = makeStyles((colors) => ({
+  cmp: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 12, gap: 2 },
+  cmpTitle: { fontSize: 16, fontFamily: fonts.bold, color: colors.onSurface, marginBottom: 6 },
+  cmpRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderTopWidth: 1, borderTopColor: colors.divider },
+  cmpCell: { flex: 1, fontSize: 12.5, fontFamily: fonts.medium, color: colors.onSurface, textAlign: "center" },
+  cmpHead: { fontFamily: fonts.bold, color: colors.muted },
+  cmpLabel: { textAlign: "left", fontFamily: fonts.semibold },
+  cmpNote: { fontSize: 11.5, fontFamily: fonts.regular, color: colors.muted, marginTop: 4 },
   periodRow: { flexDirection: "row", gap: 6, alignSelf: "center", backgroundColor: colors.surfaceSecondary, borderRadius: 999, padding: 4 },
   periodBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999 },
   periodOn: { backgroundColor: colors.brandPrimary },
