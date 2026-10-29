@@ -2677,6 +2677,7 @@ def _basic_dish_info(dish: dict, pools: dict, found: dict) -> dict:
 # --- Foto bij een gerecht: een echte foto van dat gerecht, geen foto van een pak brood ---
 # We zoeken bij de recepten van AH, Jumbo en Dirk (en op Wikimedia Commons) en laten de AI kiezen welke foto echt bij de naam past.
 _photo_tasks: set = set()
+PHOTO_RETRY_DAYS = 7  # geen foto gevonden: na zoveel dagen opnieuw zoeken
 PHOTO_V = 2  # hoger zetten = alle foto's van gerechten opnieuw laten kiezen (2: strenger, geen gok meer als de AI faalt)
 
 
@@ -2794,8 +2795,13 @@ async def _ai_dish_image(name: str) -> Optional[str]:
 async def _set_dish_photo(dish: dict) -> None:
     # Eén keer per naam zoeken; bij een nieuwe naam opnieuw
     name = (dish.get("name") or "").strip()
-    if not name or (dish.get("photo_for") == name and dish.get("photo_v") == PHOTO_V) or (dish.get("source") or {}).get("image"):
+    if not name or (dish.get("source") or {}).get("image"):
         return
+    if dish.get("photo_for") == name and dish.get("photo_v") == PHOTO_V:
+        # Al een foto: klaar. Geen foto gevonden: na een week opnieuw proberen (bijv. omdat winkelfoto's toen uit stonden)
+        tried = dish.get("photo_tried")
+        if dish.get("photo") or (isinstance(tried, datetime) and (now_utc() - (tried if tried.tzinfo else tried.replace(tzinfo=timezone.utc))).days < PHOTO_RETRY_DAYS):
+            return
     try:
         url = await _dish_photo(name)
     except Exception as e:
@@ -2808,13 +2814,27 @@ async def _set_dish_photo(dish: dict) -> None:
             ai = bool(url)
         except Exception as e:
             logger.warning("AI-foto %s: %r", name, e)
-    await db.dishes.update_one({"dish_id": dish["dish_id"]}, {"$set": {"photo": url, "photo_for": name, "photo_v": PHOTO_V, "photo_ai": ai}})
+    await db.dishes.update_one({"dish_id": dish["dish_id"]}, {"$set": {"photo": url, "photo_for": name, "photo_v": PHOTO_V, "photo_ai": ai, "photo_tried": now_utc()}})
     if url:
         logger.info("Foto bij gerecht %s gevonden", name)
 
 
+_photo_busy: set = set()
+
+
 def _photo_later(dish: dict) -> None:
-    t = asyncio.create_task(_set_dish_photo(dish))
+    # Niet twee keer tegelijk voor hetzelfde gerecht (Home vraagt er vaak om)
+    did = dish.get("dish_id")
+    if did in _photo_busy:
+        return
+    _photo_busy.add(did)
+
+    async def run():
+        try:
+            await _set_dish_photo(dish)
+        finally:
+            _photo_busy.discard(did)
+    t = asyncio.create_task(run())
     _photo_tasks.add(t)
     t.add_done_callback(_photo_tasks.discard)
 
@@ -10322,7 +10342,7 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
         c = upcoming[0] if upcoming else mains[0]
         dish_ids = {did for day in c.get("days", []) for cat in MEAL_CATEGORIES for did in (day.get("meals") or {}).get(cat, [])}
         dishes = await db.dishes.find({"dish_id": {"$in": list(dish_ids)}}, {"_id": 0, "dish_id": 1, "name": 1, "ingredients": 1, "image": 1, "photo": 1, "source.image": 1,
-                                                                           "photo_for": 1, "photo_v": 1}).to_list(500)
+                                                                           "photo_for": 1, "photo_v": 1, "photo_tried": 1}).to_list(500)
         names = {}
         for d in dishes:
             for i in d.get("ingredients") or []:

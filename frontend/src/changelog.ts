@@ -5,6 +5,16 @@ export type Release = { id: string; version?: string; date: string; title: strin
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-29-v121",
+    version: "1.2.1",
+    date: "29 oktober 2026",
+    title: "Inspreken en foto's bij Op het menu hersteld",
+    changes: [
+      { kind: "opgelost", text: "Inspreken in de Slimme hulp werkt weer. De knop Inspreken staat onder het tekstvak. Tijdens het praten zie je het bewegende balkje. Lukt het niet, dan zie je waarom." },
+      { kind: "opgelost", text: "Gerechten bij Op het menu die eerder geen foto vonden, zoeken nu opnieuw. Na een keer Home openen staan de foto's er." },
+    ],
+  },
+  {
     id: "2026-10-29-v120",
     version: "1.2.0",
     date: "29 oktober 2026",

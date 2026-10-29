@@ -448,9 +448,13 @@ function DishCard({ dish, kind }: { dish: AiDish; kind: "recept" | "restjes" }) 
 
 // Inspreken in de browser (Chrome, Edge, Safari); anders de microfoon van je toetsenbord.
 // Wat je zegt, verschijnt meteen in het tekstvak (ook halve zinnen), achter wat er al stond.
+// Op de iPhone (Safari) werkt tussentijdse tekst niet betrouwbaar: daar komt de tekst per zin binnen, net als eerst.
+const IOS = Platform.OS === "web" && typeof navigator !== "undefined" && /iPad|iPhone|iPod/.test(navigator.userAgent || "");
+
 function useSpeech(value: string, onChange: (t: string) => void) {
   const SR = Platform.OS === "web" && typeof window !== "undefined" ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition : null;
   const [on, setOn] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const rec = useRef<any>(null);
   const cb = useRef(onChange);
   cb.current = onChange;
@@ -463,23 +467,40 @@ function useSpeech(value: string, onChange: (t: string) => void) {
       return;
     }
     base.current = value.trim();
+    setError(null);
     const r = new SR();
     r.lang = "nl-NL";
     r.continuous = true;
-    r.interimResults = true;
+    r.interimResults = !IOS;
     r.onresult = (e: any) => {
+      // Alles wat tot nu toe gezegd is (ook halve zinnen), achter wat er al in het vak stond
       let said = "";
-      for (let k = 0; k < e.results.length; k++) said += e.results[k][0].transcript;
-      said = said.trim();
-      cb.current(base.current && said ? `${base.current}, ${said}` : base.current || said);
+      for (let k = 0; k < e.results.length; k++) {
+        if (IOS && !e.results[k].isFinal) continue;
+        said += (said ? " " : "") + e.results[k][0].transcript.trim();
+      }
+      if (said) cb.current(base.current ? `${base.current}, ${said}` : said);
     };
     r.onend = () => setOn(false);
-    r.onerror = () => setOn(false);
+    r.onerror = (e: any) => {
+      setOn(false);
+      setError(
+        e?.error === "not-allowed" || e?.error === "service-not-allowed"
+          ? "De app mag de microfoon niet gebruiken. Sta de microfoon toe in je browser en probeer het opnieuw."
+          : e?.error === "no-speech"
+            ? "Ik hoorde niets. Tik nog eens en praat dan."
+            : "Inspreken lukte niet. Probeer het nog eens, of gebruik de microfoon van je toetsenbord.",
+      );
+    };
     rec.current = r;
-    r.start();
-    setOn(true);
+    try {
+      r.start();
+      setOn(true);
+    } catch {
+      setError("Inspreken lukte niet. Gebruik de microfoon van je toetsenbord.");
+    }
   };
-  return { can: !!SR, on, toggle };
+  return { can: !!SR, on, toggle, error };
 }
 
 // Bewegend balkje terwijl de app luistert
@@ -521,19 +542,22 @@ function SpeakInput({ value, onChangeText, placeholder, testID }: { value: strin
   const styles = useStyles();
   const { colors } = useTheme();
   const speech = useSpeech(value, onChangeText);
+  // De microfoonknop staat onder het tekstvak (niet erin): zo komt een tik altijd bij de knop aan
   return (
     <View style={{ gap: 8 }}>
-      <View>
-        <TextInput value={value} onChangeText={onChangeText} multiline placeholder={placeholder} placeholderTextColor={colors.muted}
-          style={[styles.input, { paddingRight: 52 }]} testID={testID} />
-        {speech.can ? (
-          <Pressable onPress={speech.toggle} style={[styles.micBtn, speech.on && { backgroundColor: colors.error }]} hitSlop={6} testID={testID ? `${testID}-mic` : undefined}>
-            <Icon name={speech.on ? "stop" : "microphone"} size={20} color={speech.on ? "#FFFFFF" : colors.brandPrimary} />
-          </Pressable>
-        ) : null}
-      </View>
-      {speech.on ? <ListenBar onStop={speech.toggle} /> : null}
-      {!speech.can ? <Text style={styles.small}>Inspreken kan met de microfoon op je toetsenbord.</Text> : null}
+      <TextInput value={value} onChangeText={onChangeText} multiline placeholder={placeholder} placeholderTextColor={colors.muted}
+        style={styles.input} testID={testID} />
+      {speech.on ? (
+        <ListenBar onStop={speech.toggle} />
+      ) : speech.can ? (
+        <Pressable onPress={speech.toggle} style={styles.micBtn} testID={testID ? `${testID}-mic` : undefined}>
+          <Icon name="microphone" size={20} color={colors.brandPrimary} />
+          <Text style={[styles.body, { color: colors.brandPrimary, fontFamily: fonts.semibold }]}>Inspreken</Text>
+        </Pressable>
+      ) : (
+        <Text style={styles.small}>Inspreken kan met de microfoon op je toetsenbord.</Text>
+      )}
+      {speech.error ? <Text style={[styles.small, { color: colors.error }]}>{speech.error}</Text> : null}
     </View>
   );
 }
@@ -731,7 +755,7 @@ const useStyles = makeStyles((colors) => ({
   intro: { flexDirection: "row", gap: 12, backgroundColor: GOLD.bg, borderColor: GOLD.border, borderWidth: 1, borderRadius: 16, padding: 14 },
   introTitle: { fontSize: 16, fontFamily: fonts.bold, color: GOLD.text },
   introText: { fontSize: 13, lineHeight: 18, fontFamily: fonts.regular, color: GOLD.text },
-  micBtn: { position: "absolute", right: 8, bottom: 8, width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceSecondary },
+  micBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 11, borderRadius: 14, borderWidth: 1.5, borderColor: colors.brandPrimary },
   listen: { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.error },
   stopBtn: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.error, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 },
   input: { minHeight: 80, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 12, fontSize: 15, fontFamily: fonts.regular, color: colors.onSurface, backgroundColor: colors.surface, textAlignVertical: "top" },

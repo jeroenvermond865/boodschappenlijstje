@@ -1210,3 +1210,25 @@ def test_voorbeeldzinnen_persoonlijk():
     r = run(t())
     assert r["personal"] and len(r["examples"]) == 3
     assert any("3 volwassenen en 1 kind" in e for e in r["examples"])
+
+
+def test_foto_opnieuw_zoeken_na_lege_poging(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    calls = []
+
+    async def foto(name):
+        calls.append(name)
+        return "https://example.org/x.jpg"
+    monkeypatch.setattr(S, "_dish_photo", foto)
+
+    async def t():
+        oud = datetime.now(timezone.utc) - timedelta(days=10)
+        await S.db.dishes.insert_one({"dish_id": "d1", "name": "Chia pudding", "photo": None, "photo_for": "Chia pudding", "photo_v": S.PHOTO_V})
+        await S.db.dishes.insert_one({"dish_id": "d2", "name": "Hummus", "photo": None, "photo_for": "Hummus", "photo_v": S.PHOTO_V,
+                                      "photo_tried": datetime.now(timezone.utc)})
+        await S.db.dishes.insert_one({"dish_id": "d3", "name": "Soep", "photo": None, "photo_for": "Soep", "photo_v": S.PHOTO_V, "photo_tried": oud})
+        for d in ("d1", "d2", "d3"):
+            await S._set_dish_photo(await S.db.dishes.find_one({"dish_id": d}))
+        return (await S.db.dishes.find_one({"dish_id": "d1"}))["photo"]
+    assert run(t()) == "https://example.org/x.jpg"
+    assert calls == ["Chia pudding", "Soep"]
