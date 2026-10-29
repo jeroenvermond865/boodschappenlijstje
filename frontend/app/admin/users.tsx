@@ -456,8 +456,9 @@ const useStyles = makeStyles((colors) => ({
   chipTextActive: { color: colors.onBrandPrimary },
   editBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
   modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
-  sheetScroll: { maxHeight: "92%" },
-  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "92%", maxWidth: 560, alignSelf: "center", marginVertical: "auto", maxHeight: "92%", padding: 16, gap: 12 },
+  // De witte achtergrond hoort bij het scrollvak zelf; anders schuift de inhoud bij scrollen buiten het witte vlak
+  sheetScroll: { maxHeight: "92%", width: "92%", maxWidth: 560, alignSelf: "center", backgroundColor: colors.surface, borderRadius: 20, flexGrow: 0 },
+  sheet: { padding: 16, gap: 12 },
   sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   sheetTitle: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   pwBlock: { gap: 10, borderTopWidth: 1, borderTopColor: colors.divider, paddingTop: 14, marginTop: 2 },

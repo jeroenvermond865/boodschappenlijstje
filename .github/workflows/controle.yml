@@ -34,3 +34,24 @@ jobs:
           node-version: "22"
       - name: Esbuild
         run: npx --yes esbuild@0.24.0 $(git ls-files frontend/app frontend/src | grep -E '\.tsx?$') --outdir=/tmp/esbuild --log-level=error
+
+  # Onbekende namen (een variabele die niet bestaat) laat esbuild door, maar de app loopt er dan op vast.
+  # TypeScript vindt ze wel; we kijken alleen naar die fouten (TS2304/TS2552), niet naar alle typefouten.
+  namen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+      - name: Pakketten
+        working-directory: frontend
+        run: yarn install --frozen-lockfile --network-timeout 600000
+      - name: Onbekende namen
+        working-directory: frontend
+        run: |
+          npx tsc --noEmit -p . > /tmp/tsc.txt || true
+          if grep -E "error TS(2304|2552)" /tmp/tsc.txt; then echo "Onbekende namen gevonden"; exit 1; fi
+          echo "Geen onbekende namen"

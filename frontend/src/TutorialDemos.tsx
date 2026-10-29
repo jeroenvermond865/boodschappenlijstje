@@ -401,6 +401,7 @@ function GroupTile({ t, at, icon, label, pick }: { t: SharedValue<number>; at: n
 
 function ProductsDemo() {
   const t = useClock(5600);
+  const alarm = planAccent(usePlanOf("prijsalarm")); // goud of paars, net als het abonnement van prijsalarm
   const styles = useStyles();
   const { colors } = useTheme();
   const offers = useOffers().slice(0, 3);
@@ -514,6 +515,8 @@ const MENU = ["Ma: Wraps met kip", "Di: Pasta pesto", "Wo: Ovenschotel met groen
 
 function SmartDemo() {
   const t = useClock(6400);
+  const smartPlan = usePlanOf("slimme_hulp");
+  const smart = planAccent(smartPlan);
   const styles = useStyles();
   const { colors } = useTheme();
   const reduced = useReducedMotion();

@@ -5,6 +5,17 @@ export type Release = { id: string; version?: string; date: string; title: strin
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-29-v117",
+    version: "1.1.7",
+    date: "29 oktober 2026",
+    title: "Uitleg werkt weer helemaal, en twee schermen in Beheer rustiger",
+    changes: [
+      { kind: "opgelost", text: "Zo werkt de app liep vanaf stap 8 vast. Alle stappen werken weer, ook voor nieuwe gebruikers." },
+      { kind: "opgelost", text: "Beheer > Gebruikers: het venster van een gebruiker blijft bij scrollen netjes wit en in één stuk." },
+      { kind: "opgelost", text: "Beheer > Dashboard: een ander filter kiezen laat de pagina niet meer verspringen. De oude cijfers blijven staan tot de nieuwe er zijn." },
+    ],
+  },
+  {
     id: "2026-10-29-v116",
     version: "1.1.6",
     date: "29 oktober 2026",

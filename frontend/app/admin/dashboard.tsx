@@ -51,10 +51,12 @@ export default function AdminDashboardScreen() {
   const [task, setTask] = useState("");
 
   // Live: elke 30 seconden opnieuw
-  const { data, isLoading, dataUpdatedAt } = useQuery({
+  const { data, isLoading, isPlaceholderData, dataUpdatedAt } = useQuery({
     queryKey: ["admin-dashboard", days, plan, task],
     queryFn: () => api<Dash>(`/admin/dashboard?days=${days}&plan=${plan}&task=${task}`),
     refetchInterval: 30 * 1000,
+    // Ander filter: de oude cijfers blijven staan tot de nieuwe er zijn, dan springt de pagina niet terug naar boven
+    placeholderData: (prev) => prev,
   });
   const maxCost = Math.max(0.0001, ...(data?.series ?? []).map((s) => s.cost));
   const maxActive = Math.max(1, ...(data?.series ?? []).map((s) => s.active));
@@ -76,7 +78,7 @@ export default function AdminDashboardScreen() {
         {isLoading || !data ? (
           <ActivityIndicator size="large" color={colors.brandPrimary} style={{ marginTop: 30 }} />
         ) : (
-          <Animated.View entering={FadeIn} style={{ gap: 14 }}>
+          <Animated.View entering={FadeIn} style={{ gap: 14, opacity: isPlaceholderData ? 0.6 : 1 }}>
             <View style={styles.live}>
               <View style={styles.dot} />
               <Text style={styles.small}>Live · bijgewerkt {new Date(dataUpdatedAt).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}</Text>
