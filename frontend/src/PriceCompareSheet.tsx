@@ -1,5 +1,7 @@
 // "Bij Dirk € 2,49, hier € 1,99" aantikken: beide producten naast elkaar, en daaronder wat je nog meer kunt kiezen.
-// Bij deze winkel kun je meteen wisselen (bijv. een grotere verpakking die per kilo goedkoper is); de andere winkels zijn ter vergelijking.
+// Tik op een product: je ziet het hier groot, met Wissel en Terug. Ook producten bij de andere winkels kun je zo kiezen.
+// Klopt de vergelijking niet, dan meld je dat; de app laat het nakijken (AI) en kiest daarna iets beters.
+import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
@@ -31,12 +33,20 @@ export function PriceCompareSheet({
   store,
   onClose,
   onPick,
+  onSearch,
 }: {
   item: CompareItem | null;
   store: string;
   onClose: () => void;
   onPick: (p: Product) => Promise<void> | void;
+  onSearch?: () => void; // zelf een ander product zoeken
 }) {
+  const [detail, setDetail] = useState<AltProduct | null>(null);
+  const [reported, setReported] = useState(false);
+  useEffect(() => {
+    setDetail(null);
+    setReported(false);
+  }, [item?.name, item?.product_id]);
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -68,9 +78,17 @@ export function PriceCompareSheet({
     onClose();
     router.push({ pathname: "/product/[id]", params: { id } });
   };
+  const report = async () => {
+    setReported(true);
+    try {
+      await api("/compare/wrong", { method: "POST", body: { want: other?.name ?? item?.name ?? "", product_id: base?.id ?? "" } });
+    } catch {
+      // niet erg: het is een tip
+    }
+  };
 
   const Side = ({ label, p, total, cheaper }: { label: string; p: Product | null; total?: number; cheaper?: boolean }) => (
-    <Pressable onPress={p ? () => openProduct(p.id) : undefined} style={[styles.side, cheaper && { borderColor: colors.success, borderWidth: 2 }]}>
+    <Pressable onPress={p ? () => setDetail(p as AltProduct) : undefined} style={[styles.side, cheaper && { borderColor: colors.success, borderWidth: 2 }]}>
       <Text style={[styles.sideLabel, cheaper && { color: colors.success }]}>{label}</Text>
       {p?.image ? <Image source={{ uri: p.image }} style={styles.bigImg} resizeMode="contain" /> : <View style={styles.bigImg} />}
       <Text style={styles.name} numberOfLines={3}>{p?.name ?? (otherQ.isLoading && was?.product_id ? "…" : "Product uit de vergelijking")}</Text>
@@ -92,7 +110,7 @@ export function PriceCompareSheet({
   );
 
   const Row = ({ p, canPick }: { p: AltProduct; canPick: boolean }) => (
-    <Pressable onPress={() => (canPick ? Promise.resolve(onPick(p)).then(onClose) : openProduct(p.id))} style={styles.row}>
+    <Pressable onPress={() => setDetail(p)} style={styles.row}>
       {p.image ? <Image source={{ uri: p.image }} style={styles.img} resizeMode="contain" /> : <View style={styles.img} />}
       <View style={{ flex: 1 }}>
         <Text style={styles.rowName} numberOfLines={2}>{p.name}</Text>
@@ -108,7 +126,7 @@ export function PriceCompareSheet({
       </View>
       <View style={{ alignItems: "flex-end", gap: 2 }}>
         <Text style={styles.price}>{p.price > 0 ? euro(p.promo?.price ?? p.price) : "—"}</Text>
-        {canPick ? <Text style={[styles.meta, { color: colors.brandPrimary, fontFamily: fonts.semibold }]}>Kies</Text> : null}
+        <Text style={[styles.meta, { color: colors.brandPrimary, fontFamily: fonts.semibold }]}>{canPick ? "Kies" : "Bekijk"}</Text>
       </View>
     </Pressable>
   );
@@ -123,6 +141,34 @@ export function PriceCompareSheet({
               <Icon name="close" size={22} color={colors.onSurface} />
             </Pressable>
           </View>
+          {detail ? (
+            <ScrollView contentContainerStyle={{ gap: 10 }} testID="compare-detail">
+              {detail.image ? <Image source={{ uri: detail.image }} style={styles.detailImg} resizeMode="contain" /> : null}
+              <Text style={styles.sideLabel}>{detail.source ?? ""}</Text>
+              <Text style={[styles.rowName, { fontSize: 18 }]}>{detail.name}</Text>
+              <Text style={styles.meta}>
+                {detail.unit}
+                {detail.unit_price ? ` · ${detail.unit_price}` : ""}
+              </Text>
+              <Text style={styles.total}>{detail.price > 0 ? euro(detail.promo?.price ?? detail.price) : "—"}</Text>
+              {detail.promo ? <Text style={[styles.meta, { color: colors.warning, fontFamily: fonts.semibold }]}>{detail.promo.label}</Text> : null}
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                {detail.id !== base?.id ? (
+                  <Pressable onPress={() => Promise.resolve(onPick(detail)).then(onClose)} style={[styles.btn, { backgroundColor: colors.brandPrimary }]} testID="compare-detail-swap">
+                    <Icon name="swap-horizontal" size={18} color={colors.onBrandPrimary} />
+                    <Text style={[styles.btnText, { color: colors.onBrandPrimary }]}>Wissel</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable onPress={() => setDetail(null)} style={[styles.btn, { backgroundColor: colors.surfaceSecondary }]} testID="compare-detail-back">
+                  <Icon name="arrow-left" size={18} color={colors.onSurface} />
+                  <Text style={[styles.btnText, { color: colors.onSurface }]}>Terug</Text>
+                </Pressable>
+              </View>
+              <Pressable onPress={() => openProduct(detail.id)} hitSlop={6}>
+                <Text style={[styles.meta, { color: colors.brandPrimary, fontFamily: fonts.semibold, textAlign: "center" }]}>Alles over dit product ›</Text>
+              </Pressable>
+            </ScrollView>
+          ) : (
           <ScrollView contentContainerStyle={{ gap: 10 }}>
             <View style={{ flexDirection: "row", gap: 8 }}>
               <Side label={`Hier bij ${SHORT[store] ?? store}`} p={base} total={item?.price} cheaper={diff > 0} />
@@ -133,6 +179,20 @@ export function PriceCompareSheet({
                 Hier {euro(diff)} goedkoper voor wat je nodig hebt.
               </Text>
             ) : null}
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              {onSearch ? (
+                <Pressable onPress={() => { onClose(); onSearch(); }} style={[styles.btn, { backgroundColor: colors.surfaceSecondary }]} testID="compare-search">
+                  <Icon name="magnify" size={18} color={colors.brandPrimary} />
+                  <Text style={[styles.btnText, { color: colors.brandPrimary }]}>Zelf zoeken</Text>
+                </Pressable>
+              ) : null}
+              {was && base ? (
+                <Pressable onPress={report} disabled={reported} style={[styles.btn, { backgroundColor: colors.surfaceSecondary }]} testID="compare-wrong">
+                  <Icon name={reported ? "check" : "alert-circle-outline"} size={18} color={reported ? colors.success : colors.warning} />
+                  <Text style={[styles.btnText, { color: reported ? colors.success : colors.onSurface }]}>{reported ? "Bedankt, we kijken het na" : "Klopt niet"}</Text>
+                </Pressable>
+              ) : null}
+            </View>
 
             {alts.isLoading ? (
               <ActivityIndicator color={colors.brandPrimary} />
@@ -149,13 +209,14 @@ export function PriceCompareSheet({
                   .filter((g) => g.store !== store && g.products.length)
                   .map((g) => (
                     <View key={g.store} style={{ gap: 4 }}>
-                      <Text style={styles.groupHead}>Ter vergelijking bij {g.store}</Text>
+                      <Text style={styles.groupHead}>Bij {g.store}</Text>
                       {g.products.map((p) => <Row key={p.id} p={p} canPick={false} />)}
                     </View>
                   ))}
               </>
             )}
           </ScrollView>
+          )}
         </View>
       </View>
     </Modal>
@@ -171,6 +232,9 @@ const useStyles = makeStyles((colors) => ({
   sideLabel: { fontSize: 13, fontFamily: fonts.bold, color: colors.muted },
   bigImg: { width: 90, height: 90, borderRadius: 10, backgroundColor: "#fff" },
   total: { fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface, marginTop: 2 },
+  detailImg: { width: "100%", height: 170, borderRadius: 14, backgroundColor: "#fff" },
+  btn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 12, paddingVertical: 11, paddingHorizontal: 8 },
+  btnText: { fontSize: 14, fontFamily: fonts.bold },
   diff: { fontSize: 14, fontFamily: fonts.semibold, color: colors.success, textAlign: "center" },
   groupHead: { fontSize: 14, fontFamily: fonts.bold, color: colors.onSurface, marginTop: 4 },
   row: { flexDirection: "row", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, backgroundColor: colors.surfaceSecondary },

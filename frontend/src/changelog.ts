@@ -5,6 +5,18 @@ export type Release = { id: string; version?: string; date: string; title: strin
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-29-v111",
+    version: "1.1.1",
+    date: "29 oktober 2026",
+    title: "Betere vergelijkingen, wisselen vanuit elke pop-up en soepeler vegen",
+    changes: [
+      { kind: "opgelost", text: "De prijsvergelijking zette soms iets heel anders naast je product, zoals een chocoladereep met hazelnoten naast een zak hazelnoten. Producten waar het alleen in zit, tellen nu niet meer mee." },
+      { kind: "nieuw", text: "Klopt een vergelijking niet? Tik op Klopt niet. De app laat het nakijken en kiest daarna iets beters, ook voor anderen." },
+      { kind: "beter", text: "In de vergelijking en bij Bij andere winkels kun je nu op elk product tikken. Je ziet het groot, met Wissel en Terug. Met Zelf zoeken kies je een heel ander product." },
+      { kind: "beter", text: "Vegen tussen tabbladen en dagen gaat soepeler. De pagina volgt je vinger en schuift rustig door." },
+    ],
+  },
+  {
     id: "2026-10-29-v110",
     version: "1.1.0",
     date: "29 oktober 2026",

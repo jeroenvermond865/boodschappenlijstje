@@ -8592,6 +8592,9 @@ _PROCESSED = ("koek", "cracker", "tapenade", "azijn", "saus", "chips", "spread",
               "bonbons", "tompouce", "gebak", "bonbonniere",
               # Bakkerij: "roomboter croissants" is geen roomboter, "kaasbroodjes" geen kaas
               "croissant", "broodje", "bolletje", "deeg", "brownie", "cookie", "donut", "flap", "gevuld", "saucijzen", "knapper")
+# Losse woorden die zelf een ander product zijn: "Milka reep hazelnoot" is chocolade, geen hazelnoten
+_CARRIERS = {"reep", "repen", "koek", "koeken", "chips", "ijs", "yoghurt", "vla", "snoep", "taart", "cake", "soep", "saus", "drank",
+             "spread", "chocolade", "bonbon", "bonbons", "muesli", "granola", "cruesli", "ontbijtkoek", "hagelslag", "pindakaas"}
 # Woorden die alleen iets over het product zeggen ("citroenen verpakt", "kaas plakken")
 _DESCRIPTORS = {"verpakt", "los", "geschild", "gesneden", "geraspt", "plakken", "plakjes", "blokjes", "reepjes", "schijfjes", "zwart", "wit",
                 "rood", "groen", "geel", "bio", "biologisch", "biologische", "naturel", "kruimig", "vastkokend", "s", "m", "l", "xl", "kanjers",
@@ -9551,6 +9554,36 @@ class CompareSwap(BaseModel):
     product_id: Optional[str] = None  # leeg = terug naar de keuze van de app
 
 
+class CompareWrong(BaseModel):
+    want: str
+    product_id: str
+
+
+@api_router.post("/compare/wrong")
+async def compare_wrong(data: CompareWrong, user: dict = Depends(get_current_user)):
+    # "Klopt niet" bij een vergelijking. Een productbeheerder beslist meteen; anders laat de app het opnieuw nakijken
+    # door de AI (voorrang), en wat die afkeurt wordt nergens meer voorgesteld. Zo leert de app ervan.
+    want = (data.want or "").strip()[:200]
+    d = (_product_cache.get("by_pid") or {}).get(data.product_id)
+    if not want or not d:
+        raise HTTPException(status_code=404, detail="Product niet gevonden")
+    k = f"{_norm_text(want)}|{d['product_id']}"
+    await db.match_reports.insert_one({"key": k, "want": want, "product_id": d["product_id"], "user_id": user["user_id"], "at": now_utc()})
+    if "manage_products" in await user_permissions(user):
+        _ai_remember(k, False)
+        await db.ai_checks.update_one({"key": k}, {"$set": {"key": k, "ok": False, "at": now_utc(), "by": "beheer"}}, upsert=True)
+        _forget_matches()
+        _size_alts.clear()
+        return {"ok": True, "status": "fixed"}
+    # Opnieuw laten nakijken, ook als de AI het eerder goedkeurde
+    _ai_checked.pop(k, None)
+    rest = {x: v for x, v in _ai_check_todo.items() if x != k}
+    _ai_check_todo.clear()
+    _ai_check_todo[k] = (want, d.get("name") or "", d.get("aisle") or "", d.get("unit") or "")
+    _ai_check_todo.update(rest)
+    return {"ok": True, "status": "queued"}
+
+
 @api_router.get("/compare/options")
 async def compare_options(store: str, name: str, product_id: str = "", user: dict = Depends(get_current_user)):
     # Andere producten in deze winkel om uit te kiezen
@@ -10474,7 +10507,20 @@ def _same_kind(base: dict, cand: dict, strict: bool = True) -> bool:
     if not (same(ch, head) or (len(head) >= 5 and ch.endswith(head))):  # "kristalsuiker" is ook suiker
         return False
     if not strict:
-        return True  # vergelijken per winkel: "pasta gnocchi" mag voor gnocchi
+        # vergelijken per winkel: "pasta gnocchi" mag voor gnocchi. Maar een bewerkt product waar het alleen in zit niet:
+        # "chocoladereep gebroken hazelnoten" is geen hazelnoten, "notenmix" of "hazelnootpasta" ook niet
+        base_proc = any(w.endswith(x) for w in bw for x in _PROCESSED)
+        for c in cw:
+            if same(c, head) or any(same(c, b) for b in bw):
+                continue
+            if base_proc:
+                continue
+            # Samengesteld ("chocoladereep", "hazelnootpasta") of een los woord dat zelf een ander product is ("reep", "koek");
+            # een losse soortnaam ervoor mag wel ("pasta gnocchi")
+            if c in _CARRIERS or any(c != x and (c.endswith(x) or (c.startswith(x) and len(x) >= 4))
+                                     for x in _PROCESSED if x not in ("mix", "bar", "sap", "jus")):
+                return False
+        return True
     for c in cw:
         if c in _FORMS or any(same(c, b) for b in bw):
             continue

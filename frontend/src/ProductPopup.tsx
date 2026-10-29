@@ -1,5 +1,7 @@
 // Een product als venster (bijv. vanaf de boodschappenlijst): foto, prijs, wat het bij de andere winkels kost,
 // en meteen door naar wisselen. "Alles over dit product" opent de hele productpagina.
+// Tik je op een product bij een andere winkel, dan zie je dat product hier, met Wissel en Terug.
+import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
@@ -19,6 +21,7 @@ export function ProductPopup({
   productId,
   onClose,
   onSwap,
+  onSwapTo,
   swapLabel = "Wisselen",
   onAdd,
   addLabel = "Op je lijst",
@@ -27,6 +30,7 @@ export function ProductPopup({
   productId: string | null;
   onClose: () => void;
   onSwap?: () => void;
+  onSwapTo?: (p: Product) => void; // meteen wisselen naar een product dat je hier hebt geopend
   swapLabel?: string;
   onAdd?: () => void;
   addLabel?: string;
@@ -37,7 +41,11 @@ export function ProductPopup({
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const open = !!productId;
-  const p = useQuery({ queryKey: ["product", productId ?? ""], queryFn: () => api<Product>(`/products/${productId}`), enabled: open, staleTime: 10 * 60 * 1000 });
+  // Doorgeklikte producten (bij andere winkels); Terug gaat er één terug
+  const [stack, setStack] = useState<string[]>([]);
+  useEffect(() => setStack([]), [productId]);
+  const cur = stack[stack.length - 1] ?? productId;
+  const p = useQuery({ queryKey: ["product", cur ?? ""], queryFn: () => api<Product>(`/products/${cur}`), enabled: open && !!cur, staleTime: 10 * 60 * 1000 });
   const others = useQuery({
     queryKey: ["product-stores", productId ?? ""],
     queryFn: () => api<{ stores: Other[] }>(`/products/${productId}/stores`),
@@ -50,7 +58,13 @@ export function ProductPopup({
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
           <View style={styles.head}>
-            <Text style={styles.store}>{d?.source ?? ""}</Text>
+            {stack.length ? (
+              <Pressable onPress={() => setStack((x) => x.slice(0, -1))} hitSlop={8} style={{ flexDirection: "row", alignItems: "center" }} testID="product-popup-back">
+                <Icon name="chevron-left" size={22} color={colors.brandPrimary} />
+                <Text style={styles.store}>Terug</Text>
+              </Pressable>
+            ) : null}
+            <Text style={[styles.store, { flex: 1, textAlign: stack.length ? "center" : "left" }]}>{d?.source ?? ""}</Text>
             <Pressable onPress={onClose} hitSlop={8} testID="product-popup-close">
               <Icon name="close" size={22} color={colors.onSurface} />
             </Pressable>
@@ -76,12 +90,25 @@ export function ProductPopup({
                 </Pressable>
               ) : null}
               <View style={{ flexDirection: "row", gap: 8 }}>
-                {onSwap ? (
+                {stack.length && onSwapTo ? (
+                  <Pressable onPress={() => onSwapTo(d)} style={[styles.btn, { backgroundColor: colors.brandPrimary }]} testID="product-popup-swap-to">
+                    <Icon name="swap-horizontal" size={18} color={colors.onBrandPrimary} />
+                    <Text style={[styles.btnText, { color: colors.onBrandPrimary }]}>Wissel naar dit product</Text>
+                  </Pressable>
+                ) : null}
+                {stack.length ? (
+                  <Pressable onPress={() => setStack((x) => x.slice(0, -1))} style={[styles.btn, { backgroundColor: colors.surfaceSecondary }]}>
+                    <Icon name="arrow-left" size={18} color={colors.onSurface} />
+                    <Text style={[styles.btnText, { color: colors.onSurface }]}>Terug</Text>
+                  </Pressable>
+                ) : null}
+                {onSwap && !stack.length ? (
                   <Pressable onPress={onSwap} style={[styles.btn, { backgroundColor: colors.brandPrimary }]} testID="product-popup-swap">
                     <Icon name="swap-horizontal" size={18} color={colors.onBrandPrimary} />
                     <Text style={[styles.btnText, { color: colors.onBrandPrimary }]}>{swapLabel}</Text>
                   </Pressable>
                 ) : null}
+                {stack.length ? null : (
                 <Pressable
                   onPress={() => {
                     onClose();
@@ -92,6 +119,7 @@ export function ProductPopup({
                   <Icon name="information-outline" size={18} color={colors.onSurface} />
                   <Text style={[styles.btnText, { color: colors.onSurface }]}>Alles over dit product</Text>
                 </Pressable>
+                )}
               </View>
               {extra?.length ? (
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
@@ -103,13 +131,20 @@ export function ProductPopup({
                   ))}
                 </View>
               ) : null}
-              {(others.data?.stores ?? []).some((o) => o.product) ? (
+              {!stack.length && (others.data?.stores ?? []).some((o) => o.product) ? (
                 <View style={styles.card}>
                   <Text style={styles.cardTitle}>Bij andere winkels</Text>
+                  {onSwapTo ? <Text style={styles.meta}>Tik op een product om het te bekijken of te wisselen.</Text> : null}
                   {(others.data?.stores ?? [])
                     .filter((o) => o.product)
                     .map((o) => (
-                      <View key={o.store} style={styles.row}>
+                      <Pressable
+                        key={o.store}
+                        disabled={!o.product_id}
+                        onPress={() => o.product_id && setStack((x) => [...x, o.product_id!])}
+                        style={({ pressed }) => [styles.row, pressed && { opacity: 0.7 }]}
+                        testID={`product-popup-other-${o.store}`}
+                      >
                         {o.image ? <Image source={{ uri: o.image }} style={styles.small} resizeMode="contain" /> : <View style={styles.small} />}
                         <View style={{ flex: 1 }}>
                           <Text style={styles.rowStore}>{o.store}</Text>
@@ -122,7 +157,8 @@ export function ProductPopup({
                           <Text style={styles.rowPrice}>{o.price ? euro(o.price) : "—"}</Text>
                           {o.unit_price ? <Text style={styles.meta}>{o.unit_price}</Text> : null}
                         </View>
-                      </View>
+                        {o.product_id ? <Icon name="chevron-right" size={18} color={colors.muted} /> : null}
+                      </Pressable>
                     ))}
                 </View>
               ) : null}

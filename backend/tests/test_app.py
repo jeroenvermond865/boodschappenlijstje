@@ -1068,3 +1068,12 @@ def test_barcode_eigen_koppeling():
         prod = await S.db.products.find_one({"product_id": "p1"})
         return [p["id"] for p in mine["products"]], pending, prod.get("barcode")
     assert run(t()) == (["p1"], 1, None)
+
+
+# --- Vergelijken: een product waar het alleen in zit is niet hetzelfde ---
+def test_chocoladereep_is_geen_hazelnoten():
+    base = {"name": "Jumbo Hazelnoten Ongezouten 200 g"}
+    assert not S._same_kind(base, {"name": "Milka Chocoladereep gebroken hazelnoten"}, strict=False)
+    assert not S._same_kind(base, {"name": "Milka Chocoladereep gebroken hazelnoten"})
+    assert S._same_kind(base, {"name": "1 de Beste Hazelnoten"}, strict=False)
+    assert S._same_kind({"name": "Verse gnocchi"}, {"name": "Pasta gnocchi"}, strict=False)

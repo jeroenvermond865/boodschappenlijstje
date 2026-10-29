@@ -946,6 +946,14 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
       <ProductPopup
         productId={infoOpen ? item.product_id ?? null : null}
         onClose={() => setInfoOpen(false)}
+        onSwapTo={
+          checked
+            ? undefined
+            : (p) => {
+                setInfoOpen(false);
+                swap({ product_id: p.id, name: p.name } as PackBetter);
+              }
+        }
         onSwap={
           checked
             ? undefined
@@ -960,6 +968,7 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
         store={store ?? ""}
         onClose={() => setCompareOpen(false)}
         onPick={(p) => swap({ product_id: p.id, name: p.name } as PackBetter)}
+        onSearch={() => setSwapOpen(true)}
       />
       <ShopSwapSheet
         item={swapOpen ? item : null}
