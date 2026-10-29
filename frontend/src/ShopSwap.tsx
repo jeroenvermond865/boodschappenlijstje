@@ -1,15 +1,16 @@
 // Tijdens het winkelen een product wisselen: voorstellen (zoals elders in de app), zelf zoeken, of de barcode scannen.
 // Lukt scannen niet (geen camera of geen toestemming), dan typ je de cijfers. Is de barcode onbekend, dan zoek je het product
 // zelf in alle winkels; de barcode wordt dan voorgesteld voor dat product (een beheerder keurt het goed).
-import { useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
-import { CameraView, useCameraPermissions } from "expo-camera";
+import { useCameraPermissions } from "expo-camera";
 
 import { Icon } from "@/src/components/ui";
+import { BarcodeScanner } from "@/src/BarcodeScanner";
 import { api } from "@/src/api";
 import { euro, fetchProducts, useDebounced } from "@/src/search";
 import SearchSuggestions from "@/src/SearchSuggestions";
@@ -25,12 +26,18 @@ export function ShopSwapSheet({
   onClose,
   onPick,
   title,
+  initialCode,
+  addLabel = "Product toevoegen",
+  autoScan,
 }: {
   item: { name: string; product?: string; product_id?: string } | null;
   store: string;
   onClose: () => void;
   onPick: (p: Product) => Promise<void> | void;
   title?: string; // anders "Wisselen: ..."
+  initialCode?: string; // getypte barcode: meteen opzoeken
+  addLabel?: string;
+  autoScan?: boolean; // meteen de camera aan
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -41,6 +48,7 @@ export function ShopSwapSheet({
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [unknown, setUnknown] = useState<string | null>(null); // gescande barcode die we nog niet kennen
+  const [found, setFound] = useState<Product | null>(null); // herkend: jij kiest "Toevoegen"
   const [here, setHere] = useState(false); // alleen in deze winkel zoeken
   const [perm, requestPerm] = useCameraPermissions();
   const dq = useDebounced(q);
@@ -66,6 +74,7 @@ export function ShopSwapSheet({
     setCode("");
     setMsg(null);
     setUnknown(null);
+    setFound(null);
     onClose();
   };
   const pick = async (p: Product) => {
@@ -82,7 +91,8 @@ export function ShopSwapSheet({
     }
   };
 
-  // Barcode opzoeken: eerst bij onze producten (en live bij de winkels), anders de naam uit de open database (Open Food Facts)
+  // Barcode opzoeken: eerst wat jij zelf al eens koppelde, dan onze producten (en live bij de winkels).
+  // Herkend: je ziet het product en tikt op Toevoegen. Onbekend: je koppelt het zelf, dan leert de app ervan.
   const lookup = async (raw: string) => {
     const ean = raw.replace(/\D/g, "");
     if (ean.length < 8) {
@@ -90,20 +100,22 @@ export function ShopSwapSheet({
       return;
     }
     setScan(false);
+    setCode(ean);
     setBusy(true);
     setMsg(null);
+    setFound(null);
+    setUnknown(null);
     try {
       const r = await api<{ products: Product[] }>(`/products/by-barcode/${ean}`);
       const hit = r.products.find((p) => p.source === store) ?? r.products[0];
       if (hit) {
-        await onPick(hit);
-        close();
+        setFound(hit);
         return;
       }
       throw new Error("onbekend");
     } catch {
       setUnknown(ean);
-      setMsg("Deze barcode kennen we nog niet. Zoek het product hieronder in alle winkels; als je het kiest, koppelen we de barcode eraan (na controle door een beheerder).");
+      setMsg("Deze barcode kennen we nog niet. Koppel nu het product: zoek het hieronder en tik erop. De app onthoudt het meteen voor jou, en een beheerder keurt het goed voor iedereen.");
     } finally {
       setBusy(false);
     }
@@ -111,6 +123,11 @@ export function ShopSwapSheet({
 
   const startScan = async () => {
     setMsg(null);
+    setFound(null);
+    if (Platform.OS === "web") {
+      setScan(true); // de browser vraagt zelf om toestemming
+      return;
+    }
     try {
       const p = perm?.granted ? perm : await requestPerm();
       if (!p?.granted) {
@@ -122,6 +139,13 @@ export function ShopSwapSheet({
       setMsg("Scannen lukt niet op dit apparaat. Typ de cijfers van de barcode of zoek op naam.");
     }
   };
+
+  useEffect(() => {
+    if (!open) return;
+    if (initialCode) lookup(initialCode);
+    else if (autoScan) startScan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const Row = ({ p }: { p: AltProduct }) => (
     <Pressable onPress={() => pick(p)} disabled={busy} style={styles.row}>
@@ -159,11 +183,12 @@ export function ShopSwapSheet({
 
           {scan ? (
             <View style={styles.camBox}>
-              <CameraView
-                style={{ flex: 1 }}
-                facing="back"
-                barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e"] }}
-                onBarcodeScanned={busy ? undefined : ({ data }) => lookup(data)}
+              <BarcodeScanner
+                onCode={lookup}
+                onError={(m) => {
+                  setScan(false);
+                  setMsg(m);
+                }}
               />
               <Pressable onPress={() => setScan(false)} style={styles.camClose}>
                 <Text style={styles.camCloseText}>Stoppen</Text>
@@ -194,7 +219,31 @@ export function ShopSwapSheet({
             </View>
           )}
           {busy ? <ActivityIndicator color={colors.brandPrimary} /> : null}
-          {msg ? <Text style={styles.msg}>{msg}</Text> : null}
+          {msg ? <Text style={[styles.msg, unknown && { color: colors.warning }]}>{msg}</Text> : null}
+          {found ? (
+            <View style={styles.found} testID="barcode-found">
+              <Text style={styles.groupHead}>Herkend</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                {found.image ? <Image source={{ uri: found.image }} style={styles.img} resizeMode="contain" /> : <View style={styles.img} />}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.name} numberOfLines={2}>{found.name}</Text>
+                  <Text style={styles.meta} numberOfLines={1}>
+                    {SHORT[found.source ?? ""] ?? found.source ?? "Eigen"} · {found.unit}
+                  </Text>
+                </View>
+                <Text style={styles.price}>{found.price > 0 ? euro(found.promo?.price ?? found.price) : "—"}</Text>
+              </View>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <Pressable onPress={() => pick(found)} disabled={busy} style={[styles.scanBtn, { flex: 1, justifyContent: "center" }]} testID="barcode-add">
+                  <Icon name="plus" size={20} color={colors.onBrandPrimary} />
+                  <Text style={styles.scanText}>{addLabel}</Text>
+                </Pressable>
+                <Pressable onPress={startScan} style={[styles.chip, { justifyContent: "center" }]}>
+                  <Text style={[styles.meta, { fontFamily: fonts.semibold, color: colors.onSurface }]}>Opnieuw scannen</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
 
           <View style={styles.search}>
             <Icon name="magnify" size={20} color={colors.muted} />
@@ -253,6 +302,7 @@ const useStyles = makeStyles((colors) => ({
   camBox: { height: 260, borderRadius: 14, overflow: "hidden", backgroundColor: "#000" },
   camClose: { position: "absolute", bottom: 10, alignSelf: "center", backgroundColor: "rgba(0,0,0,0.6)", borderRadius: 999, paddingHorizontal: 16, paddingVertical: 8 },
   camCloseText: { color: "#fff", fontFamily: fonts.semibold, fontSize: 14 },
+  found: { gap: 8, padding: 10, borderRadius: 14, borderWidth: 2, borderColor: colors.success },
   chip: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, borderWidth: 1, borderColor: colors.border },
   msg: { fontSize: 13, fontFamily: fonts.semibold, color: colors.muted },
   groupHead: { fontSize: 13, fontFamily: fonts.bold, color: colors.muted, marginTop: 4 },
@@ -290,6 +340,10 @@ export function BarcodeLink({ productId, current }: { productId: string; current
   };
   const startScan = async () => {
     setMsg(null);
+    if (Platform.OS === "web") {
+      setScan(true);
+      return;
+    }
     try {
       const p = perm?.granted ? perm : await requestPerm();
       if (!p?.granted) {
@@ -321,8 +375,7 @@ export function BarcodeLink({ productId, current }: { productId: string; current
             <Text style={styles.meta}>Scan de barcode op de verpakking. Een beheerder controleert hem voordat hij gekoppeld wordt.</Text>
             {scan ? (
               <View style={styles.camBox}>
-                <CameraView style={{ flex: 1 }} facing="back" barcodeScannerSettings={{ barcodeTypes: ["ean13", "ean8", "upc_a", "upc_e"] }}
-                  onBarcodeScanned={({ data }) => send(data)} />
+                <BarcodeScanner onCode={send} onError={(m) => { setScan(false); setMsg(m); }} />
                 <Pressable onPress={() => setScan(false)} style={styles.camClose}>
                   <Text style={styles.camCloseText}>Stoppen</Text>
                 </Pressable>

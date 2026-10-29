@@ -11415,6 +11415,9 @@ async def suggest_barcode(product_id: str, data: BarcodeSuggest, user: dict = De
         raise HTTPException(status_code=404, detail="Product niet gevonden")
     if p.get("barcode") == ean:
         return {"ok": True, "status": "known"}
+    # Voor deze gebruiker geldt de koppeling meteen; voor iedereen pas na goedkeuring
+    await db.user_barcodes.update_one({"user_id": user["user_id"], "barcode": ean},
+                                      {"$set": {"product_id": product_id, "updated_at": now_utc()}}, upsert=True)
     await db.barcode_suggestions.update_one(
         {"product_id": product_id, "barcode": ean, "status": "pending"},
         {"$setOnInsert": {"sug_id": f"bsug_{uuid.uuid4().hex[:12]}", "product_id": product_id, "barcode": ean, "status": "pending",
@@ -11475,7 +11478,12 @@ async def product_by_barcode(ean: str, user: dict = Depends(get_current_user)):
     ean = re.sub(r"\D", "", ean)
     if not ean:
         raise HTTPException(status_code=400, detail="Ongeldige barcode")
-    docs = await db.products.find({"barcode": ean, "deleted_at": None}, {"_id": 0}).to_list(10)
+    docs = []
+    mine = await db.user_barcodes.find_one({"user_id": user["user_id"], "barcode": ean}, {"_id": 0, "product_id": 1})
+    if mine:
+        docs = await db.products.find({"product_id": mine["product_id"], "deleted_at": None}, {"_id": 0}).to_list(1)
+    if not docs:
+        docs = await db.products.find({"barcode": ean, "deleted_at": None}, {"_id": 0}).to_list(10)
     if not docs:
         # Nog niet bekend: live opzoeken bij Dirk en AH en de barcode onthouden
         async with httpx.AsyncClient(timeout=15, headers=DIRK_HEADERS) as dc, httpx.AsyncClient(timeout=15, headers=AH_HEADERS) as ac:
@@ -14326,7 +14334,7 @@ def _csp() -> str:
         except Exception:
             pass
         _csp_cache["v"] = "; ".join([
-            "default-src 'self'", "script-src 'self' " + " ".join(hashes), "style-src 'self' 'unsafe-inline'",
+            "default-src 'self'", "script-src 'self' https://cdn.jsdelivr.net " + " ".join(hashes), "style-src 'self' 'unsafe-inline'",
             "img-src 'self' https: data: blob:", "font-src 'self' data: https://cdn.jsdelivr.net", "connect-src 'self'", "media-src 'self' blob:",
             "worker-src 'self'", "object-src 'none'", "base-uri 'self'", "frame-ancestors 'none'",
             "form-action 'self' https://accounts.google.com"])
@@ -14621,6 +14629,7 @@ async def startup():
     await db.users.create_index("billing.customer_id", sparse=True)
     await db.payments.create_index("payment_id", unique=True)
     await db.users.create_index("ref_code", sparse=True)
+    await db.user_barcodes.create_index([("user_id", 1), ("barcode", 1)], unique=True)
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)

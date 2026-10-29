@@ -997,7 +997,7 @@ function EditCampModal({
   );
 }
 
-function MembersModal({
+export function MembersModal({
   visible,
   campId,
   isOwner,

@@ -12,6 +12,8 @@ import { EmptyState, Icon } from "@/src/components/ui";
 import SearchSuggestions from "@/src/SearchSuggestions";
 import { api } from "@/src/api";
 import { useGrid } from "@/src/layout";
+import { ShopSwapSheet } from "@/src/ShopSwap";
+import { useAuth } from "@/src/auth";
 import { countFilters, euro, fetchProducts, NO_FILTERS, useDebounced } from "@/src/search";
 import type { Facet, ProductFilters } from "@/src/search";
 import { AISLES, AISLE_ICONS } from "@/src/constants";
@@ -106,6 +108,10 @@ export function ProductBrowser({
   const [allInAisle, setAllInAisle] = useState(false);
 
   const debouncedSearch = useDebounced(search);
+  // Alleen cijfers (8 of meer) = een barcode
+  const isCode = /^\d{8,14}$/.test(search.trim());
+  const [barcode, setBarcode] = useState<{ code?: string; scan?: boolean } | null>(null);
+  const { user } = useAuth();
   const queryKey = ["products", "search", storeFilter, aisle, onlyFavorites, debouncedSearch.trim(), filters];
   const { data, isLoading, isPlaceholderData, isError, fetchNextPage, hasNextPage, isFetchingNextPage, refetch, isRefetching } = useInfiniteQuery({
     queryKey,
@@ -228,13 +234,37 @@ export function ProductBrowser({
           <Icon name="magnify" size={20} color={colors.muted} />
           <TextInput
             testID="product-search"
-            placeholder="Zoek product"
+            placeholder="Zoek product of barcode"
             placeholderTextColor={colors.muted}
             value={search}
             onChangeText={setSearch}
+            onSubmitEditing={() => isCode && setBarcode({ code: search.trim() })}
             style={styles.searchInput}
           />
+          <Pressable testID="product-scan" onPress={() => setBarcode({ scan: true })} hitSlop={8}>
+            <Icon name="barcode-scan" size={22} color={colors.brandPrimary} />
+          </Pressable>
         </View>
+        {isCode ? (
+          <Pressable testID="product-barcode-lookup" onPress={() => setBarcode({ code: search.trim() })} style={[styles.favToggle, { alignSelf: "flex-start" }]}>
+            <Icon name="barcode" size={16} color={colors.brandPrimary} />
+            <Text style={styles.favToggleText}>Zoek barcode {search.trim()}</Text>
+          </Pressable>
+        ) : null}
+        <ShopSwapSheet
+          item={barcode ? { name: "" } : null}
+          store={user?.store ?? "Albert Heijn"}
+          title="Zoeken op barcode"
+          initialCode={barcode?.code}
+          autoScan={barcode?.scan}
+          addLabel={onPick ? "Product kiezen" : "Bekijk product"}
+          onClose={() => setBarcode(null)}
+          onPick={(p) => {
+            setBarcode(null);
+            if (onPick) onPick(p);
+            else router.push(`/product/${p.id}`);
+          }}
+        />
         <SearchSuggestions q={search} onPick={setSearch} testID="product-suggest" />
         <View style={styles.toggleRow}>
           <Pressable

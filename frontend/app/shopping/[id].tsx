@@ -22,6 +22,8 @@ import { BetterPack, PackBetter, packText } from "@/src/packs";
 import { PriceCompareSheet } from "@/src/PriceCompareSheet";
 import { ProductPopup } from "@/src/ProductPopup";
 import { ShopSwapSheet } from "@/src/ShopSwap";
+import { MembersModal } from "@/app/camp/[id]";
+import { useAuth } from "@/src/auth";
 import { sliceInfo } from "@/src/slices";
 import { AISLE_ICONS, formatQty } from "@/src/constants";
 import { goBack } from "@/src/nav";
@@ -57,6 +59,8 @@ export default function ShoppingScreen() {
   const [tab, setTab] = useState<"total" | "perday">(onlyDay != null ? "perday" : "total");
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [shareOpen, setShareOpen] = useState(false);
+  const [membersOpen, setMembersOpen] = useState(false); // iemand laten meedoen met dit lijstje
+  const { user } = useAuth();
   const [onlyOpen, setOnlyOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -158,7 +162,7 @@ export default function ShoppingScreen() {
   });
   const { data: camp } = useQuery({
     queryKey: ["camp", id],
-    queryFn: () => cachedApi<{ name: string }>(`/camps/${id}`),
+    queryFn: () => cachedApi<{ name: string; owner_id?: string }>(`/camps/${id}`),
   });
   // Het snelle lijstje (Vandaag op Home): hier voeg je zelf producten toe
   const todayQ = useToday();
@@ -324,10 +328,7 @@ export default function ShoppingScreen() {
     return lines.join("\n");
   };
 
-  const onShare = () => {
-    if (totalCount === 0) return;
-    setShareOpen(true);
-  };
+  const onShare = () => setShareOpen(true);
 
   const shareVia = async (how: "whatsapp" | "mail" | "copy" | "other") => {
     const text = shareLines(onlyOpen);
@@ -746,20 +747,27 @@ export default function ShoppingScreen() {
         <Pressable style={styles.modalBackdrop} onPress={() => setShareOpen(false)}>
           <Pressable style={styles.modalCard} onPress={() => {}}>
             <Text style={styles.modalTitle}>Lijst delen</Text>
+            <ShareOption testID="share-members" icon="account-multiple-plus-outline" label="Samen afvinken (iemand uitnodigen)" onPress={() => { setShareOpen(false); setMembersOpen(true); }} />
+            {totalCount === 0 ? <Text style={styles.headerSub}>Zet eerst iets op je lijstje om het als tekst of PDF te delen.</Text> : null}
             {doneCount > 0 ? (
               <Pressable testID="share-only-open" onPress={() => setOnlyOpen((v) => !v)} style={styles.shareToggle}>
                 <Icon name={onlyOpen ? "checkbox-marked" : "checkbox-blank-outline"} size={22} color={colors.brandPrimary} />
                 <Text style={styles.shareToggleText}>Alleen wat nog niet is afgevinkt</Text>
               </Pressable>
             ) : null}
-            <ShareOption testID="share-whatsapp" icon="whatsapp" label="WhatsApp" onPress={() => shareVia("whatsapp")} />
-            <ShareOption testID="share-mail" icon="email-outline" label="E-mail" onPress={() => shareVia("mail")} />
-            {canCopy ? <ShareOption testID="share-copy" icon="content-copy" label="Tekst kopiëren" onPress={() => shareVia("copy")} /> : null}
-            {canNativeShare ? <ShareOption testID="share-other" icon="share-variant" label="Andere app" onPress={() => shareVia("other")} /> : null}
-            <ShareOption testID="share-print" icon="file-pdf-box" label="PDF (bewaren, printen of delen)" onPress={() => { setShareOpen(false); onExportPdf(); }} />
+            {totalCount > 0 ? (
+              <>
+                <ShareOption testID="share-whatsapp" icon="whatsapp" label="WhatsApp" onPress={() => shareVia("whatsapp")} />
+                <ShareOption testID="share-mail" icon="email-outline" label="E-mail" onPress={() => shareVia("mail")} />
+                {canCopy ? <ShareOption testID="share-copy" icon="content-copy" label="Tekst kopiëren" onPress={() => shareVia("copy")} /> : null}
+                {canNativeShare ? <ShareOption testID="share-other" icon="share-variant" label="Andere app" onPress={() => shareVia("other")} /> : null}
+                <ShareOption testID="share-print" icon="file-pdf-box" label="PDF (bewaren, printen of delen)" onPress={() => { setShareOpen(false); onExportPdf(); }} />
+              </>
+            ) : null}
           </Pressable>
         </Pressable>
       </Modal>
+      {id ? <MembersModal visible={membersOpen} campId={String(id)} isOwner={camp?.owner_id === user?.id} onClose={() => setMembersOpen(false)} /> : null}
       <Confetti fire={party} />
       <Modal visible={tipsOpen} transparent animationType="fade" onRequestClose={() => setTipsOpen(false)}>
         <Pressable style={styles.tipsBackdrop} onPress={() => setTipsOpen(false)}>

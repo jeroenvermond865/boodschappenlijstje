@@ -101,13 +101,13 @@ export function TodayPicks({ stores }: { stores: string[] }) {
           <Icon name="plus" size={18} color={colors.onBrandPrimary} />
           <Text style={styles.btnText}>Product</Text>
         </Pressable>
-        <Pressable testID="today-scan" onPress={() => setScanning(true)} style={({ pressed }) => [styles.btn2, pressed && { opacity: 0.85 }]}>
-          <Icon name="barcode-scan" size={18} color={colors.brandPrimary} />
-          <Text style={styles.btn2Text}>Scan</Text>
-        </Pressable>
         <Pressable testID="today-dish" onPress={() => setDishOpen(true)} style={({ pressed }) => [styles.btn2, pressed && { opacity: 0.85 }]}>
           <Icon name="silverware-fork-knife" size={18} color={colors.brandPrimary} />
           <Text style={styles.btn2Text}>Gerecht</Text>
+        </Pressable>
+        <Pressable testID="today-scan" onPress={() => setScanning(true)} style={({ pressed }) => [styles.btn2, pressed && { opacity: 0.85 }]}>
+          <Icon name="barcode-scan" size={18} color={colors.brandPrimary} />
+          <Text style={styles.btn2Text}>Scan</Text>
         </Pressable>
       </View>
 

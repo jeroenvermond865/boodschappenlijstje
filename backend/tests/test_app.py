@@ -1056,3 +1056,15 @@ def test_oude_backups_opruimen_alleen_met_toestemming(monkeypatch):
         await S.db.settings.insert_one({"key": "gmail_sender", "email": "x@gmail.com", "refresh_token": "r", "scope": "gmail.send"})
         return await S._cleanup_backup_mails()
     assert run(t()) == 0  # zonder gmail.modify niets aanraken
+
+
+# --- Barcode zelf koppelen: voor jou meteen, voor iedereen na goedkeuring ---
+def test_barcode_eigen_koppeling():
+    async def t():
+        await S.db.products.insert_one({"product_id": "p1", "name": "Hazelnoten", "deleted_at": None, "prices": {"Jumbo": 3.89}, "unit": "200 g"})
+        await S.suggest_barcode("p1", S.BarcodeSuggest(barcode="8710400000014"), U1)
+        mine = await S.product_by_barcode("8710400000014", {**U1, "store": "Jumbo"})
+        pending = await S.db.barcode_suggestions.count_documents({"status": "pending"})
+        prod = await S.db.products.find_one({"product_id": "p1"})
+        return [p["id"] for p in mine["products"]], pending, prod.get("barcode")
+    assert run(t()) == (["p1"], 1, None)
