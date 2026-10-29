@@ -4,6 +4,7 @@ import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 
 import { mediaUrl, uploadImage } from "@/src/api";
+import { usePrivateSource } from "@/src/components/SafeImage";
 import { Icon } from "@/src/components/ui";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -60,14 +61,16 @@ export function ImageUploadField({ label, value, onChange, aspect = 16 / 9, circ
   };
 
   const src = mediaUrl(value);
+  const priv = usePrivateSource(src);
+  const shown = priv.private ? priv.src : src ? { uri: src } : null;
 
   return (
     <View style={{ gap: 8 }}>
       <Text style={styles.label}>{label}</Text>
       <Pressable testID={testID} onPress={pick} disabled={busy} style={styles.wrap}>
         <View style={[styles.preview, circle ? styles.circle : { aspectRatio: aspect }]}>
-          {src ? (
-            <Image source={{ uri: src }} style={{ width: "100%", height: "100%" }} contentFit="cover" />
+          {shown ? (
+            <Image source={shown} style={{ width: "100%", height: "100%" }} contentFit="cover" />
           ) : (
             <Icon name="image-plus" size={28} color={colors.muted} />
           )}

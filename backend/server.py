@@ -183,25 +183,39 @@ def _recent(key: str, window: int) -> list:
     return hits
 
 
-def check_limit(key: str, limit: int, window: int) -> None:
-    hits = _recent(key, window)
+async def check_limit(key: str, limit: int, window: int) -> None:
+    # Pogingen staan in de database: een herstart wist ze niet, en het werkt ook met meerdere servers
+    since = now_utc() - timedelta(seconds=window)
+    try:
+        hits = await db.rate_hits.find({"key": key, "at": {"$gt": since}}, {"_id": 0, "at": 1}).sort("at", 1).to_list(limit)
+    except Exception as e:
+        logger.warning("Pogingen tellen: %r", e)
+        return
     if len(hits) >= limit:
-        wait = max(1, math.ceil((window - (time.monotonic() - hits[0])) / 60))
+        first = ensure_aware(hits[0]["at"])
+        wait = max(1, math.ceil((window - (now_utc() - first).total_seconds()) / 60))
         logger.warning("Te veel pogingen: %s", key.split(":")[0])
         raise HTTPException(status_code=429, detail=f"Te veel pogingen. Probeer het over {wait} minuten opnieuw.")
 
 
-def add_attempt(key: str) -> None:
-    _attempts.setdefault(key, []).append(time.monotonic())
-    if len(_attempts) > 50000:  # geheugen begrenzen bij een grote aanval
-        for k in list(_attempts)[:10000]:
-            _attempts.pop(k, None)
+async def add_attempt(key: str) -> None:
+    try:
+        await db.rate_hits.insert_one({"key": key, "at": now_utc()})
+    except Exception as e:
+        logger.warning("Poging bewaren: %r", e)
 
 
-def limit(key: str, max_hits: int, window: int) -> None:
+async def clear_attempts(key: str) -> None:
+    try:
+        await db.rate_hits.delete_many({"key": key})
+    except Exception:
+        pass
+
+
+async def limit(key: str, max_hits: int, window: int) -> None:
     # Elke poging telt mee (voor registreren, resetcodes e.d.)
-    check_limit(key, max_hits, window)
-    add_attempt(key)
+    await check_limit(key, max_hits, window)
+    await add_attempt(key)
 
 
 SESSION_DAYS = 90  # zolang je de app gebruikt, schuift dit op; 90 dagen niet gebruikt = opnieuw inloggen
@@ -665,7 +679,7 @@ def _unverified(user: dict) -> bool:
 
 @api_router.post("/auth/register")
 async def register(data: RegisterInput, request: Request):
-    limit(f"register:{client_ip(request)}", 10, 3600)
+    await limit(f"register:{client_ip(request)}", 10, 3600)
     if not _password_ok(data.password):
         raise HTTPException(status_code=400, detail=PASSWORD_RULE)
     if not data.accept_terms:
@@ -713,7 +727,7 @@ class VerifyEmailInput(BaseModel):
 
 @api_router.post("/auth/verify-email")
 async def verify_email(data: VerifyEmailInput, request: Request):
-    limit(f"verify-ip:{client_ip(request)}", 30, 900)
+    await limit(f"verify-ip:{client_ip(request)}", 30, 900)
     email = data.email.lower().strip()
     await _check_email_code(email, "register", data.code)
     user = await db.users.find_one({"email": email, "deleted_at": None})
@@ -736,8 +750,8 @@ class ResendInput(BaseModel):
 @api_router.post("/auth/verify-email/resend")
 async def verify_email_resend(data: ResendInput, request: Request):
     email = data.email.lower().strip()
-    limit(f"verify-resend-ip:{client_ip(request)}", 10, 3600)
-    limit(f"verify-resend:{email}", 3, 3600)
+    await limit(f"verify-resend-ip:{client_ip(request)}", 10, 3600)
+    await limit(f"verify-resend:{email}", 3, 3600)
     user = await db.users.find_one({"email": email, "deleted_at": None})
     if user and _unverified(user):
         await _send_email_code(email, "register")
@@ -748,17 +762,17 @@ async def verify_email_resend(data: ResendInput, request: Request):
 async def login(data: LoginInput, request: Request):
     ident = data.identifier.lower().strip()
     ip_key, acc_key = f"login-ip:{client_ip(request)}", f"login-acc:{ident}"
-    check_limit(ip_key, 20, 900)
-    check_limit(acc_key, 8, 900)
+    await check_limit(ip_key, 20, 900)
+    await check_limit(acc_key, 8, 900)
     user = await db.users.find_one({"$or": [{"email": ident}, {"username": ident}]})
     if not user or user.get("deleted_at") or not user.get("password_hash") or not verify_password(data.password, user["password_hash"]):
-        add_attempt(ip_key)
-        add_attempt(acc_key)
+        await add_attempt(ip_key)
+        await add_attempt(acc_key)
         raise HTTPException(status_code=401, detail="Onjuiste inloggegevens")
-    _attempts.pop(acc_key, None)
+    await clear_attempts(acc_key)
     if _unverified(user):
         try:
-            limit(f"verify-resend:{user['email']}", 3, 3600)
+            await limit(f"verify-resend:{user['email']}", 3, 3600)
             await _send_email_code(user["email"], "register")
         except HTTPException:
             pass
@@ -821,7 +835,7 @@ class ChangeEmailConfirm(BaseModel):
 
 @api_router.post("/auth/change-email")
 async def change_email_start(data: ChangeEmailInput, user: dict = Depends(get_current_user)):
-    limit(f"change-email:{user['user_id']}", 5, 3600)
+    await limit(f"change-email:{user['user_id']}", 5, 3600)
     new_email = data.new_email.lower().strip()
     if user.get("password_hash") and not verify_password(data.password or "", user["password_hash"]):
         raise HTTPException(status_code=400, detail="Je wachtwoord klopt niet")
@@ -856,7 +870,7 @@ async def change_password(data: ChangePassword, user: dict = Depends(get_current
         raise HTTPException(status_code=400, detail=PASSWORD_RULE)
     if user.get("password_hash"):
         if not data.current_password or not verify_password(data.current_password, user["password_hash"]):
-            limit(f"pw-check:{user['user_id']}", 8, 900)
+            await limit(f"pw-check:{user['user_id']}", 8, 900)
             raise HTTPException(status_code=400, detail="Huidig wachtwoord is onjuist")
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"password_hash": hash_password(data.new_password)}})
     # Op andere apparaten uitloggen; dit apparaat blijft ingelogd
@@ -868,8 +882,8 @@ async def change_password(data: ChangePassword, user: dict = Depends(get_current
 @api_router.post("/auth/forgot-password")
 async def forgot_password(data: ForgotPassword, request: Request):
     email = data.email.lower().strip()
-    limit(f"forgot-ip:{client_ip(request)}", 10, 3600)
-    limit(f"forgot-acc:{email}", 3, 3600)
+    await limit(f"forgot-ip:{client_ip(request)}", 10, 3600)
+    await limit(f"forgot-acc:{email}", 3, 3600)
     user = await db.users.find_one({"email": email})
     if user and user.get("password_hash"):
         code = f"{secrets.randbelow(1_000_000):06d}"
@@ -890,7 +904,7 @@ async def forgot_password(data: ForgotPassword, request: Request):
 
 @api_router.post("/auth/reset-password")
 async def reset_password(data: ResetPassword, request: Request):
-    limit(f"reset-ip:{client_ip(request)}", 20, 900)
+    await limit(f"reset-ip:{client_ip(request)}", 20, 900)
     if not _password_ok(data.new_password):
         raise HTTPException(status_code=400, detail=PASSWORD_RULE)
     email = data.email.lower().strip()
@@ -1030,7 +1044,7 @@ async def google_callback(state: str = "", code: str = "", error: str = ""):
 
 @api_router.post("/auth/session")
 async def auth_session(data: SessionInput, request: Request):
-    limit(f"session-ip:{client_ip(request)}", 30, 900)
+    await limit(f"session-ip:{client_ip(request)}", 30, 900)
     payload = await db.google_logins.find_one_and_delete({"session_id": data.session_id})
     if not payload or ensure_aware(payload["expires_at"]) < now_utc():
         raise HTTPException(status_code=401, detail="Google inloggen mislukt")
@@ -1108,7 +1122,7 @@ async def delete_account(data: DeleteAccount, user: dict = Depends(get_current_u
     # Recht op verwijdering (AVG): alles van deze gebruiker gaat direct en definitief weg
     uid = user["user_id"]
     if user.get("password_hash") and (not data.password or not verify_password(data.password, user["password_hash"])):
-        limit(f"pw-check:{uid}", 8, 900)
+        await limit(f"pw-check:{uid}", 8, 900)
         raise HTTPException(status_code=400, detail="Wachtwoord is onjuist")
     if user.get("role") == "beheerder" and not await db.users.find_one(
         {"role": "beheerder", "deleted_at": None, "user_id": {"$ne": uid}}
@@ -4258,7 +4272,7 @@ class ReferralClaimInput(BaseModel):
 @api_router.post("/referral/claim")
 async def claim_referral(data: ReferralClaimInput, request: Request, user: dict = Depends(get_current_user)):
     # Aangemeld via iemands link (of de code zelf ingevuld): onthouden wie je heeft uitgenodigd
-    limit(f"refclaim:{user['user_id']}", 10, 3600)
+    await limit(f"refclaim:{user['user_id']}", 10, 3600)
     code = re.sub(r"[^A-Z0-9]", "", (data.code or "").upper())
     if user.get("referred_by"):
         return {"ok": False, "detail": "Je bent al uitgenodigd door iemand"}
@@ -12204,15 +12218,26 @@ async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_cur
     return {"url": f"/api/files/{path}", "path": path}
 
 
+async def _file_public(path: str) -> bool:
+    # Openbaar: AI-foto's van gerechten (geen persoonlijke gegevens) en het logo en de achtergrond van de app (inlogscherm)
+    if path.startswith(f"{STORAGE_APP}/ai-fotos/"):
+        return True
+    doc = await db.settings.find_one({"key": "app"}, {"_id": 0, "logo_url": 1, "hero_url": 1}) or {}
+    return any((doc.get(k) or "").endswith("/api/files/" + path) for k in ("logo_url", "hero_url"))
+
+
 @api_router.get("/files/{path:path}")
-async def serve_file(path: str):
+async def serve_file(path: str, authorization: Optional[str] = Header(None)):
+    # Geüploade bestanden alleen voor wie is ingelogd: geen gegevens via een losse link
+    if not await _file_public(path):
+        await get_current_user(authorization)
     try:
         content, ct = await _get_object(path)
     except Exception:
         raise HTTPException(status_code=404, detail="Niet gevonden")
     if ct not in IMAGE_TYPES.values():
         ct = "application/octet-stream"
-    return Response(content=content, media_type=ct, headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"})
+    return Response(content=content, media_type=ct, headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
 
 
 _HET_WORDS = re.compile(r"(kamp|weekend|evenement|uitje|feest|project|programma|festival|reisje|toernooi|kampement|weekeinde)$")
@@ -12365,16 +12390,16 @@ class WithdrawCodeInput(BaseModel):
 @api_router.post("/legal/withdraw/code")
 async def legal_withdraw_code(data: WithdrawCodeInput, request: Request):
     # Zonder in te loggen herroepen: eerst bewijzen dat het e-mailadres van jou is
-    limit(f"withdraw-code-ip:{client_ip(request)}", 5, 3600)
+    await limit(f"withdraw-code-ip:{client_ip(request)}", 5, 3600)
     mail = data.email.lower().strip()
-    limit(f"withdraw-code:{mail}", 3, 3600)
+    await limit(f"withdraw-code:{mail}", 3, 3600)
     await _send_email_code(mail, "withdraw")
     return {"ok": True}
 
 
 @api_router.post("/legal/withdraw")
 async def legal_withdraw(data: WithdrawInput, request: Request, authorization: Optional[str] = Header(None)):
-    limit(f"withdraw:{client_ip(request)}", 5, 3600)
+    await limit(f"withdraw:{client_ip(request)}", 5, 3600)
     user = None
     if authorization:
         try:
@@ -12815,25 +12840,40 @@ def _backup_to() -> str:
     return (os.environ.get("BACKUP_EMAIL") or ADMIN_EMAIL).strip()
 
 
-async def _backup_zip(history: bool = True, files: bool = False) -> tuple:
+BACKUP_SECRET_FIELDS = {"users": ("password_hash",), "settings": ("refresh_token",)}
+
+
+def _backup_password() -> str:
+    return (os.environ.get("BACKUP_PASSWORD") or "").strip()
+
+
+async def _backup_zip(history: bool = True, files: bool = False, for_mail: bool = False) -> tuple:
     # Eén zip met per collectie een .jsonl-bestand. Winkelproducten niet (die haalt de app zelf weer op), eigen producten wel.
+    # Versleuteld (AES) als BACKUP_PASSWORD is ingesteld. Nooit erin: de Gmail-sleutel; in de mail ook geen wachtwoord-hashes.
     import io
-    import zipfile
+    import pyzipper
     from bson import json_util
     buf = io.BytesIO()
     counts: Dict[str, int] = {}
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+    pw = _backup_password()
+    zf = pyzipper.AESZipFile(buf, "w", compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES if pw else None)
+    if pw:
+        zf.setpassword(pw.encode())
+    with zf as z:
         for name in sorted(await db.list_collection_names()):
             if (name.startswith("system.") or name in BACKUP_SKIP or (name.startswith("uploads.") and not files)
                     or (name == "price_history" and not history)):
                 continue
             query = {"is_global": {"$ne": True}} if name == "products" else {}
-            lines = [json_util.dumps(d) async for d in db[name].find(query)]
+            drop = {"refresh_token": 0} if name == "settings" else {"password_hash": 0} if name == "users" and for_mail else None
+            lines = [json_util.dumps(d) async for d in db[name].find(query, drop)]
             counts[name] = len(lines)
             z.writestr(f"{name}.jsonl", "\n".join(lines))
         z.writestr("info.json", json.dumps({
             "gemaakt": now_utc().isoformat(), "aantallen": counts, "prijsgeschiedenis": history, "foto's": files,
-            "uitleg": "Terugzetten met backend/backup_restore.py. Winkelproducten zitten er niet in: die haalt de app zelf weer op."},
+            "versleuteld": bool(pw), "wachtwoorden": not for_mail,
+            "uitleg": "Terugzetten met backend/backup_restore.py (met BACKUP_PASSWORD als hij versleuteld is). Winkelproducten zitten er niet in: "
+                      "die haalt de app zelf weer op. Zonder wachtwoord-hashes moeten gebruikers na terugzetten een nieuw wachtwoord kiezen."},
             indent=2, ensure_ascii=False))
     return buf.getvalue(), counts
 
@@ -12848,7 +12888,7 @@ def _backup_due(doc: dict) -> bool:
 
 
 async def _backup_mail(reason: str = "nacht") -> dict:
-    data, counts = await _backup_zip(history=False, files=False)
+    data, counts = await _backup_zip(history=False, files=False, for_mail=True)
     day = now_utc().strftime("%Y-%m-%d")
     status = {"at": now_utc(), "size": len(data), "reason": reason, "ok": False, "error": None}
     if len(data) > BACKUP_MAIL_MAX:
@@ -12857,7 +12897,8 @@ async def _backup_mail(reason: str = "nacht") -> dict:
         rows = "".join(f"<li>{escape(k)}: {v}</li>" for k, v in counts.items() if v)
         try:
             await send_email(_backup_to(), f"Back-up Slim Boodschappenlijstje {day}",
-                             f"<p>De back-up van {day} zit in de bijlage ({max(1, len(data) // 1024)} kB).</p>"
+                             f"<p>De back-up van {day} zit in de bijlage ({max(1, len(data) // 1024)} kB)"
+                             f"{', versleuteld met je back-upwachtwoord' if _backup_password() else ''}.</p>"
                              f"<p>Bewaar deze mail. Wat erin zit:</p><ul>{rows}</ul>",
                              allow_unsubscribe=False, attachments=[(f"backup-{day}.zip", data, "application/zip")],
                              raise_errors=True)
@@ -12904,7 +12945,7 @@ async def admin_backup_download(history: bool = True, files: bool = False, user:
 @api_router.post("/admin/backup/mail")
 async def admin_backup_mail(user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_settings")
-    limit(f"backup-mail:{user['user_id']}", 5, 3600)
+    await limit(f"backup-mail:{user['user_id']}", 5, 3600)
     st = await _backup_mail("handmatig")
     return {**st, "at": st["at"].isoformat(), "to": _backup_to()}
 
@@ -12916,7 +12957,8 @@ async def admin_backup_status(user: dict = Depends(get_current_user)):
     at = doc.get("at")
     ok_at = doc.get("ok_at") or (at if doc.get("ok") else None)  # oudere status had nog geen ok_at
     return {"at": ensure_aware(at).isoformat() if at else None, "ok": doc.get("ok"), "size": doc.get("size"),
-            "error": doc.get("error"), "to": _backup_to(), "ok_at": ensure_aware(ok_at).isoformat() if ok_at else None}
+            "error": doc.get("error"), "to": _backup_to(), "ok_at": ensure_aware(ok_at).isoformat() if ok_at else None,
+            "encrypted": bool(_backup_password())}
 
 
 # ---------------------------------------------------------------------------
@@ -14108,7 +14150,7 @@ async def billing_start(data: BillingStart, user: dict = Depends(get_current_use
     # Proefperiode of Premium via een Ultra-huisgenoot: dan mag je gewoon zelf een abonnement nemen
     if user.get("premium") and not (user.get("billing") or {}).get("subscription_id") and not user.get("trial") and not user.get("premium_household"):
         raise HTTPException(status_code=400, detail="Je hebt Premium al via een vereniging, de beheerder of verdiend met delen")
-    limit(f"billing:{user['user_id']}", 10, 3600)
+    await limit(f"billing:{user['user_id']}", 10, 3600)
     b = user.get("billing") or {}
     cid = b.get("customer_id")
     if not cid:
@@ -14540,6 +14582,9 @@ async def startup():
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+    await db.rate_hits.create_index("at", expireAfterSeconds=2 * 3600)  # pogingen ruimen zichzelf op
+    await db.rate_hits.create_index("key")
+    await db.email_codes.create_index("expires_at", expireAfterSeconds=0)
     await db.dishes.create_index("dish_id", unique=True)
     await db.dish_preps.create_index("sig", unique=True)
     await db.ai_tips.create_index("sig", unique=True)

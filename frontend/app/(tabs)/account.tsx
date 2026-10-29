@@ -12,6 +12,7 @@ import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings } from "@/src/settings";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 import { GOLD } from "@/src/premium";
+import { usePrivateSource } from "@/src/components/SafeImage";
 
 export default function AccountScreen() {
   const styles = useStyles();
@@ -19,6 +20,10 @@ export default function AccountScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user, logout, has } = useAuth();
+  // Je profielfoto is alleen met je inlog op te halen
+  const picUri = user?.picture ? mediaUrl(user.picture) : undefined;
+  const picPriv = usePrivateSource(picUri);
+  const pic = { src: picPriv.private ? picPriv.src : picUri ? { uri: picUri } : null };
   const s = useAppSettings();
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
 
@@ -95,7 +100,7 @@ export default function AccountScreen() {
           <View>
           <View style={styles.avatar}>
             {user?.picture ? (
-              <Image source={{ uri: mediaUrl(user.picture) }} style={styles.avatarImg} contentFit="cover" />
+              pic.src ? <Image source={pic.src} style={styles.avatarImg} contentFit="cover" /> : <Text style={styles.avatarText}>{initial}</Text>
             ) : (
               <Text style={styles.avatarText}>{initial}</Text>
             )}

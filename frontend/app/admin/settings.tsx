@@ -184,7 +184,7 @@ function SourcesCard() {
   );
 }
 
-type BackupStatus = { at: string | null; ok: boolean | null; size: number | null; error: string | null; to: string; ok_at: string | null };
+type BackupStatus = { at: string | null; ok: boolean | null; size: number | null; error: string | null; to: string; ok_at: string | null; encrypted?: boolean };
 
 const BACKUP_STALE_MS = 2 * 24 * 3600 * 1000; // langer geen geslaagde back-up: waarschuwen
 
@@ -229,6 +229,12 @@ function BackupCard() {
         Elke nacht gaat er een back-up van alle gegevens (gebruikers, lijstjes, gerechten, voorraad) naar {s?.to ?? "je mail"}.
         Winkelproducten zitten er niet in, die haalt de app zelf weer op.
       </Text>
+      {s && s.encrypted === false ? (
+        <Text style={[styles.hint, { marginTop: 0, color: colors.error }]} testID="backup-not-encrypted">
+          De back-ups zijn nog niet versleuteld. Zet bij Render (Environment) BACKUP_PASSWORD met een sterk wachtwoord, en bewaar dat
+          wachtwoord goed: zonder kun je een back-up niet openen.
+        </Text>
+      ) : null}
       {stale ? (
         <Text style={[styles.hint, { marginTop: 0, color: colors.error, fontFamily: fonts.bold }]} testID="backup-stale">
           {s?.ok_at

@@ -999,3 +999,48 @@ def test_csp_staat_alleen_eigen_scripts_toe():
     S._csp_cache.clear()
     v = S._csp()
     assert "default-src 'self'" in v and "frame-ancestors 'none'" in v and "unsafe-eval" not in v
+
+
+# --- Blok 2: back-ups versleuteld, foto's achter de login, limieten in de database ---
+def test_backup_versleuteld_en_zonder_geheimen(monkeypatch):
+    import pyzipper
+    monkeypatch.setenv("BACKUP_PASSWORD", "back-up-wachtwoord!")
+
+    async def t():
+        await S.db.users.insert_one({"user_id": "u1", "email": "a@b.nl", "password_hash": "HASH"})
+        await S.db.settings.insert_one({"key": "gmail_sender", "email": "x@gmail.com", "refresh_token": "GEHEIM"})
+        return await S._backup_zip(history=False, for_mail=True)
+    data, _ = run(t())
+    with pytest.raises(Exception):
+        zipfile.ZipFile(io.BytesIO(data)).read("users.jsonl")  # zonder wachtwoord niet te lezen
+    z = pyzipper.AESZipFile(io.BytesIO(data))
+    z.setpassword(b"back-up-wachtwoord!")
+    users, settings = z.read("users.jsonl").decode(), z.read("settings.jsonl").decode()
+    assert "a@b.nl" in users and "HASH" not in users and "GEHEIM" not in settings
+
+
+def test_foto_alleen_met_inlog(monkeypatch, tmp_path):
+    monkeypatch.setattr(S, "MEDIA_DIR", str(tmp_path))  # in de test op schijf in plaats van de database
+
+    async def t():
+        await S._put_object("scoutkook/uploads/u1/foto.jpg", b"img", "image/jpeg")
+        with pytest.raises(HTTPException) as e:
+            await S.serve_file("scoutkook/uploads/u1/foto.jpg", None)
+        assert e.value.status_code == 401
+        await S.db.user_sessions.insert_one({"session_token": "tok", "user_id": "u1", "expires_at": S.now_utc() + S.timedelta(days=30)})
+        await S.db.users.insert_one({"user_id": "u1", "email": "a@b.nl"})
+        r = await S.serve_file("scoutkook/uploads/u1/foto.jpg", "Bearer tok")
+        return r
+    r = run(t())
+    assert r.body == b"img" and "private" in r.headers["cache-control"]
+
+
+def test_limieten_staan_in_de_database():
+    async def t():
+        for _ in range(3):
+            await S.limit("test:x", 3, 600)
+        with pytest.raises(HTTPException) as e:
+            await S.limit("test:x", 3, 600)
+        return e.value.status_code, await S.db.rate_hits.count_documents({"key": "test:x"})
+    code, n = run(t())
+    assert code == 429 and n == 3

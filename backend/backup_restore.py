@@ -3,22 +3,27 @@
 Gebruik:
     MONGO_URL=... DB_NAME=... python backup_restore.py backup-2026-10-27.zip           # alleen kijken wat erin zit
     MONGO_URL=... DB_NAME=... python backup_restore.py backup-2026-10-27.zip --echt    # echt terugzetten
+Versleuteld (back-ups sinds 29-10-2026)? Zet dan ook BACKUP_PASSWORD=... (hetzelfde als bij Render).
 
-Bestaande documenten met hetzelfde _id worden vervangen; de rest blijft staan.
+Bestaande documenten met hetzelfde _id worden vervangen; de rest blijft staan. Bij gebruikers en instellingen worden alleen
+de velden uit de back-up bijgewerkt: wachtwoorden en de Gmail-koppeling (die niet in de mail-back-up zitten) blijven staan.
 Winkelproducten zitten niet in de back-up: die haalt de app na het opstarten zelf weer op.
 """
 import json
 import os
 import sys
-import zipfile
-
+import pyzipper
 from bson import json_util
-from pymongo import MongoClient, ReplaceOne
+from pymongo import MongoClient, ReplaceOne, UpdateOne
+
+KEEP_FIELDS = ("users", "settings")  # hier ontbreken bewust geheime velden: niet overschrijven, alleen bijwerken
 
 
 def restore(path: str, really: bool) -> dict:
     counts = {}
-    with zipfile.ZipFile(path) as z:
+    with pyzipper.AESZipFile(path) as z:
+        if os.environ.get("BACKUP_PASSWORD"):
+            z.setpassword(os.environ["BACKUP_PASSWORD"].encode())
         info = json.loads(z.read("info.json")) if "info.json" in z.namelist() else {}
         print("Back-up van", info.get("gemaakt", "onbekend"))
         db = MongoClient(os.environ["MONGO_URL"])[os.environ.get("DB_NAME", "boodschappenlijstje")] if really else None
@@ -29,7 +34,10 @@ def restore(path: str, really: bool) -> dict:
             print(f"  {coll}: {len(docs)}")
             if really and docs:
                 for i in range(0, len(docs), 1000):
-                    db[coll].bulk_write([ReplaceOne({"_id": d["_id"]}, d, upsert=True) for d in docs[i:i + 1000]], ordered=False)
+                    part = docs[i:i + 1000]
+                    ops = ([UpdateOne({"_id": d["_id"]}, {"$set": {k: v for k, v in d.items() if k != "_id"}}, upsert=True) for d in part]
+                           if coll in KEEP_FIELDS else [ReplaceOne({"_id": d["_id"]}, d, upsert=True) for d in part])
+                    db[coll].bulk_write(ops, ordered=False)
     print("Teruggezet." if really else "Niets veranderd. Voeg --echt toe om terug te zetten.")
     return counts
 

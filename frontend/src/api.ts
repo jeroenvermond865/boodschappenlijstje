@@ -10,6 +10,25 @@ export function setAuthToken(token: string | null) {
   authToken = token;
 }
 
+// Geüploade foto's (/api/files/...) zijn alleen te zien als je bent ingelogd: die halen we op met je inlog
+export function isPrivateFile(uri?: string | null): boolean {
+  return !!uri && uri.includes("/api/files/") && !uri.includes("/api/files/scoutkook/ai-fotos/");
+}
+const blobCache = new Map<string, string>();
+export async function privateFileSrc(uri: string): Promise<{ uri: string; headers?: Record<string, string> }> {
+  const full = uri.startsWith("http") ? uri : `${BASE}${uri}`;
+  const headers: Record<string, string> = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+  if (Platform.OS !== "web") return { uri: full, headers };
+  const hit = blobCache.get(full);
+  if (hit) return { uri: hit };
+  const res = await fetch(full, { headers });
+  if (!res.ok) throw new Error("Foto niet gevonden");
+  const url = URL.createObjectURL(await res.blob());
+  if (blobCache.size > 300) blobCache.clear();
+  blobCache.set(full, url);
+  return { uri: url };
+}
+
 export async function api<T = any>(
   path: string,
   options: { method?: string; body?: any } = {},
