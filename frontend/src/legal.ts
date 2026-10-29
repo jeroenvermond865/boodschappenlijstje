@@ -170,7 +170,7 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
         p: [
           "Accountgegevens: je naam en e-mailadres (en of je het bevestigd hebt), en je wachtwoord in versleutelde vorm (we kunnen het zelf niet lezen). Log je in met Google, dan krijgen we van Google je naam, e-mailadres en profielfoto. We bewaren ook wanneer je akkoord gaf met de voorwaarden.",
           "Wat je zelf invult (niet verplicht): gebruikersnaam, telefoonnummer, profielfoto en favoriete winkel.",
-          "Wat je in de app maakt: je planningen (dagen, aantal personen en vega-eters, maaltijden, budget), boodschappenlijsten, eigen gerechten en pakketten, je voorraadkast, prijsmeldingen, favoriete producten en recepten, feedback en supermarkt-aanvragen.",
+          "Wat je in de app maakt: je planningen (dagen, aantal personen en vegetariërs, maaltijden, budget), boodschappenlijsten, eigen gerechten en pakketten, je voorraadkast, prijsmeldingen, favoriete producten en recepten, feedback en supermarkt-aanvragen.",
           "Premium: of je Premium hebt en tot wanneer, je aanvraag voor een vereniging (naam van de vereniging en je toelichting), en wie jou heeft uitgenodigd of wie jij hebt uitgenodigd met je deelcode. Kun je later Premium kopen, dan bewaren we ook je betalingen (bedrag, datum en of het gelukt is). Je bankgegevens zelf ziet alleen de betaaldienst.",
           "Slimme hulp: wat je typt, de link die je plakt of de foto die je maakt, zodat de AI er een menu, gerecht of lijstje van kan maken. Het resultaat wordt alleen bewaard als je het opslaat.",
           "Mensen die je uitnodigt: hun e-mailadres, zodat we ze een uitnodiging kunnen sturen.",

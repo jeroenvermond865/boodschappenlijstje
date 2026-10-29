@@ -16,6 +16,9 @@ import type { RecipeTile } from "@/src/OnlineRecipes";
 import type { Product } from "@/src/ProductBrowser";
 import { ShopSwapSheet } from "@/src/ShopSwap";
 import { ProductPopup } from "@/src/ProductPopup";
+import { dishOrigin } from "@/src/dishInfo";
+import { useAuth } from "@/src/auth";
+import { useTerms } from "@/src/settings";
 
 export type PreviewAction = { label: string; icon?: string; onPress: () => void; primary?: boolean; testID?: string };
 export type PreviewTarget = { dish: Dish } | { recipe: RecipeTile };
@@ -177,6 +180,12 @@ export function PrepSteps({ dishId, campId }: { dishId: string; campId?: string 
   );
 }
 
+// Achter een ingrediënt: voor wie het is, als het gerecht een vegetarische vervanger heeft
+export function dietTag(dish: Pick<Dish, "ingredients">, i: Dish["ingredients"][number]) {
+  if (i.diet === "vega") return " (vegetariërs)";
+  return i.diet === "meat" && dish.ingredients.some((x) => x.diet === "vega") ? " (vleeseters)" : "";
+}
+
 // Het volledige scherm van een gerecht: online recepten openen als recept, de rest als gerecht (met foto en bereiding; bewerken kan daar)
 export function fullDishRoute(d: Pick<Dish, "id" | "source">) {
   const rid = d.source?.recipe_id;
@@ -190,6 +199,7 @@ export function DishPreview({
   swapDone,
   onAltSwap,
   campId,
+  vega,
 }: {
   target: PreviewTarget | null;
   onClose: () => void;
@@ -197,10 +207,14 @@ export function DishPreview({
   swapDone?: (s: AltSwap) => boolean;
   onAltSwap?: (s: AltSwap) => Promise<unknown> | void;
   campId?: string;
+  // Er eten vegetariërs mee en dit gerecht heeft nog geen vervanger voor het vlees: knop om er een te kiezen
+  vega?: { count: number; onPress: () => void } | null;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const T = useTerms();
   const dish = target && "dish" in target ? target.dish : null;
   const tile = target && "recipe" in target ? target.recipe : null;
   const rid = tile?.id ?? dish?.source?.recipe_id ?? null;
@@ -238,6 +252,29 @@ export function DishPreview({
                 .filter(Boolean)
                 .join(" · ")}
             </Text>
+            {dish ? (
+              (() => {
+                const o = dishOrigin(dish, user?.id, `${T.deze} ${T.one}`);
+                return (
+                  <View style={styles.originRow} testID="preview-origin">
+                    <Icon name={o.icon as any} size={14} color={colors.muted} />
+                    <Text style={styles.originText}>{o.label}</Text>
+                  </View>
+                );
+              })()
+            ) : null}
+            {dish && vega ? (
+              <Pressable onPress={vega.onPress} style={styles.vegaCard} testID="preview-vega">
+                <Icon name="leaf" size={20} color={colors.success} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.vegaTitle}>Vegetarische optie kiezen</Text>
+                  <Text style={styles.meta}>
+                    Er {vega.count === 1 ? "eet 1 vegetariër" : `eten ${vega.count} vegetariërs`} mee. Kies een vervanger voor het vlees of de vis.
+                  </Text>
+                </View>
+                <Icon name="chevron-right" size={20} color={colors.success} />
+              </Pressable>
+            ) : null}
             {rec.data?.description ? <Text style={styles.line}>{rec.data.description}</Text> : null}
             {onAltSwap ? <AltSwapList swaps={rec.data?.alt_swaps ?? []} done={swapDone ?? (() => false)} onSwap={onAltSwap} /> : null}
 
@@ -247,6 +284,7 @@ export function DishPreview({
                 <Text key={`${i.name}-${k}`} style={styles.line}>
                   • {i.name}
                   {i.qty_adult ? ` · ${formatQty(i.qty_adult)} ${i.unit}` : ""}
+                  {dietTag(dish, i)}
                 </Text>
               ))
             ) : rec.isLoading ? (
@@ -305,6 +343,10 @@ const useStyles = makeStyles((colors) => ({
   img: { width: "100%", height: 190, borderRadius: 14, backgroundColor: colors.brandTertiary },
   title: { fontSize: 20, fontFamily: fonts.bold, color: colors.onSurface },
   meta: { fontSize: 13, fontFamily: fonts.regular, color: colors.muted },
+  originRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  originText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.muted },
+  vegaCard: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 14, borderWidth: 1, borderColor: colors.success, backgroundColor: colors.surfaceSecondary },
+  vegaTitle: { fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface },
   sub: { fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface },
   line: { fontSize: 14, fontFamily: fonts.regular, color: colors.onSurface, lineHeight: 20 },
   stepNo: { fontSize: 14, fontFamily: fonts.bold, color: colors.brandPrimary, width: 18 },

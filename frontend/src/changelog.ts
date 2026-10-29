@@ -5,6 +5,26 @@ export type Release = { id: string; version?: string; date: string; title: strin
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-29-v130",
+    version: "1.3.0",
+    date: "29 oktober 2026",
+    title: "Vegetarische optie overal, gerechten delen als PDF en mooiere foto's",
+    changes: [
+      { kind: "beter", text: "Vegetarische optie kiezen: je ziet nu ook het vlees of de vis voor de vleeseters, met daaronder de vervangers voor de vegetariërs. Zo kies je makkelijker." },
+      { kind: "beter", text: "De voorgestelde vegetarische vervangers lijken beter op het vlees: bij gehakt vegetarisch gehakt, bij ham vegetarisch beleg, bij frikandel een vegetarische frikandel. Geen kant-en-klare maaltijden meer." },
+      { kind: "nieuw", text: "Je kiest de vegetarische optie nu ook bij Hele gerecht openen, in het venster van een gerecht en bij Aanpassen voor dit lijstje." },
+      { kind: "opgelost", text: "Een vegetarische optie in een lijstje past het gerecht alleen voor dat lijstje aan, niet het gerecht van de app voor iedereen." },
+      { kind: "nieuw", text: "De bereiding houdt rekening met de vegetarische vervanger: er staat bij dat je die apart klaarmaakt voor de vegetariërs." },
+      { kind: "nieuw", text: "Bij elk gerecht zie je waar het vandaan komt: recept van een supermarkt, app-gerecht, slimme hulp of je eigen gerecht." },
+      { kind: "nieuw", text: "Gerecht delen: als link om over te nemen, of als tekst of PDF met de boodschappen voor het aantal personen dat je kiest, en de bereiding." },
+      { kind: "opgelost", text: "Na het wegklikken van Delen kwam er een rare melding (Abort due to cancellation of share). Die is weg." },
+      { kind: "beter", text: "Bij Lijstjes zie je per lijstje het meeste aantal volwassenen en kinderen op één dag, en hoeveel er vegetarisch eten." },
+      { kind: "opgelost", text: "Lijstje aanpassen: je kunt nu ook het aantal volwassenen en kinderen aanpassen, niet alleen de vegetariërs." },
+      { kind: "beter", text: "De app-gerechten krijgen een nieuwe, mooiere foto die precies dat gerecht laat zien." },
+      { kind: "beter", text: "Overal in de app heet het nu vegetarisch en vegetariërs in plaats van vega en vega-eters." },
+    ],
+  },
+  {
     id: "2026-10-29-v121",
     version: "1.2.1",
     date: "29 oktober 2026",

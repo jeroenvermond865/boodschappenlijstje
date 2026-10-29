@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, Pressable, ScrollView, Share, Text, TextInput, View } from "react-native";
+import { FlatList, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import Image from "@/src/components/SafeImage";
 import Modal from "@/src/components/Modal";
 import { norm } from "@/src/smartSearch";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { PrepSteps } from "@/src/DishPreview";
+import { DishShareSheet } from "@/src/DishShare";
+import { VegaPicker, type VegaLocalChoice } from "@/src/VegaPicker";
+import { dishOrigin } from "@/src/dishInfo";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import * as Linking from "expo-linking";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -64,7 +66,7 @@ export function guessDiet(name: string): "all" | "meat" {
 
 const DIET_OPTS: { key: "all" | "vega" | "meat"; label: string; icon: string }[] = [
   { key: "all", label: "Iedereen", icon: "account-group-outline" },
-  { key: "vega", label: "Vega", icon: "leaf" },
+  { key: "vega", label: "Vegetarisch", icon: "leaf" },
   { key: "meat", label: "Vlees", icon: "food-drumstick-outline" },
 ];
 
@@ -80,7 +82,7 @@ export default function DishEditScreen() {
   const campId = params.campId || null;
   const T = useTerms();
   const [alsoOwn, setAlsoOwn] = useState(false);
-  const { has } = useAuth();
+  const { has, user } = useAuth();
   const canManageStandard = has("manage_standard_dishes");
   const { selected: diet } = useDiet();
 
@@ -136,6 +138,15 @@ export default function DishEditScreen() {
       : [],
   );
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [vegaOpen, setVegaOpen] = useState(false);
+  // In een lijstje: hoeveel vegetariërs er meeeten (dan kun je hier ook een vegetarische optie kiezen)
+  const campQ = useQuery({
+    queryKey: ["camp", campId],
+    queryFn: () => api<{ vega_adults?: number; vega_children?: number; days: { adults: number; children: number }[] }>(`/camps/${campId}`),
+    enabled: !!campId,
+  });
+  const campVega = (campQ.data?.vega_adults ?? 0) + (campQ.data?.vega_children ?? 0);
   const [swapIdx, setSwapIdx] = useState<number | null>(null);
   // Pop-up met het product zelf (en eventueel het voorstel om te wisselen) voordat je kiest
   const [swapFocus, setSwapFocus] = useState<{ current?: AltProduct | null; suggest?: AltProduct | null }>({});
@@ -314,16 +325,23 @@ export default function DishEditScreen() {
     setSwapIdx(null);
   };
 
-  const onShare = async () => {
-    if (!params.id) return;
-    try {
-      const { token } = await api<{ token: string }>(`/dishes/${params.id}/share`, { method: "POST" });
-      const url = Linking.createURL(`/dish/shared/${token}`);
-      await Share.share({ message: `Bekijk mijn gerecht "${name}" in Slim Boodschappenlijstje:\n${url}` });
-    } catch (e: any) {
-      toast.show(e?.message ?? "Delen mislukt", "error");
-    }
+  const onShare = () => setShareOpen(true);
+
+  // Vlees of vis zonder vegetarische vervanger (zelfde regel als de server: vlees is nooit voor iedereen)
+  const needsVega = ings.some((i) => i.diet === "meat" || (i.diet === "all" && guessDiet(i.name) === "meat")) && !ings.some((i) => i.diet === "vega");
+  const applyVega = (choices: VegaLocalChoice[]) => {
+    setIngs((prev) => {
+      const next = prev.map((it, k) => (choices.some((c) => c.index === k) ? { ...it, diet: "meat" as const } : it));
+      const extra = choices.flatMap((c) => {
+        const meat = prev[c.index];
+        if (!c.product || !meat) return [];
+        return [{ ...meat, name: c.product.name, productId: c.product.id, store: meat.store ?? c.product.source ?? null, aisle: c.product.aisle || meat.aisle, recipeText: null, price: "0", diet: "vega" as const }];
+      });
+      return [...next, ...extra];
+    });
+    toast.show("Vegetarische optie toegevoegd. Vergeet niet op te slaan.", "success");
   };
+  const origin = existing ? dishOrigin(existing, user?.id, `${T.deze} ${T.one}`) : null;
 
   const dietWarn = dietConflicts([...ings, ...pantry], diet);
   const title = isNew ? "Nieuw gerecht" : readOnly ? existing?.name : campId ? `Gerecht in ${T.deze} ${T.one}` : "Gerecht bewerken";
@@ -368,6 +386,26 @@ export default function DishEditScreen() {
             <Icon name="shield-account" size={18} color={colors.onBrandTertiary} />
             <Text style={styles.bannerText}>Standaardgerecht — je bewerkt dit voor iedereen (beheer).</Text>
           </View>
+        ) : null}
+
+        {origin ? (
+          <View style={styles.originRow} testID="dish-origin">
+            <Icon name={origin.icon as any} size={15} color={colors.muted} />
+            <Text style={styles.originText}>{origin.label}</Text>
+          </View>
+        ) : null}
+
+        {!readOnly && needsVega && campVega > 0 ? (
+          <Pressable onPress={() => setVegaOpen(true)} style={styles.vegaCard} testID="dish-edit-vega">
+            <Icon name="leaf" size={20} color={colors.success} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.vegaCardTitle}>Vegetarische optie kiezen</Text>
+              <Text style={styles.vegaCardSub}>
+                {`Er ${campVega === 1 ? "eet 1 vegetariër" : `eten ${campVega} vegetariërs`} mee. Kies een vervanger voor het vlees of de vis; het vlees blijft voor de vleeseters.`}
+              </Text>
+            </View>
+            <Icon name="chevron-right" size={20} color={colors.success} />
+          </Pressable>
         ) : null}
 
         {dietWarn.length ? (
@@ -726,6 +764,27 @@ export default function DishEditScreen() {
         onClose={() => setSwapIdx(null)}
         onPick={(p) => swapIdx != null && swapProduct(swapIdx, p)}
       />
+      <VegaPicker
+        dish={vegaOpen && existing ? existing : vegaOpen ? { id: "new", name } : null}
+        campId={campId}
+        local={{ ingredients: ings.map(toBody), onApply: applyVega }}
+        onClose={() => setVegaOpen(false)}
+      />
+      <DishShareSheet
+        dish={shareOpen && existing ? existing : null}
+        campId={campId}
+        people={
+          campQ.data
+            ? {
+                adults: Math.max(1, ...campQ.data.days.map((d) => d.adults || 0)),
+                children: Math.max(0, ...campQ.data.days.map((d) => d.children || 0)),
+                vegaAdults: campQ.data.vega_adults ?? 0,
+                vegaChildren: campQ.data.vega_children ?? 0,
+              }
+            : undefined
+        }
+        onClose={() => setShareOpen(false)}
+      />
     </View>
   );
 }
@@ -984,6 +1043,11 @@ const useStyles = makeStyles((colors) => ({
     padding: 12,
   },
   bannerText: { flex: 1, fontSize: 13, fontFamily: fonts.medium, color: colors.onBrandTertiary },
+  originRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  originText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.muted },
+  vegaCard: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 14, borderWidth: 1, borderColor: colors.success, backgroundColor: colors.surfaceSecondary },
+  vegaCardTitle: { fontSize: 15, fontFamily: fonts.bold, color: colors.onSurface },
+  vegaCardSub: { fontSize: 13, fontFamily: fonts.regular, color: colors.onSurfaceSecondary },
   label: { fontSize: 13, fontFamily: fonts.semibold, color: colors.onSurfaceSecondary },
   chipRow: { gap: 8, paddingVertical: 2 },
   groupWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },

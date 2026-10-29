@@ -29,11 +29,11 @@ export type Dish = {
   groups?: DishGroup[]; // hoofdcategorieën, zoals "Soep" of "Voor grote groepen"
   groups_set?: boolean; // zelf gekozen; anders kiest de app
   is_standard: boolean;
-  ingredients: { name: string; unit: string; qty_adult: number; qty_child: number; aisle: string; price?: number; product_id?: string | null; store?: string | null; recipe_text?: string | null }[];
+  ingredients: { name: string; unit: string; qty_adult: number; qty_child: number; aisle: string; price?: number; product_id?: string | null; store?: string | null; recipe_text?: string | null; diet?: "all" | "vega" | "meat" }[];
   pantry?: Dish["ingredients"];
   image?: string | null;
   price_pp?: Record<string, number> | null;
-  source?: { recipe_id: string; url?: string; image?: string; store?: string; servings?: number } | null;
+  source?: { recipe_id?: string; url?: string; image?: string; store?: string; servings?: number; ai?: string } | null;
   needs_vega?: boolean; // vlees of vis zonder vega-vervanger
   online?: boolean; // online gerecht dat in een kamp staat, nog niet aangepast
   camp_id?: string | null; // alleen voor één activiteit aangepast

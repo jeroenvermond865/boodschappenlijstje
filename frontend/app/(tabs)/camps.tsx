@@ -15,8 +15,25 @@ import { useAppSettings, useTerms } from "@/src/settings";
 import { useToast } from "@/src/toast";
 import { fonts, makeStyles, softShadow, useTheme } from "@/src/theme";
 
-type Day = { index: number; adults: number; children: number; is_shopping_day: boolean };
-type Camp = { id: string; name: string; days: Day[] };
+type People = { adults: number; children: number };
+type Day = { index: number; adults: number; children: number; is_shopping_day: boolean; meal_people?: Record<string, People> };
+type Camp = { id: string; name: string; days: Day[]; vega_adults?: number; vega_children?: number };
+
+// Het meeste op één dag (ook als er bij één maaltijd meer mensen mee-eten): zoveel moet je in huis hebben
+function maxOnADay(days: Day[]) {
+  let adults = 0;
+  let children = 0;
+  let total = 0;
+  for (const d of days) {
+    const meals = Object.values(d.meal_people ?? {});
+    const a = Math.max(d.adults || 0, ...meals.map((m) => m.adults || 0));
+    const c = Math.max(d.children || 0, ...meals.map((m) => m.children || 0));
+    adults = Math.max(adults, a);
+    children = Math.max(children, c);
+    total = Math.max(total, a + c);
+  }
+  return { adults, children, total };
+}
 
 export default function CampsScreen() {
   const styles = useStyles();
@@ -83,9 +100,8 @@ export default function CampsScreen() {
 
   const renderCard = useCallback(
     ({ item, index }: { item: Camp; index: number }) => {
-      const totalAdults = item.days.reduce((s, d) => s + d.adults, 0);
-      const totalChildren = item.days.reduce((s, d) => s + d.children, 0);
-      const maxPeople = item.days.reduce((m, d) => Math.max(m, d.adults + d.children), 0);
+      const most = maxOnADay(item.days);
+      const vega = (item.vega_adults ?? 0) + (item.vega_children ?? 0);
       return (
         <Animated.View entering={FadeInDown.delay(Math.min(index, 6) * 40).duration(260)}>
           <PressScale
@@ -101,17 +117,25 @@ export default function CampsScreen() {
                 {item.name}
               </Text>
               <Text style={styles.cardMeta}>
-                {item.days.length} {item.days.length === 1 ? "dag" : "dagen"} · max {maxPeople} pers.
+                {item.days.length} {item.days.length === 1 ? "dag" : "dagen"} · max {most.total} pers. per dag
               </Text>
               <View style={styles.badgeRow}>
                 <View style={styles.badge}>
                   <Icon name="account" size={13} color={colors.onBrandTertiary} />
-                  <Text style={styles.badgeText}>{totalAdults} volw.</Text>
+                  <Text style={styles.badgeText}>max {most.adults} volw.</Text>
                 </View>
-                <View style={styles.badge}>
-                  <Icon name="account-child" size={13} color={colors.onBrandTertiary} />
-                  <Text style={styles.badgeText}>{totalChildren} kind.</Text>
-                </View>
+                {most.children ? (
+                  <View style={styles.badge}>
+                    <Icon name="account-child" size={13} color={colors.onBrandTertiary} />
+                    <Text style={styles.badgeText}>max {most.children} kind.</Text>
+                  </View>
+                ) : null}
+                {vega ? (
+                  <View style={styles.badge}>
+                    <Icon name="leaf" size={13} color={colors.onBrandTertiary} />
+                    <Text style={styles.badgeText}>{vega} vegetarisch</Text>
+                  </View>
+                ) : null}
               </View>
             </View>
             <View style={styles.cardActions}>

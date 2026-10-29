@@ -25,7 +25,7 @@ import { GOLD, useFeature, useFeatureAccent } from "@/src/premium";
 import { useSwipePages } from "@/src/useSwipePages";
 import { goBack } from "@/src/nav";
 import { VegaPicker } from "@/src/VegaPicker";
-import { DishPreview, dishProductFor, fullDishRoute, slotOf, type AltSwap, type PreviewTarget } from "@/src/DishPreview";
+import { DishPreview, dishProductFor, slotOf, type AltSwap, type PreviewTarget } from "@/src/DishPreview";
 import { MenuWizard } from "@/src/MenuWizard";
 import { DateField } from "@/src/DateField";
 import { useToast } from "@/src/toast";
@@ -423,10 +423,10 @@ export default function CampDetailScreen() {
             <View style={styles.rowLabel}>
               <Icon name="leaf" size={18} color={colors.warning} />
               <Text style={styles.vegaTitle}>
-                {vegaOpen.length === 1 ? "1 gerecht heeft nog geen vega-optie" : `${vegaOpen.length} gerechten hebben nog geen vega-optie`}
+                {vegaOpen.length === 1 ? "1 gerecht heeft nog geen vegetarische optie" : `${vegaOpen.length} gerechten hebben nog geen vegetarische optie`}
               </Text>
             </View>
-            <Text style={styles.vegaSub}>Er {vegaA + vegaC === 1 ? "eet 1 persoon" : `eten ${vegaA + vegaC} personen`} vega mee. Kies een vervanger voor het vlees of de vis:</Text>
+            <Text style={styles.vegaSub}>Er {vegaA + vegaC === 1 ? "eet 1 vegetariër" : `eten ${vegaA + vegaC} vegetariërs`} mee. Kies een vervanger voor het vlees of de vis:</Text>
             <View style={styles.vegaChips}>
               {vegaOpen.map((x) => (
                 <Pressable key={x.id} onPress={() => setVegaDish(x)} style={styles.vegaChip}>
@@ -490,7 +490,7 @@ export default function CampDetailScreen() {
             {vegaA + vegaC > 0 ? (
               <View style={styles.vegaMini}>
                 <Icon name="leaf" size={12} color={colors.success} />
-                <Text style={[styles.counterSub, { color: colors.success }]}>{vegaA + vegaC} vega</Text>
+                <Text style={[styles.counterSub, { color: colors.success }]}>{vegaA + vegaC} vegetarisch</Text>
               </View>
             ) : null}
             {!day.is_shopping_day ? <Icon name="cart-off" size={16} color={colors.muted} /> : null}
@@ -508,13 +508,13 @@ export default function CampDetailScreen() {
               </View>
               <View style={styles.counterRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.counterLabelSmall}>Vega volwassenen</Text>
+                  <Text style={styles.counterLabelSmall}>Vegetarische volwassenen</Text>
                   <Text style={styles.counterSub}>Geldt voor {T.de} hele {T.one}</Text>
                 </View>
                 <Stepper value={vegaA} onChange={(v) => patchCamp.mutate({ vega_adults: v })} min={0} max={500} testID="day-vega-adults" />
               </View>
               <View style={styles.counterRow}>
-                <Text style={styles.counterLabelSmall}>Vega kinderen</Text>
+                <Text style={styles.counterLabelSmall}>Vegetarische kinderen</Text>
                 <Stepper value={vegaC} onChange={(v) => patchCamp.mutate({ vega_children: v })} min={0} max={500} testID="day-vega-children" />
               </View>
               <View style={styles.counterRow}>
@@ -641,7 +641,7 @@ export default function CampDetailScreen() {
                         {dish?.needs_vega && vegaA + vegaC > 0 ? (
                           <Pressable testID={`vega-${dishId}`} onPress={() => setVegaDish(dish)} style={styles.vegaBadge}>
                             <Icon name="leaf" size={13} color={colors.onWarning} />
-                            <Text style={styles.vegaBadgeText}>Vega-optie kiezen</Text>
+                            <Text style={styles.vegaBadgeText}>Vegetarische optie</Text>
                           </Pressable>
                         ) : null}
                         <Pressable
@@ -708,7 +708,7 @@ export default function CampDetailScreen() {
       </ScrollView>
       </Animated.View>
 
-      <VegaPicker dish={vegaDish} onClose={() => setVegaDish(null)} />
+      <VegaPicker dish={vegaDish} campId={id} onClose={() => setVegaDish(null)} />
       <Modal visible={!!mealPeople} transparent animationType="fade" onRequestClose={() => setMealPeople(null)}>
         <Pressable style={styles.mpBackdrop} onPress={() => setMealPeople(null)}>
           <Pressable style={styles.mpCard} onPress={() => {}}>
@@ -736,14 +736,14 @@ export default function CampDetailScreen() {
                   <View style={styles.counterRow}>
                     <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 4 }}>
                       <Icon name="leaf" size={14} color={colors.success} />
-                      <Text style={styles.counterLabelSmall}>Vega volwassenen</Text>
+                      <Text style={styles.counterLabelSmall}>Vegetarische volwassenen</Text>
                     </View>
                     <Stepper value={mva} onChange={(v) => setMp({ ...mp, vega_adults: Math.min(v, mp.adults) })} min={0} max={500} testID="meal-vega-adults" />
                   </View>
                   <View style={styles.counterRow}>
                     <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 4 }}>
                       <Icon name="leaf" size={14} color={colors.success} />
-                      <Text style={styles.counterLabelSmall}>Vega kinderen</Text>
+                      <Text style={styles.counterLabelSmall}>Vegetarische kinderen</Text>
                     </View>
                     <Stepper value={mvc} onChange={(v) => setMp({ ...mp, vega_children: Math.min(v, mp.children) })} min={0} max={500} testID="meal-vega-children" />
                   </View>
@@ -765,6 +765,18 @@ export default function CampDetailScreen() {
         onClose={() => setDishView(null)}
         swapDone={(sw) => altDone(dishView, sw)}
         onAltSwap={(sw) => (dishView ? altSwap(dishView, sw) : undefined)}
+        vega={
+          dishView?.needs_vega && vegaA + vegaC > 0
+            ? {
+                count: vegaA + vegaC,
+                onPress: () => {
+                  const d = dishView;
+                  setDishView(null);
+                  setVegaDish(d);
+                },
+              }
+            : null
+        }
         actions={
           dishView
             ? [
@@ -776,7 +788,8 @@ export default function CampDetailScreen() {
                   onPress: () => {
                     const d = dishView;
                     setDishView(null);
-                    router.push(fullDishRoute(d));
+                    // Het gerecht zoals het in dit lijstje staat (met de vegetarische optie en de bereiding daarvoor)
+                    router.push({ pathname: "/dish/[id]", params: { id: d.id, camp: camp.id } });
                   },
                 },
                 {
@@ -991,6 +1004,12 @@ function EditCampModal({
   const [vegaA, setVegaA] = useState(camp.vega_adults ?? 0);
   const [vegaC, setVegaC] = useState(camp.vega_children ?? 0);
   const [startDate, setStartDate] = useState(camp.start_date ?? "");
+  // Personen per dag: zijn alle dagen gelijk, dan zie je dat aantal; anders het grootste. Pas je het aan, dan geldt het voor alle dagen.
+  const maxA = Math.max(0, ...camp.days.map((d) => d.adults || 0));
+  const maxC = Math.max(0, ...camp.days.map((d) => d.children || 0));
+  const sameDays = camp.days.every((d) => d.adults === camp.days[0]?.adults && d.children === camp.days[0]?.children);
+  const [adults, setAdults] = useState(maxA);
+  const [children, setChildren] = useState(maxC);
 
   useEffect(() => {
     if (visible) {
@@ -999,8 +1018,12 @@ function EditCampModal({
       setCount(camp.days.length);
       setVegaA(camp.vega_adults ?? 0);
       setVegaC(camp.vega_children ?? 0);
+      setAdults(maxA);
+      setChildren(maxC);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, camp]);
+  const peopleChanged = adults !== maxA || children !== maxC;
 
   const save = useMutation({
     mutationFn: () => {
@@ -1012,14 +1035,18 @@ function EditCampModal({
           ...days,
           {
             index: days.length,
-            adults: last?.adults ?? 0,
-            children: last?.children ?? 0,
+            adults: peopleChanged ? adults : last?.adults ?? 0,
+            children: peopleChanged ? children : last?.children ?? 0,
             is_shopping_day: true,
             meals: emptyMeals as any,
           },
         ];
       }
-      return api(`/camps/${camp.id}`, { method: "PUT", body: { name: name.trim() || camp.name, days, vega_adults: vegaA, vega_children: vegaC, start_date: startDate } });
+      if (peopleChanged) days = days.map((d) => ({ ...d, adults, children }));
+      return api(`/camps/${camp.id}`, {
+        method: "PUT",
+        body: { name: name.trim() || camp.name, days, vega_adults: Math.min(vegaA, adults), vega_children: Math.min(vegaC, children), start_date: startDate },
+      });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["camp", camp.id] });
@@ -1073,14 +1100,32 @@ function EditCampModal({
 
         <View style={[styles.editRow, { marginTop: 14 }]}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.editLabel}>Vegetarisch: volwassenen</Text>
-            <Text style={styles.editWarn2}>Hoeveel eten er vegetarisch? Zij krijgen de vega-optie.</Text>
+            <Text style={styles.editLabel}>Volwassenen per dag</Text>
+            <Text style={styles.editWarn2}>
+              {peopleChanged
+                ? "Geldt straks voor alle dagen. Per maaltijd anders? Tik bij die maaltijd op het poppetje."
+                : sameDays
+                  ? "Zelfde aantal op alle dagen."
+                  : "Niet elke dag hetzelfde: dit is het meeste op één dag. Pas je het aan, dan geldt het voor alle dagen."}
+            </Text>
           </View>
-          <Stepper value={vegaA} onChange={setVegaA} min={0} max={500} testID="edit-vega-adults" />
+          <Stepper value={adults} onChange={setAdults} min={0} max={500} testID="edit-camp-adults" />
+        </View>
+        <View style={[styles.editRow, { marginTop: 12 }]}>
+          <Text style={styles.editLabel}>Kinderen per dag</Text>
+          <Stepper value={children} onChange={setChildren} min={0} max={500} testID="edit-camp-children" />
+        </View>
+
+        <View style={[styles.editRow, { marginTop: 14 }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.editLabel}>Vegetarisch: volwassenen</Text>
+            <Text style={styles.editWarn2}>Hoeveel eten er vegetarisch? Zij krijgen de vegetarische optie.</Text>
+          </View>
+          <Stepper value={vegaA} onChange={(v) => setVegaA(Math.min(v, adults))} min={0} max={500} testID="edit-vega-adults" />
         </View>
         <View style={[styles.editRow, { marginTop: 12 }]}>
           <Text style={styles.editLabel}>Vegetarisch: kinderen</Text>
-          <Stepper value={vegaC} onChange={setVegaC} min={0} max={500} testID="edit-vega-children" />
+          <Stepper value={vegaC} onChange={(v) => setVegaC(Math.min(v, children))} min={0} max={500} testID="edit-vega-children" />
         </View>
 
         <View style={{ marginTop: 18 }}>
@@ -1312,7 +1357,7 @@ export function DishPickerModal({
   const list = smartFilter(own, q, (d) => [d.name, ...(d.ingredients ?? []).map((i) => i.name)]);
   const pickedRecipes = dishes
     .filter((d) => selectedIds.includes(d.id) && d.source?.recipe_id)
-    .map((d) => d.source!.recipe_id.replace(":", "-"));
+    .map((d) => (d.source!.recipe_id ?? "").replace(":", "-"));
 
   const pickOnline = async (r: RecipeTile, swaps: Record<string, string> = {}): Promise<boolean> => {
     if (!category || busyId) return false;

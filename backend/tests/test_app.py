@@ -296,7 +296,7 @@ def test_ai_foto_wordt_gemaakt_verkleind_en_hergebruikt(monkeypatch, tmp_path):
     url = run(S._ai_dish_image("Spaghetti bolognese"))
     assert url.startswith("/api/files/") and len(calls) == 1 and "Spaghetti bolognese" in calls[0]
     data, kind = run(S._get_object(url[len("/api/files/"):]))
-    assert kind == "image/webp" and PILImage.open(io.BytesIO(data)).size[0] <= 640
+    assert kind == "image/webp" and PILImage.open(io.BytesIO(data)).size[0] <= 900
     assert run(S._ai_dish_image("spaghetti Bolognese")) == url and len(calls) == 1  # zelfde naam: niet opnieuw betalen
 
 
@@ -1232,3 +1232,66 @@ def test_foto_opnieuw_zoeken_na_lege_poging(monkeypatch):
         return (await S.db.dishes.find_one({"dish_id": "d1"}))["photo"]
     assert run(t()) == "https://example.org/x.jpg"
     assert calls == ["Chia pudding", "Soep"]
+
+
+# --- Vegetarische optie vanuit een lijstje: nooit het app-gerecht zelf aanpassen ---
+def test_vegetarische_optie_in_lijstje_maakt_eigen_versie():
+    async def t():
+        await S.db.camps.insert_one({"camp_id": "c1", "owner_id": "u1", "deleted_at": None,
+                                     "days": [{"index": 0, "meals": {"avondeten": ["d1"]}}]})
+        await S.db.dishes.insert_one({"dish_id": "d1", "name": "Wraps met gehakt", "category": "avondeten", "is_standard": True, "deleted_at": None,
+                                      "ingredients": [{"name": "Rundergehakt", "unit": "g", "qty_adult": 125, "qty_child": 75, "aisle": "Vlees & vis"},
+                                                      {"name": "Wraps", "unit": "stuks", "qty_adult": 2, "qty_child": 1, "aisle": "Brood"}]})
+        await S.db.products.insert_one({"product_id": "v1", "name": "Vegetarisch gehakt", "deleted_at": None, "prices": {}})
+        out = await S.set_vega("d1", S.VegaInput(choices=[S.VegaChoice(index=0, product_id="v1")], camp_id="c1"), U1)
+        app = await S.db.dishes.find_one({"dish_id": "d1"})
+        camp = await S.db.camps.find_one({"camp_id": "c1"})
+        return out, app, camp
+    out, app, camp = run(t())
+    assert out["id"] != "d1" and out["camp_id"] == "c1" and not out["needs_vega"]
+    assert [i["diet"] for i in out["ingredients"]] == ["meat", "all", "vega"] and out["ingredients"][2]["qty_adult"] == 125
+    assert "vega_done" not in app  # het app-gerecht blijft zoals het was
+    assert camp["days"][0]["meals"]["avondeten"] == [out["id"]]
+
+
+def test_vegetarische_vervanger_lijkt_op_het_vlees():
+    docs = [{"product_id": f"x{k}", "name": n, "_norm": S._norm_text(n), "_src": "Albert Heijn", "is_global": True}
+            for k, n in enumerate(["AH Terra Plantaardig gehakt", "Vegetarische lasagne maaltijd", "Vivera Vegetarische kipstukjes",
+                                   "Rundergehakt", "Garden Gourmet vegetarisch gehakt"])]
+    S._product_cache["docs"] = docs
+    out = [d["name"] for d in S._vega_options({"name": "Rundergehakt", "store": "Albert Heijn"}, docs)]
+    assert out[:2] == ["AH Terra Plantaardig gehakt", "Garden Gourmet vegetarisch gehakt"] or set(out[:2]) == {"AH Terra Plantaardig gehakt", "Garden Gourmet vegetarisch gehakt"}
+    assert "Vegetarische lasagne maaltijd" not in out and "Rundergehakt" not in out
+
+
+def test_bereiding_zonder_ai_noemt_de_vegetarische_vervanger():
+    items = [{"name": "Rundergehakt", "changed": False, "diet": "meat"}, {"name": "Wraps", "changed": False, "diet": "all"},
+             {"name": "AH Terra Plantaardig gehakt", "changed": False, "diet": "vega", "for": "Rundergehakt"}]
+    steps = S._prep_basic([], items)
+    assert any(st.startswith("Voor de vegetariërs: maak Terra Plantaardig gehakt (in plaats van Rundergehakt) apart klaar") for st in steps)
+    base = S._prep_basic(["Bak het gehakt."], items)
+    assert base[0] == "Bak het gehakt." and "apart klaar" in base[-1]
+
+
+def test_pdf_van_een_gerecht():
+    pdf = S._dish_pdf(S.DishPdf(title="Wraps met gehakt", subtitle="App-gerecht", chips=["4 personen"],
+                                groups=[S.DishPdfGroup(label="Voor iedereen", items=[S.PdfItem(name="Wraps", qty="8 stuks")]),
+                                        S.DishPdfGroup(label="Alleen vegetariërs", items=[S.PdfItem(name="Vegetarisch gehakt", qty="250 g")])],
+                                steps=["Bak het gehakt. " * 20, "Vul de wraps."]))
+    assert pdf.startswith(b"%PDF") and len(pdf) > 1000
+
+
+def test_gerecht_uit_gedeeld_lijstje_mag_je_delen():
+    async def t():
+        await S.db.camps.insert_one({"camp_id": "c1", "owner_id": "u1", "member_ids": ["u2"], "deleted_at": None,
+                                     "days": [{"index": 0, "meals": {"avondeten": ["d1"]}}]})
+        await S.db.dishes.insert_one({"dish_id": "d1", "name": "Nasi", "category": "avondeten", "owner_id": "u1", "deleted_at": None, "ingredients": []})
+        await S.db.dishes.insert_one({"dish_id": "d2", "name": "Bami", "category": "avondeten", "owner_id": "u1", "deleted_at": None, "ingredients": []})
+        ok = await S.share_dish("d1", U2)
+        try:
+            await S.share_dish("d2", U2)
+            return ok, None
+        except HTTPException as e:
+            return ok, e.status_code
+    ok, err = run(t())
+    assert ok["token"] and err == 403

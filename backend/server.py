@@ -1307,19 +1307,31 @@ def dish_public(doc: dict) -> dict:
     }
 
 
-# Vega-vervangers: "kipfilet" -> vegetarische kipstukjes, "gehakt" -> vegetarisch gehakt
-_VEGA_FOR = [(r"kip", ["vegetarische kipstukjes", "vega kip", "plantaardige kipstukjes"]),
-             (r"gehakt", ["vegetarisch gehakt", "vega gehakt", "plantaardig gehakt"]),
-             (r"rookworst", ["vegetarische rookworst", "vega rookworst"]),
-             (r"worst|saucijs|braadworst|knakworst", ["vegetarische worst", "vega worstjes"]),
-             (r"spek|bacon|pancetta", ["vegetarische spekjes", "vega spekreepjes"]),
-             (r"burger", ["vegaburger", "vegetarische burger", "groenteburger"]),
-             (r"schnitzel", ["vegetarische schnitzel", "vega schnitzel"]),
-             (r"shoarma|gyros|kebab", ["vegetarische shoarma", "vega shoarma"]),
-             (r"ham|salami|filet americain", ["vegetarische ham", "vega beleg"]),
-             (r"zalm|tonijn|kabeljauw|vis|pangasius|koolvis|kibbeling|lekkerbek", ["vegetarische vis", "vega visstick", "tofu"]),
-             (r"garna", ["vegetarische garnalen", "tofu"]),
-             (r"biefstuk|steak|stoofvlees|riblap|sukade|rund|varken|vlees|lap|karbonade", ["vegetarische stukjes", "vega reepjes", "tempeh"])]
+# Vegetarische vervangers: "kipfilet" -> vegetarische kipstukjes, "gehakt" -> vegetarisch gehakt.
+# Per soort vlees: waar we op zoeken en welk woord er in de vervanger moet staan (anders is het iets heel anders)
+_VEGA_FOR = [(r"frikandel", ["vegetarische frikandel", "vega frikandel"], r"frikandel"),
+             (r"kroket|bitterbal", ["vegetarische kroket", "vega kroket", "vegetarische bitterballen"], r"kroket|bitterbal"),
+             (r"nugget", ["vegetarische nuggets", "vega nuggets", "vegetarische kipnuggets"], r"nugget"),
+             (r"gehaktbal|balletje", ["vegetarische gehaktballetjes", "vega balletjes"], r"bal"),
+             (r"gehakt", ["vegetarisch gehakt", "vega gehakt", "plantaardig gehakt", "vegetarisch rulgehakt"], r"gehakt"),
+             (r"hamburger|burger", ["vegaburger", "vegetarische burger", "groenteburger"], r"burger"),
+             (r"rookworst", ["vegetarische rookworst", "vega rookworst"], r"rookworst|worst"),
+             (r"worst|saucijs|knakworst|hotdog", ["vegetarische worst", "vega worstjes", "vegetarische knakworst"], r"worst"),
+             (r"spek|bacon|pancetta", ["vegetarische spekjes", "vega spekreepjes"], r"spek|bacon"),
+             (r"schnitzel", ["vegetarische schnitzel", "vega schnitzel"], r"schnitzel"),
+             (r"shoarma|gyros|kebab|doner", ["vegetarische shoarma", "vega shoarma", "vegetarische gyros"], r"shoarma|gyros|kebab|doner"),
+             (r"kip.*(beleg|plak)|(beleg|plak).*kip|achterham|\bham\b|salami|filet americain|rosbief|fricandeau|leverworst|cervelaat|boterhamworst",
+              ["vegetarische vleeswaren", "vega plakken", "vegetarisch broodbeleg", "vegetarische ham"], r"plak|beleg|vleeswaren|ham|salami|filet"),
+             (r"kip", ["vegetarische kipstukjes", "vega kipstukjes", "plantaardige kipstukjes", "vegetarische kipfilet"], r"kip|stuk|reep|filet"),
+             (r"tonijn", ["vegetarische tonijn", "vega tonijn"], r"tonijn|vis"),
+             (r"vissticks?|lekkerbek|kibbeling", ["vegetarische vissticks", "vega visstick"], r"vis"),
+             (r"zalm|kabeljauw|\bvis\b|pangasius|koolvis|tilapia|visfilet", ["vegetarische visfilet", "vega vis", "vegetarische zalm"], r"vis|zalm"),
+             (r"garna|scampi", ["vegetarische garnalen", "vega garnalen"], r"garna"),
+             (r"biefstuk|steak|stoofvlees|riblap|sukade|rund|varken|vlees|lap|karbonade|reepjes|blokjes",
+              ["vegetarische stukjes", "vega reepjes", "vegetarische stoofstukjes"], r"stuk|reep|blok")]
+# Kant-en-klaar of iets heel anders: geen vervanger voor een stuk vlees
+_VEGA_NOT_RE = re.compile(r"maaltijd|salade|soep|pizza|lasagne|wrap|sandwich|spread|smeer|saus|chips|kroepoek|dip\b|hummus|pasta\b|noedel|"
+                          r"bouillon|kruiden|mix\b|ovenschotel|quiche|pastei|bami|nasi|rijst|drink|melk|yoghurt|toetje|kaas\b")
 
 
 def _vega_options(ing: dict, docs: list, limit: int = 5) -> list:
@@ -1327,27 +1339,32 @@ def _vega_options(ing: dict, docs: list, limit: int = 5) -> list:
     store = ing.get("store")
     pool = [d for d in docs if d.get("is_global") and (not store or d.get("_src") == store)] or [d for d in docs if d.get("is_global")]
     core = _alt_terms(name, None) or name
-    queries = [f"vegetarische {core}", f"vega {core}"]
-    for rx, qs in _VEGA_FOR:
-        if re.search(rx, name):
-            queries += qs
-            break
-    queries += ["vegetarische stukjes", "tofu"]
-    seen, out = set(), []
+    # In plakken (op brood): vleeswaren, geen stukjes om te bakken
+    kind = name + (" plak" if re.match(r"plak", _norm_text(ing.get("unit") or "")) else "")
+    rule = next(((qs, want) for rx, qs, want in _VEGA_FOR if re.search(rx, kind)), None)
+    queries = (rule[0] if rule else []) + [f"vegetarische {core}", f"vega {core}"]
+    want = re.compile(rule[1]) if rule else None
+    seen, good, rest = set(), [], []
     for q in queries:
         for d in _best_matches(pool, q, 12):
-            if d["product_id"] in seen or not _VEGA_RE.search(d["_norm"] + " " + _norm_text(d.get("brand") or "")):
+            text = d["_norm"] + " " + _norm_text(d.get("brand") or "")
+            if d["product_id"] in seen or not _VEGA_RE.search(text) or _NONFOOD_RE.search(d["_norm"]):
                 continue
-            if _NONFOOD_RE.search(d["_norm"]):
+            if _VEGA_NOT_RE.search(d["_norm"]) and not (want and want.search(d["_norm"])):
                 continue
             seen.add(d["product_id"])
-            out.append(d)
-        if len(out) >= limit * 2:
+            # Wat op het vlees lijkt eerst: bij rookworst een vegetarische rookworst, bij gehakt vegetarisch gehakt
+            (good if not want or want.search(d["_norm"]) else rest).append(d)
+        if len(good) >= limit:
             break
-    # Wat op het vlees lijkt eerst: bij rookworst een vega rookworst, bij zalm een vega zalm
-    keys = [w for w in core.split() if len(w) > 2] + [w for q in queries[2:4] for w in q.split() if not _VEGA_RE.search(w)]
-    out.sort(key=lambda d: 0 if any(k[:5] in d["_norm"] for k in keys) else 1)
-    return out[:limit]
+    # Niets wat erop lijkt: dan een algemene vervanger (tofu, tempeh, vegetarische stukjes)
+    if len(good) < 2:
+        for q in ("vegetarische stukjes", "tofu", "tempeh"):
+            for d in _best_matches(pool, q, 6):
+                if d["product_id"] not in seen and _VEGA_RE.search(d["_norm"]) and not _VEGA_NOT_RE.search(d["_norm"]) and not _NONFOOD_RE.search(d["_norm"]):
+                    seen.add(d["product_id"])
+                    rest.append(d)
+    return (good + rest)[:limit]
 
 
 # ---- Pakketten: vaste spullen die je elke keer nodig hebt (afwasborstel, vuilniszakken) ----
@@ -1561,9 +1578,17 @@ def _prep_basic(base: List[str], items: list) -> List[str]:
             continue
         new = re.sub(r"^(dirk|ah|jumbo|1 de beste|g'woon)\s+", "", it["name"], flags=re.I)
         steps = [re.sub(re.escape(it["was"]), new, st, flags=re.I) for st in steps]
+    vega = [it for it in items if it.get("diet") == "vega"]
+
+    def vega_step(it):
+        n = re.sub(r"^(dirk|ah|jumbo|1 de beste|g'woon)\s+", "", it["name"], flags=re.I)
+        u = _usage_short(it.get("usage"))
+        return (f"Voor de vegetariërs: maak {n}{' (in plaats van ' + it['for'] + ')' if it.get('for') else ''} apart klaar, "
+                f"in een eigen pan met schoon gerei. {u or 'Volg de verpakking.'}")[:500]
     if base:
-        tips = [f"{it['name']}: {_usage_short(it['usage'])}" for it in items if it.get("usage") and it["changed"]]
-        return steps + [t[:500] for t in tips]
+        tips = [f"{it['name']}: {_usage_short(it['usage'])}" for it in items if it.get("usage") and it["changed"] and it.get("diet") != "vega"]
+        return steps + [t[:500] for t in tips] + [vega_step(it) for it in vega]
+    items = [it for it in items if it.get("diet") != "vega"]
     if not items:
         return []
     def short(it):
@@ -1609,7 +1634,8 @@ def _prep_basic(base: List[str], items: list) -> List[str]:
         out.append(f"Was {names('fruit')} en snijd het in stukjes als dat nodig is.")
     if by.get("side") or by.get("dairy"):
         out.append(f"Zet {', '.join(x for x in (names('side'), names('dairy')) if x)} op tafel.")
-    out.append("Verdeel alles over de borden en eet smakelijk.")
+    out += [vega_step(it) for it in vega]
+    out.append("Verdeel alles over de borden en eet smakelijk." if not vega else "Verdeel alles over de borden; de vegetariërs krijgen hun eigen vervanger.")
     return [t[:500] for t in out]
 
 
@@ -1621,6 +1647,10 @@ async def _prep_ai(name: str, base: List[str], items: list) -> Optional[List[str
         t = f"- {it['name']}" + (f" ({it['qty']})" if it.get("qty") else "")
         if it.get("was") and it["changed"]:
             t += f" — in het recept stond: {it['was']}"
+        if it.get("diet") == "meat" and any(x.get("diet") == "vega" for x in items):
+            t += " (alleen voor de vleeseters)"
+        elif it.get("diet") == "vega":
+            t += f" (vegetarische vervanger{' voor ' + it['for'] if it.get('for') else ''}, alleen voor de vegetariërs)"
         if it.get("usage"):
             t += f"\n  Op de verpakking: {it['usage'][:400]}"
         lines.append(t)
@@ -1629,6 +1659,9 @@ async def _prep_ai(name: str, base: List[str], items: list) -> Optional[List[str
              "\n\nPas deze bereiding aan aan de producten hierboven (sommige zijn vervangen of toegevoegd). Houd wat klopt, verander wat moet.")
             if base else "Er is nog geen bereiding. Bedenk zelf een goede, eenvoudige bereiding met deze producten, "
                         "in je eigen woorden: neem geen tekst over van recepten die je tegenkomt.") +
+           ("\nEr eten ook vegetariërs mee. Zeg in de stappen duidelijk dat je de vegetarische vervanger apart klaarmaakt "
+            "(in een eigen pan of op een eigen bakplaat, met schoon gerei), hoe en hoe lang, en dat die alleen voor de vegetariërs is."
+            if any(it.get("diet") == "vega" for it in items) else "") +
            "\nGebruik de tekst op de verpakking. Twijfel je hoe je iets het beste klaarmaakt, zoek het dan even op internet."
            "\nSchrijf in eenvoudig Nederlands, kort, als genummerde stappen (1. 2. 3.), maximaal 10 stappen, en verder niets.")
     try:
@@ -1668,22 +1701,28 @@ async def dish_preparation(dish_id: str, camp_id: Optional[str] = None, user: di
             own = await db.own_steps.find_one({"rid": rid.replace(":", "-")}, {"_id": 0, "steps": 1})
             base = list((own or {}).get("steps") or [])
     items = []
-    for i in doc.get("ingredients") or []:
+    ings = doc.get("ingredients") or []
+    meats = [i for i in ings if _ing_diet(i) == "meat"]
+    for i in ings:
         pid = swaps.get(i.get("product_id") or "") or i.get("product_id")
         prod = by_pid.get(pid or "")
         q = f"{_fmt_qty(i.get('qty_adult'))} {i.get('unit') or ''}".strip() if i.get("qty_adult") else ""
         items.append({"name": (prod or {}).get("name") or i.get("name") or "", "pid": pid, "qty": q, "prod": prod,
                       "was": _parse_amount(i["recipe_text"])[2] if i.get("recipe_text") else None,
+                      "diet": _ing_diet(i),
+                      # De vegetarische vervanger staat met dezelfde hoeveelheid als het vlees dat hij vervangt
+                      "for": next((m["name"] for m in meats if i.get("diet") == "vega" and m.get("qty_adult") == i.get("qty_adult") and m.get("unit") == i.get("unit")), None),
                       "changed": bool(rid) and (_ing_changed(i, prod) or pid != i.get("product_id"))})
-    changed = [it for it in items if it["changed"]]
+    changed = [it for it in items if it["changed"] or it["diet"] == "vega"]
     if base and not changed:
         return {"steps": base, "kind": "recept"}
-    sig = hashlib.sha1(json.dumps([PREP_V, doc.get("name"), base, [(it["name"], it["qty"]) for it in items]], ensure_ascii=False).encode()).hexdigest()
+    sig = hashlib.sha1(json.dumps([PREP_V, doc.get("name"), base, [(it["name"], it["qty"]) + ((it["diet"],) if it["diet"] == "vega" else ()) for it in items]],
+                                  ensure_ascii=False).encode()).hexdigest()
     hit = await db.dish_preps.find_one({"sig": sig}, {"_id": 0})
     if hit and (hit.get("kind") == "ai" or not os.environ.get("ANTHROPIC_API_KEY")):
         return {"steps": hit["steps"], "kind": hit["kind"]}
     # Wat de winkel bij de producten zet over klaarmaken (alleen bij wat nieuw is, of alles als er geen recept is)
-    need = [it for it in items if it["prod"] and (it["changed"] or not base)][:12]
+    need = [it for it in items if it["prod"] and (it["changed"] or it["diet"] == "vega" or not base)][:12]
     for it, u in zip(need, await asyncio.gather(*(_product_usage(it["prod"]) for it in need))):
         it["usage"] = u
     steps = await _prep_ai(doc.get("name") or "", base, items)
@@ -1766,15 +1805,22 @@ async def save_camp_dish(camp_id: str, dish_id: str, data: DishInput, user: dict
     if doc.get("camp_id") == camp_id:
         await db.dishes.update_one({"dish_id": dish_id}, {"$set": fields})
         return dish_public(await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0}))
+    return await _camp_dish_copy(camp, doc, user, fields)
+
+
+async def _camp_dish_copy(camp: dict, doc: dict, user: dict, fields: dict) -> dict:
+    # Eigen versie van een gerecht voor één lijstje; in het lijstje komt de nieuwe versie in plaats van het oude gerecht
     new_id = f"dish_{uuid.uuid4().hex[:12]}"
-    copy = {"dish_id": new_id, "is_standard": False, "owner_id": user["user_id"], "source": doc.get("source"), "camp_id": camp_id,
-            "from_dish": dish_id, "pantry": doc.get("pantry") or [], "deleted_at": None, "created_at": now_utc(), **fields}
+    copy = {"dish_id": new_id, "is_standard": False, "owner_id": user["user_id"], "source": doc.get("source"), "camp_id": camp["camp_id"],
+            "from_dish": doc["dish_id"], "pantry": doc.get("pantry") or [], "deleted_at": None, "created_at": now_utc(),
+            **({"photo": doc["photo"], "photo_for": fields.get("name"), "photo_v": doc.get("photo_v"), "photo_ai": doc.get("photo_ai")} if doc.get("photo") else {}),
+            **({"image": doc["image"]} if doc.get("image") else {}), **fields}
     await db.dishes.insert_one(copy)
     days = camp.get("days") or []
     for d in days:
         for cat, ids in (d.get("meals") or {}).items():
-            d["meals"][cat] = [new_id if x == dish_id else x for x in ids]
-    await db.camps.update_one({"camp_id": camp_id}, {"$set": {"days": days}})
+            d["meals"][cat] = [new_id if x == doc["dish_id"] else x for x in ids]
+    await db.camps.update_one({"camp_id": camp["camp_id"]}, {"$set": {"days": days}})
     return dish_public(copy)
 
 
@@ -1789,39 +1835,55 @@ async def _editable_dish(dish_id: str, user: dict) -> dict:
     return doc
 
 
+def _vega_items(ings: list, docs: list, user: dict) -> list:
+    # Per stuk vlees of vis: het product voor de vleeseters en een paar vegetarische vervangers uit dezelfde winkel
+    favs = set(user.get("favorite_products") or [])
+    by_pid = _product_cache.get("by_pid") or {}
+    out = []
+    for k in _needs_vega({"ingredients": ings}):
+        i = ings[k]
+        meat = by_pid.get(i.get("product_id") or "")
+        out.append({"index": k, "name": i["name"], "unit": i.get("unit"), "qty_adult": i.get("qty_adult"),
+                    "meat": product_public(_clean(meat), i.get("store") or meat.get("_src") or "", user["user_id"], favs) if meat else None,
+                    "options": [product_public(_clean(d), i.get("store") or d["_src"], user["user_id"], favs) for d in _vega_options(i, docs)]})
+    return out
+
+
 @api_router.get("/dishes/{dish_id}/vega")
 async def vega_suggestions(dish_id: str, user: dict = Depends(get_current_user)):
-    # Per stuk vlees of vis in het gerecht een paar vega-vervangers uit dezelfde winkel
     doc = await db.dishes.find_one({"dish_id": dish_id, "deleted_at": None}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Gerecht niet gevonden")
     docs = await _global_products()
-    favs = set(user.get("favorite_products") or [])
-    ings = doc.get("ingredients") or []
+    return {"items": await asyncio.to_thread(_vega_items, doc.get("ingredients") or [], docs, user)}
 
-    def run():
-        return [{"index": k, "name": ings[k]["name"], "unit": ings[k].get("unit"), "qty_adult": ings[k].get("qty_adult"),
-                 "options": [product_public(_clean(d), ings[k].get("store") or d["_src"], user["user_id"], favs) for d in _vega_options(ings[k], docs)]}
-                for k in _needs_vega(doc)]
-    return {"items": await asyncio.to_thread(run)}
+
+class VegaListInput(BaseModel):
+    ingredients: List[Ingredient]
+
+
+@api_router.post("/dishes/vega-options")
+async def vega_options_for_list(body: VegaListInput, user: dict = Depends(get_current_user)):
+    # Tijdens het aanpassen van een gerecht (nog niet opgeslagen): dezelfde voorstellen voor de lijst zoals hij nu is
+    docs = await _global_products()
+    return {"items": await asyncio.to_thread(_vega_items, [i.model_dump() for i in body.ingredients[:80]], docs, user)}
 
 
 class VegaChoice(BaseModel):
     index: int
-    product_id: Optional[str] = None  # leeg: vega-eters slaan dit over
+    product_id: Optional[str] = None  # leeg: de vegetariërs slaan dit over
 
 
 class VegaInput(BaseModel):
     choices: List[VegaChoice]
+    camp_id: Optional[str] = None  # vanuit een lijstje: alleen voor dat lijstje
 
 
-@api_router.post("/dishes/{dish_id}/vega")
-async def set_vega(dish_id: str, body: VegaInput, user: dict = Depends(get_current_user)):
-    # Het vlees gaat alleen naar de vleeseters, de vervanger met dezelfde hoeveelheid naar de vega-eters
-    doc = await _editable_dish(dish_id, user)
-    ings = list(doc.get("ingredients") or [])
+async def _vega_ingredients(ings: list, choices: List[VegaChoice]) -> list:
+    # Het vlees gaat alleen naar de vleeseters, de vervanger met dezelfde hoeveelheid naar de vegetariërs
+    ings = list(ings)
     extra = []
-    for ch in body.choices:
+    for ch in choices:
         if not (0 <= ch.index < len(ings)):
             continue
         meat = {**ings[ch.index], "diet": "meat"}
@@ -1833,7 +1895,28 @@ async def set_vega(dish_id: str, body: VegaInput, user: dict = Depends(get_curre
             extra.append({**meat, "name": p["name"], "product_id": p["product_id"], "aisle": p.get("aisle") or meat.get("aisle") or "Overig",
                           "diet": "vega", "store": meat.get("store") or product_source(p), "recipe_text": None,
                           "price": resolve_price(p.get("prices") or {}, meat.get("store") or product_source(p), p.get("unavailable") or [])})
-    await db.dishes.update_one({"dish_id": dish_id}, {"$set": {"ingredients": ings + extra, "vega_done": True}})
+    return ings + extra
+
+
+@api_router.post("/dishes/{dish_id}/vega")
+async def set_vega(dish_id: str, body: VegaInput, user: dict = Depends(get_current_user)):
+    if body.camp_id:
+        # In een lijstje: nooit het app-gerecht of andermans gerecht zelf aanpassen, maar een versie voor dit lijstje
+        camp = await db.camps.find_one({"camp_id": body.camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
+        if not camp:
+            raise HTTPException(status_code=404, detail="Niet gevonden")
+        doc = await db.dishes.find_one({"dish_id": dish_id, "deleted_at": None}, {"_id": 0})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Gerecht niet gevonden")
+        ings = await _vega_ingredients(doc.get("ingredients") or [], body.choices)
+        if doc.get("camp_id") == body.camp_id:
+            await db.dishes.update_one({"dish_id": dish_id}, {"$set": {"ingredients": ings, "vega_done": True}})
+            return dish_public(await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0}))
+        return await _camp_dish_copy(camp, doc, user, {"name": doc["name"], "category": doc["category"], "ingredients": ings, "vega_done": True,
+                                                         **({"groups": doc["groups"]} if doc.get("groups") else {})})
+    doc = await _editable_dish(dish_id, user)
+    ings = await _vega_ingredients(doc.get("ingredients") or [], body.choices)
+    await db.dishes.update_one({"dish_id": dish_id}, {"$set": {"ingredients": ings, "vega_done": True}})
     return dish_public(await db.dishes.find_one({"dish_id": dish_id}, {"_id": 0}))
 
 
@@ -2752,23 +2835,33 @@ async def _dish_photo(name: str) -> Optional[str]:
 
 
 OPENAI_IMAGE_MODEL = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2")
-OPENAI_IMAGE_USD = 0.006  # ongeveer, per foto op lage kwaliteit
+OPENAI_IMAGE_USD = 0.05  # ongeveer, per foto op middelhoge kwaliteit
+AI_PHOTO_V = 2  # hoger zetten = de AI-foto's van de app-gerechten opnieuw laten maken (2: betere kwaliteit, met de ingrediënten erbij)
 
 
-async def _ai_dish_image(name: str) -> Optional[str]:
+async def _ai_dish_image(name: str, ings: Optional[list] = None) -> Optional[str]:
     # Een eigen foto laten maken door OpenAI (Claude maakt geen afbeeldingen). Eén keer per gerechtnaam; daarna hergebruikt.
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
         return None
     nk = _norm_text(name)
-    hit = await db.ai_photos.find_one({"key": nk}, {"_id": 0, "url": 1})
+    ck = f"v{AI_PHOTO_V}:{nk}"
+    hit = await db.ai_photos.find_one({"key": ck}, {"_id": 0, "url": 1})
     if hit:
         return hit["url"]
-    prompt = (f"Smakelijke, realistische foto van het gerecht \"{name}\", opgediend op een bord op een keukentafel, "
-              "natuurlijk daglicht, iets van boven gefotografeerd. Geen tekst, geen mensen, geen verpakkingen.")
-    async with httpx.AsyncClient(timeout=180) as c:
+    # Wat erin zit (zonder merknamen), zodat de foto ook echt dit gerecht laat zien
+    what = []
+    for i in ings or []:
+        n = re.sub(r"^(dirk|ah|jumbo|1 de beste|g'woon|ah biologisch|ah terra)\s+", "", i.get("name") or "", flags=re.I).strip()
+        if n and i.get("diet") != "vega" and _prep_kind(n) not in ("skip", "side") and n.lower() not in what:
+            what.append(n.lower())
+    prompt = (f"Professionele foodfoto van het Nederlandse gerecht \"{name}\"" + (f", gemaakt met: {', '.join(what[:7])}" if what else "") + ". "
+              "Zo opgediend als je het thuis echt eet, een normale portie op een mooi bord of in een kom, op een lichte houten tafel. "
+              "Zacht natuurlijk daglicht van opzij, schuin van boven (45 graden), scherp op het eten met een zacht vage achtergrond, "
+              "warme en frisse kleuren, appetijtelijk en echt (geen illustratie). Geen tekst, geen logo's, geen mensen, geen verpakkingen.")
+    async with httpx.AsyncClient(timeout=240) as c:
         r = await c.post("https://api.openai.com/v1/images/generations", headers={"Authorization": f"Bearer {key}"},
-                         json={"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "size": "1024x1024", "quality": "low", "n": 1, "output_format": "webp"})
+                         json={"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "size": "1024x1024", "quality": "medium", "n": 1, "output_format": "webp"})
     if r.status_code != 200:
         raise RuntimeError(f"OpenAI {r.status_code}: {r.text[:200]}")
     raw = base64.b64decode(r.json()["data"][0]["b64_json"])
@@ -2778,15 +2871,15 @@ async def _ai_dish_image(name: str) -> Optional[str]:
         import io
         from PIL import Image as PILImage
         im = PILImage.open(io.BytesIO(b)).convert("RGB")
-        im.thumbnail((640, 640))
+        im.thumbnail((900, 900))
         out = io.BytesIO()
-        im.save(out, "WEBP", quality=72)
+        im.save(out, "WEBP", quality=80)
         return out.getvalue()
     data = await asyncio.to_thread(shrink, raw)
-    path = f"{STORAGE_APP}/ai-fotos/{hashlib.sha1(nk.encode()).hexdigest()}.webp"
+    path = f"{STORAGE_APP}/ai-fotos/{hashlib.sha1(ck.encode()).hexdigest()}.webp"
     await _put_object(path, data, "image/webp")
     url = f"/api/files/{path}"
-    await db.ai_photos.update_one({"key": nk}, {"$set": {"key": nk, "url": url, "name": name, "at": now_utc()}}, upsert=True)
+    await db.ai_photos.update_one({"key": ck}, {"$set": {"key": ck, "url": url, "name": name, "at": now_utc()}}, upsert=True)
     await _ai_log("foto", None, OPENAI_IMAGE_USD * USD_EUR)
     logger.info("AI-foto gemaakt voor %s", name)
     return url
@@ -2797,6 +2890,19 @@ async def _set_dish_photo(dish: dict) -> None:
     name = (dish.get("name") or "").strip()
     if not name or (dish.get("source") or {}).get("image"):
         return
+    if dish.get("basic") and os.environ.get("OPENAI_API_KEY"):
+        # App-gerechten: allemaal een eigen, mooie foto in dezelfde stijl die precies dit gerecht laat zien
+        if dish.get("photo_for") == name and dish.get("ai_photo_v") == AI_PHOTO_V and dish.get("photo"):
+            return
+        try:
+            url = await _ai_dish_image(name, dish.get("ingredients"))
+        except Exception as e:
+            logger.warning("AI-foto %s: %r", name, e)
+            url = None
+        if url:
+            await db.dishes.update_one({"dish_id": dish["dish_id"]}, {"$set": {"photo": url, "photo_for": name, "photo_v": PHOTO_V, "photo_ai": True,
+                                                                            "ai_photo_v": AI_PHOTO_V, "photo_tried": now_utc()}})
+            return
     if dish.get("photo_for") == name and dish.get("photo_v") == PHOTO_V:
         # Al een foto: klaar. Geen foto gevonden: na een week opnieuw proberen (bijv. omdat winkelfoto's toen uit stonden)
         tried = dish.get("photo_tried")
@@ -2810,7 +2916,7 @@ async def _set_dish_photo(dish: dict) -> None:
     ai = False
     if not url:
         try:
-            url = await _ai_dish_image(name)
+            url = await _ai_dish_image(name, dish.get("ingredients"))
             ai = bool(url)
         except Exception as e:
             logger.warning("AI-foto %s: %r", name, e)
@@ -8406,7 +8512,7 @@ def _best_matches(pool: list, name: str, limit: int = 1, with_pen: bool = False)
         rest = " ".join(w for w in core if not _VEGA_WORD_RE.match(w))
         if rest:
             levels += [([v] + rest.split(), 0.2) for v in ("vegetarische", "plantaardige", "vegan", "vega")]
-        for pat, alts in _VEGA_FOR:
+        for pat, alts, _want in _VEGA_FOR:
             if rest and re.search(pat, rest):
                 levels += [(a.split(), 1.5 + k * 0.3) for k, a in enumerate(alts)]
                 break
@@ -10299,6 +10405,175 @@ async def shopping_pdf(data: ShoppingPdf, user: dict = Depends(get_current_user)
     name = re.sub(r"[^A-Za-z0-9 _-]", "", data.subtitle or "lijst").strip().replace(" ", "-")[:40] or "lijst"
     return Response(pdf, media_type="application/pdf",
                     headers={"Content-Disposition": f'inline; filename="Boodschappenlijst-{name}.pdf"', "Cache-Control": "no-store"})
+
+
+# --- PDF van een gerecht: wat je nodig hebt voor het aantal personen, en de bereiding ---
+class DishPdfGroup(BaseModel):
+    label: str = ""
+    items: List[PdfItem] = []
+
+
+class DishPdf(BaseModel):
+    title: str
+    subtitle: str = ""
+    chips: List[str] = []
+    groups: List[DishPdfGroup] = []
+    steps: List[str] = []
+    note: str = ""
+
+
+def _dish_pdf(data: DishPdf) -> bytes:
+    import io
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.colors import HexColor, white
+    from reportlab.lib.utils import simpleSplit
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    G, AMBER, SOFT, CARD, INK, MUTED, LINE = (HexColor("#2E5E38"), HexColor("#D99C3B"), HexColor("#E6F0E8"), HexColor("#F7F6F3"),
+                                              HexColor("#1C1B1A"), HexColor("#8A8780"), HexColor("#E7E4DE"))
+    W, H = A4
+    M = 36
+    buf = io.BytesIO()
+    c = rl_canvas.Canvas(buf, pagesize=A4)
+    c.setTitle(data.title[:120])
+    c.setAuthor("Slimboodschappenlijstje")
+    page = [1]
+
+    def brand(y_top: float, small: bool = False) -> None:
+        s_ = 18 if small else 26
+        c.setFillColor(G)
+        c.roundRect(M, y_top - s_, s_, s_, s_ * 0.28, stroke=0, fill=1)
+        c.setStrokeColor(white)
+        c.setLineWidth(2 if small else 2.6)
+        c.setLineCap(1)
+        c.line(M + s_ * 0.26, y_top - s_ * 0.52, M + s_ * 0.44, y_top - s_ * 0.7)
+        c.line(M + s_ * 0.44, y_top - s_ * 0.7, M + s_ * 0.76, y_top - s_ * 0.32)
+        c.setFillColor(G)
+        c.setFont("Helvetica-Bold", 12 if small else 17)
+        c.drawString(M + s_ + 8, y_top - s_ * 0.68, "Slimboodschappenlijstje")
+
+    def footer():
+        c.setStrokeColor(LINE)
+        c.setLineWidth(0.6)
+        c.line(M, 36, W - M, 36)
+        c.setFont("Helvetica", 7.5)
+        c.setFillColor(MUTED)
+        c.drawString(M, 24, "slimboodschappenlijstje.nl")
+        c.drawRightString(W - M, 24, f"{page[0]}")
+
+    def need(y: float, h: float) -> float:
+        if y - h >= 54:
+            return y
+        footer()
+        c.showPage()
+        page[0] += 1
+        brand(H - M, small=True)
+        return H - M - 34
+
+    brand(H - M)
+    c.setFont("Helvetica", 9)
+    c.setFillColor(MUTED)
+    c.drawRightString(W - M, H - M - 17, datetime.now(timezone.utc).astimezone().strftime("%d-%m-%Y"))
+    y = H - M - 62
+    c.setFillColor(INK)
+    for k, line in enumerate(simpleSplit(data.title, "Helvetica-Bold", 22, W - 2 * M)[:2]):
+        c.setFont("Helvetica-Bold", 22)
+        c.drawString(M, y, line)
+        y -= 26
+    if data.subtitle:
+        c.setFont("Helvetica", 11.5)
+        c.setFillColor(MUTED)
+        c.drawString(M, y + 4, data.subtitle[:110])
+        y -= 16
+    c.setFillColor(AMBER)
+    c.rect(M, y, W - 2 * M, 2, stroke=0, fill=1)
+    y -= 20
+    cx = M
+    c.setFont("Helvetica-Bold", 8.5)
+    for t in data.chips[:5]:
+        w = stringWidth(t, "Helvetica-Bold", 8.5) + 16
+        c.setFillColor(SOFT)
+        c.roundRect(cx, y - 5, w, 16, 8, stroke=0, fill=1)
+        c.setFillColor(G)
+        c.drawString(cx + 8, y, t)
+        cx += w + 6
+    y -= 30
+
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(M, y, "Wat heb je nodig")
+    y -= 20
+    for g in data.groups:
+        if g.label:
+            y = need(y, 40)
+            c.setFillColor(CARD)
+            c.roundRect(M, y - 7, W - 2 * M, 22, 7, stroke=0, fill=1)
+            c.setFillColor(G)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(M + 10, y, g.label.upper())
+            y -= 24
+        for it in g.items:
+            rh = 27 if it.sub else 19
+            y = need(y, rh)
+            c.setFillColor(AMBER)
+            c.circle(M + 10, y + 3, 2.5, stroke=0, fill=1)
+            c.setFillColor(INK)
+            c.setFont("Helvetica", 10.5)
+            nm = simpleSplit(it.name, "Helvetica", 10.5, W - 2 * M - 150)
+            c.drawString(M + 22, y, nm[0] + ("…" if len(nm) > 1 else "") if nm else "")
+            c.setFont("Helvetica-Bold", 10)
+            c.drawRightString(W - M - 4, y, it.qty)
+            if it.sub:
+                c.setFont("Helvetica", 8)
+                c.setFillColor(MUTED)
+                c.drawString(M + 22, y - 11, it.sub[:110])
+            c.setStrokeColor(LINE)
+            c.setLineWidth(0.5)
+            c.line(M + 22, y - rh + 11, W - M, y - rh + 11)
+            y -= rh
+        y -= 8
+    if data.note:
+        y = need(y, 20)
+        c.setFont("Helvetica-Oblique", 9)
+        c.setFillColor(MUTED)
+        for line in simpleSplit(data.note, "Helvetica-Oblique", 9, W - 2 * M):
+            c.drawString(M, y, line)
+            y -= 12
+        y -= 6
+
+    if data.steps:
+        y = need(y, 50)
+        y -= 6
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(M, y, "Bereiding")
+        y -= 22
+        for k, st in enumerate(data.steps[:20]):
+            lines = simpleSplit(st, "Helvetica", 10.5, W - 2 * M - 30)
+            y = need(y, 14 * len(lines) + 8)
+            c.setFillColor(G)
+            c.circle(M + 9, y + 3.5, 8, stroke=0, fill=1)
+            c.setFillColor(white)
+            c.setFont("Helvetica-Bold", 9)
+            c.drawCentredString(M + 9, y + 0.5, str(k + 1))
+            c.setFillColor(INK)
+            c.setFont("Helvetica", 10.5)
+            for line in lines:
+                c.drawString(M + 26, y, line)
+                y -= 14
+            y -= 6
+    footer()
+    c.save()
+    return buf.getvalue()
+
+
+@api_router.post("/pdf/dish")
+async def dish_pdf(data: DishPdf, user: dict = Depends(get_current_user)):
+    pdf = await asyncio.to_thread(_dish_pdf, data)
+    name = re.sub(r"[^A-Za-z0-9 _-]", "", data.title or "gerecht").strip().replace(" ", "-")[:40] or "gerecht"
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="Gerecht-{name}.pdf"', "Cache-Control": "no-store"})
 
 
 async def _refresh_inspiration() -> None:
@@ -12990,7 +13265,10 @@ async def share_dish(dish_id: str, user: dict = Depends(get_current_user)):
     if not doc:
         raise HTTPException(status_code=404, detail="Gerecht niet gevonden")
     if not doc.get("is_standard") and doc.get("owner_id") != user["user_id"]:
-        raise HTTPException(status_code=403, detail="Je kunt alleen je eigen gerechten delen")
+        # Ook een gerecht uit een lijstje waar je samen in plant
+        meal_keys = [{f"days.meals.{cat}": dish_id} for cat in MEAL_CATEGORIES]
+        if not await db.camps.find_one({"$and": [camp_access_filter(user["user_id"]), {"$or": meal_keys}]}, {"_id": 0, "camp_id": 1}):
+            raise HTTPException(status_code=403, detail="Je kunt alleen je eigen gerechten delen")
     token = doc.get("share_token")
     if not token:
         token = uuid.uuid4().hex[:16]
@@ -13929,7 +14207,7 @@ class AiMenuInput(BaseModel):
 _MENU_WORDS = ["pasta", "rijst", "curry", "soep", "ovenschotel", "wraps", "stamppot", "kip", "vis", "pizza", "salade", "noedels",
                "gehakt", "taco", "burger", "lasagne", "risotto", "quiche", "couscous", "aardappel"]
 _MENU_GENERIC = [
-    "5 dagen avondeten voor 2 personen, vega, max 40 euro",
+    "5 dagen avondeten voor 2 personen, vegetarisch, max 40 euro",
     "Een week ontbijt, lunch en avondeten voor 2 volwassenen en 2 kinderen, geen vis",
     "3 dagen kamp met 20 kinderen en 4 leiding, goedkoop",
     "Een weekend voor 4 personen, zaterdag iets op de barbecue",
@@ -13996,7 +14274,7 @@ async def menu_examples(user: dict = Depends(get_current_user)):
 async def ai_menu(data: AiMenuInput, user: dict = Depends(get_current_user)):
     text = data.text.strip()[:600]
     if len(text) < 4:
-        raise HTTPException(status_code=400, detail="Vertel in een zin wat je wilt, bijvoorbeeld: 5 dagen avondeten voor 2 personen, vega, max 40 euro.")
+        raise HTTPException(status_code=400, detail="Vertel in een zin wat je wilt, bijvoorbeeld: 5 dagen avondeten voor 2 personen, vegetarisch, max 40 euro.")
     await _ai_ready(user)
     today = now_utc().date()
     schema = _obj({

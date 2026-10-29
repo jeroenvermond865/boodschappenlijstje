@@ -162,7 +162,7 @@ export default function NewCampScreen() {
           </Pressable>
           {hasVega ? (
             <>
-              <Text style={styles.rowSub}>Hoeveel daarvan eten vegetarisch? Zij krijgen de vega-optie van een gerecht.</Text>
+              <Text style={styles.rowSub}>Hoeveel daarvan eten vegetarisch? Zij krijgen de vegetarische optie van een gerecht.</Text>
               <View style={styles.cols}>
                 <View style={styles.col}>
                   <Text style={styles.colSub}>van de {adults} volwassenen</Text>

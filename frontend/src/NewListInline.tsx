@@ -60,7 +60,7 @@ export function NewListInline({ onCreated }: { onCreated: (id: string) => void }
         <Text style={styles.stepLabel}>Personen</Text>
         <Stepper value={people} onChange={setPeople} min={1} max={500} />
       </View>
-      <Text style={styles.hint}>Datum, kinderen en vega kun je later in {T.de} {T.one} aanpassen.</Text>
+      <Text style={styles.hint}>Datum, kinderen en vegetariërs kun je later in {T.de} {T.one} aanpassen.</Text>
       <View style={{ flexDirection: "row", gap: 10 }}>
         <Button label="Annuleren" variant="secondary" onPress={() => setOpen(false)} style={{ flex: 1 }} />
         <Button label="Maken" icon="check" loading={create.isPending} onPress={() => create.mutate()} style={{ flex: 1 }} testID="new-list-inline-save" />
