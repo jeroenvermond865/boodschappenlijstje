@@ -220,7 +220,8 @@ export default function PremiumScreen() {
                   <Pressable
                     key={f.key}
                     style={({ pressed }) => [styles.feature, need !== "standaard" && { backgroundColor: c.bg, borderColor: c.border }, pressed && { opacity: 0.8 }]}
-                    onPress={() => (have && f.to ? router.navigate(f.to as any) : router.push({ pathname: "/feature/[key]", params: { key: f.key } }))}
+                    // Splitsen, looproute en weekmenu gaan via de functiepagina naar je eerstvolgende lijstje
+                    onPress={() => (have && f.to && !IN_LIST.includes(f.key) ? router.navigate(f.to as any) : router.push({ pathname: "/feature/[key]", params: { key: f.key } }))}
                     testID={`premium-feature-${f.key}`}
                   >
                     <Icon name={have ? f.icon : "lock-outline"} size={22} color={need === "standaard" ? colors.brandPrimary : c.icon} />
@@ -320,6 +321,8 @@ export default function PremiumScreen() {
 
 // Kort overzicht: wat elk abonnement oplevert per maand. Tik bovenaan: voor jou, een gemiddelde of een actieve gebruiker.
 // Tik op de rij "Bespaart" voor waar het vandaan komt (aanbiedingen, goedkoopste winkel, splitsen, voorraadkast, acties).
+const IN_LIST: string[] = ["slim_splitsen", "looproute", "weekmenu"];
+
 type PlanSavings = {
   you: Record<PlanKey, number> | null; you_lists: number;
   average: Record<PlanKey, number> | null; active: Record<PlanKey, number> | null; users: number; active_users: number;

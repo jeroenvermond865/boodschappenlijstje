@@ -51,7 +51,7 @@ export default function ShoppingScreen() {
   const insets = useSafeAreaInsets();
   const toast = useToast();
   const qc = useQueryClient();
-  const { id, day } = useLocalSearchParams<{ id: string; day?: string }>();
+  const { id, day, route: routeParam } = useLocalSearchParams<{ id: string; day?: string; route?: string }>();
   const router = useRouter();
 
   // Vanaf "Op het menu": meteen alleen het lijstje van die dag, op looproute
@@ -198,6 +198,11 @@ export default function ShoppingScreen() {
   const routeOk = data?.features ? data.features.includes("looproute") : ownRoute;
   const route = useRoute();
   const onRoute = routeOk && route.on;
+  // Vanaf Abonnementen (?route=1): de looproute meteen aanzetten
+  useEffect(() => {
+    if (routeParam === "1" && routeOk && !route.on) route.setOn(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeParam, routeOk]);
   const [routeEdit, setRouteEdit] = useState<string | null>(null);
   // Algemeen block first, then each store's totals
   const totalBlocks: { store: string; label: string; grouped: Grouped[]; total?: number }[] = useMemo(() => {

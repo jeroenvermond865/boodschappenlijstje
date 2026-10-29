@@ -67,7 +67,7 @@ export default function CampDetailScreen() {
   const router = useRouter();
   const toast = useToast();
   const qc = useQueryClient();
-  const { id, day: dayParam } = useLocalSearchParams<{ id: string; day?: string }>();
+  const { id, day: dayParam, menu: menuParam } = useLocalSearchParams<{ id: string; day?: string; menu?: string }>();
   const { user, has } = useAuth();
 
   const [selected, setSelected] = useState(dayParam && /^\d+$/.test(dayParam) ? Number(dayParam) : 0); // ?day=2 vanaf Home: meteen die dag
@@ -126,6 +126,14 @@ export default function CampDetailScreen() {
   // In andermans lijstje: het weekmenu mag als de eigenaar dat heeft
   const listFeatures = (camp as any)?.features as string[] | undefined;
   const premium = listFeatures ? listFeatures.includes("weekmenu") : ownMenu;
+  // Vanaf Abonnementen (?menu=1): meteen "Menu automatisch invullen" openen
+  const menuAsked = useRef(false);
+  useEffect(() => {
+    if (menuParam === "1" && premium && !menuAsked.current) {
+      menuAsked.current = true;
+      setMenuOpen(true);
+    }
+  }, [menuParam, premium]);
 
   const { data: dishesData } = useQuery({
     queryKey: ["dishes"],

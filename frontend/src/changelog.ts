@@ -5,6 +5,17 @@ export type Release = { id: string; version?: string; date: string; title: strin
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-29-v114",
+    version: "1.1.4",
+    date: "29 oktober 2026",
+    title: "Slim splitsen, looproute en weekmenu openen in je eerstvolgende lijstje",
+    changes: [
+      { kind: "opgelost", text: "Bij Abonnementen gaan Slim splitsen, Looproute en Automatisch weekmenu nu naar je eerstvolgende lijstje. De looproute staat dan meteen aan en het weekmenu gaat meteen open." },
+      { kind: "beter", text: "Heb je nog geen lijstje? Dan zie je een bewegend voorbeeld en de vraag om eerst een lijstje te maken, met een knop om dat meteen te doen." },
+      { kind: "beter", text: "Nieuwe bewegende voorbeelden: de looproute zet je lijst op volgorde van de winkel, en de prijsgeschiedenis laat de prijs per week zien." },
+    ],
+  },
+  {
     id: "2026-10-29-v113",
     version: "1.1.3",
     date: "29 oktober 2026",
