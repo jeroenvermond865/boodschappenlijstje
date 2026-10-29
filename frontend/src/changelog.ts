@@ -22,6 +22,7 @@ export const CHANGELOG: Release[] = [
       { kind: "opgelost", text: "Lijstje aanpassen: je kunt nu ook het aantal volwassenen en kinderen aanpassen, niet alleen de vegetariërs." },
       { kind: "beter", text: "De app-gerechten krijgen een nieuwe, mooiere foto die precies dat gerecht laat zien." },
       { kind: "beter", text: "Overal in de app heet het nu vegetarisch en vegetariërs in plaats van vega en vega-eters." },
+      { kind: "opgelost", text: "Spelling: overal staat nu \"nieuw lijstje\" en \"het lijstje\" in plaats van \"nieuwe lijstje\" en \"de lijstje\"." },
     ],
   },
   {

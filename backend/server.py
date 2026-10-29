@@ -12730,7 +12730,7 @@ async def serve_file(path: str, authorization: Optional[str] = Header(None)):
     return Response(content=content, media_type=ct, headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
 
 
-_HET_WORDS = re.compile(r"(kamp|weekend|evenement|uitje|feest|project|programma|festival|reisje|toernooi|kampement|weekeinde)$")
+_HET_WORDS = re.compile(r"(kamp|weekend|evenement|feest|project|programma|festival|toernooi|kampement|weekeinde|je)$")  # ook verkleinwoorden: het lijstje
 
 
 async def _terms() -> dict:

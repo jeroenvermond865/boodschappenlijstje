@@ -1295,3 +1295,11 @@ def test_gerecht_uit_gedeeld_lijstje_mag_je_delen():
             return ok, e.status_code
     ok, err = run(t())
     assert ok["token"] and err == 403
+
+
+def test_lijstje_is_een_het_woord():
+    async def t():
+        await S.db.settings.insert_one({"key": "app", "tab_camps": "Lijstjes"})
+        return await S._terms()
+    assert run(t())["de"] == "het"
+    assert S._HET_WORDS.search("activiteit") is None and S._HET_WORDS.search("kamp")

@@ -51,7 +51,8 @@ export function singularOf(many: string): string {
   return m;
 }
 
-const HET_WORDS = /(kamp|weekend|evenement|uitje|feest|project|programma|festival|reisje|toernooi|kampement|weekeinde)$/;
+// Verkleinwoorden (lijstje, uitje) zijn altijd "het": "het lijstje / nieuw lijstje"
+const HET_WORDS = /(kamp|weekend|evenement|feest|project|programma|festival|toernooi|kampement|weekeinde|je)$/;
 
 export function useTerms() {
   const s = useAppSettings();
