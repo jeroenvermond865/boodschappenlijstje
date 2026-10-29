@@ -3371,6 +3371,7 @@ async def pantry_restock(camp_id: str = "", user: dict = Depends(get_current_use
 
 class RestockInput(BaseModel):
     ids: List[str]
+    product_id: Optional[str] = None  # bij één product: liever dit (een alternatief) kopen
 
 
 @api_router.post("/camps/{camp_id}/restock")
@@ -3388,10 +3389,10 @@ async def camp_restock(camp_id: str, data: RestockInput, user: dict = Depends(ge
         buy = _pantry_restock_amount(p, rate)
         if p["item_id"] in have or buy <= 0:
             continue
-        prod = by_pid.get(p.get("product_id") or "")
+        prod = by_pid.get((data.product_id if len(data.ids) == 1 and data.product_id else None) or p.get("product_id") or "")
         # Productnaam als naam, zodat de voorraadkast dit niet meteen weer van de lijst afhaalt
         added.append({"name": prod["name"] if prod else f"{p['name']} (voorraad)", "unit": "stuks" if p.get("unit") == "%" else p.get("unit") or "stuks",
-                      "qty": buy, "aisle": (prod or {}).get("aisle") or "Overig", "product_id": p.get("product_id"),
+                      "qty": buy, "aisle": (prod or {}).get("aisle") or "Overig", "product_id": prod["product_id"] if prod else p.get("product_id"),
                       "store": product_source(prod) if prod else None, "meal": None, "auto": False, "pantry_id": p["item_id"]})
     if added:
         await db.camps.update_one({"camp_id": camp_id}, {"$push": {"general": {"$each": added}}})

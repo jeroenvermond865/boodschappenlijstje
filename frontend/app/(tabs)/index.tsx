@@ -133,9 +133,10 @@ export default function HomeScreen() {
         </Text>
       </View>
 
-      {/* Vandaag: voor wie (bijna) elke dag even boodschappen doet */}
-      <View style={styles.pad}>
+      {/* Snel lijstje (klein knopje) en wat bijna op is: bovenaan, maar niet groot */}
+      <View style={[styles.pad, { gap: 8 }]}>
         <TodayCard />
+        {data?.camp ? <RestockCard campId={data.camp.id} compact /> : null}
       </View>
 
       {/* Je kamp */}
@@ -333,16 +334,16 @@ export default function HomeScreen() {
       ) : null}
 
       {data?.camp?.soon?.length ? (
-        // Wat eet je vandaag en morgen: tik voor die dag (gerechten, bereiding en het lijstje van die dag)
-        <View style={styles.pad}>
-          <Text style={styles.soonTitle}>Op het menu</Text>
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            {data.camp.soon.slice(0, 2).map((d, k) => (
+        // De komende dagen met maaltijden (tot een week): veeg opzij voor meer, tik voor die dag
+        <View style={{ gap: 0 }}>
+          <Text style={[styles.soonTitle, styles.pad]}>Op het menu</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingHorizontal: 16 }}>
+            {data.camp.soon.map((d, k) => (
               <Pressable
                 key={d.date}
                 testID={`home-soon-${d.date}`}
                 onPress={() => setDayOpen(k)}
-                style={[styles.soonCard, { flex: 1 }]}
+                style={[styles.soonCard, { width: data.camp!.soon!.length > 1 ? 230 : 320 }]}
               >
                 <View style={styles.soonHead}>
                   <Text style={styles.soonDay}>{dayWord(d.date)}</Text>
@@ -365,7 +366,7 @@ export default function HomeScreen() {
                 ))}
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
         </View>
       ) : null}
       {data?.camp?.soon?.length ? (
@@ -392,11 +393,6 @@ export default function HomeScreen() {
               </Pressable>
             ))}
           </ScrollView>
-        </View>
-      ) : null}
-      {data?.camp ? (
-        <View style={styles.pad}>
-          <RestockCard campId={data.camp.id} compact />
         </View>
       ) : null}
       <AdSlot place="home" />

@@ -1,3 +1,4 @@
+import { Children, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
@@ -87,6 +88,9 @@ export default function AccountScreen() {
         <Text style={styles.subtitle}>{s.sub_account}</Text>
       </View>
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: bottomChrome + 24, gap: 16 }}>
+        {/* Tik op je naam voor profiel & wachtwoord; Premium/Ultra staat er klein onder */}
+        <View style={{ gap: 8 }}>
+        <Pressable testID="profile-link" onPress={() => router.push("/account/profile")} style={({ pressed }) => pressed && { opacity: 0.8 }}>
         <Card style={styles.profile}>
           <View>
           <View style={styles.avatar}>
@@ -115,12 +119,14 @@ export default function AccountScreen() {
               {user?.premium ? <Text style={styles.rolePillText}> · {user.plan === "ultra" ? "Ultra" : "Premium"}</Text> : null}
             </View>
           </View>
+          <Icon name="chevron-right" size={22} color={colors.muted} />
         </Card>
+        </Pressable>
 
         {user?.premium ? (
           <Pressable style={styles.premiumCard} testID="premium-card" onPress={() => router.push("/premium")}>
             <View style={styles.premiumIcon}>
-              <Icon name="star" size={26} color={colors.onBrandSecondary} />
+              <Icon name="star" size={18} color={colors.onBrandSecondary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.premiumTitle}>{user.plan === "ultra" ? "Ultra" : "Premium"}</Text>
@@ -141,7 +147,7 @@ export default function AccountScreen() {
         ) : (
           <Pressable style={[styles.premiumCard, { borderStyle: "dashed" }]} testID="premium-info-card" onPress={() => router.push("/premium")}>
             <View style={styles.premiumIcon}>
-              <Icon name="star-outline" size={26} color={colors.onBrandSecondary} />
+              <Icon name="star-outline" size={18} color={colors.onBrandSecondary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.premiumTitle}>{user.plan === "ultra" ? "Ultra" : "Premium"}</Text>
@@ -150,6 +156,7 @@ export default function AccountScreen() {
             <Icon name="chevron-right" size={22} color={GOLD.text} />
           </Pressable>
         )}
+        </View>
 
         <AdminRow
           testID="invite-link"
@@ -157,152 +164,107 @@ export default function AccountScreen() {
           label="Deel de app en verdien Premium"
           onPress={() => router.push("/invite")}
         />
-        <AdminRow
-          testID="profile-link"
-          icon="account-edit-outline"
-          label="Profiel & wachtwoord"
-          onPress={() => router.push("/account/profile")}
-        />
-        <AdminRow
-          testID="history-link"
-          icon="history"
-          label="Mijn geschiedenis"
-          onPress={() => router.push("/account/history")}
-        />
-        <AdminRow
-          testID="trash-link"
-          icon="delete-restore"
-          label="Recent verwijderd"
-          onPress={() => router.push("/admin/trash")}
-        />
-        <AdminRow
-          testID="store-request-link"
-          icon="storefront-plus-outline"
-          label="Supermarkt aanvragen"
-          onPress={() => router.push("/store-request")}
-        />
-        <AdminRow
-          testID="feedback-link"
-          icon="message-draw"
-          label="Feedback & verbeteringen"
-          badge={myReplies?.count}
-          onPress={() => router.push("/feedback")}
-        />
-        <AdminRow
-          testID="help-link"
-          icon="help-circle-outline"
-          label="Zo werkt de app"
-          onPress={() => router.push("/help")}
-        />
-        <AdminRow
-          testID="legal-link"
-          icon="file-document-outline"
-          label="Voorwaarden, privacy & cookies"
-          onPress={() => router.push({ pathname: "/legal/[doc]", params: { doc: "voorwaarden" } })}
-        />
+
+        {/* In groepjes, anders wordt het een lange rij regels onder elkaar */}
+        <RowGroup testID="group-account" icon="account-cog-outline" title="Mijn account">
+          <AdminRow testID="history-link" icon="history" label="Mijn geschiedenis" onPress={() => router.push("/account/history")} />
+          <AdminRow testID="trash-link" icon="delete-restore" label="Recent verwijderd" onPress={() => router.push("/admin/trash")} />
+        </RowGroup>
+        <RowGroup testID="group-help" icon="lifebuoy" title="Hulp & contact" badge={myReplies?.count}>
+          <AdminRow testID="help-link" icon="help-circle-outline" label="Zo werkt de app" onPress={() => router.push("/help")} />
+          <AdminRow testID="feedback-link" icon="message-draw" label="Feedback & verbeteringen" badge={myReplies?.count} onPress={() => router.push("/feedback")} />
+          <AdminRow testID="store-request-link" icon="storefront-plus-outline" label="Supermarkt aanvragen" onPress={() => router.push("/store-request")} />
+          <AdminRow
+            testID="legal-link"
+            icon="file-document-outline"
+            label="Voorwaarden, privacy & cookies"
+            onPress={() => router.push({ pathname: "/legal/[doc]", params: { doc: "voorwaarden" } })}
+          />
+        </RowGroup>
 
         {isAdminArea ? (
           <View style={{ gap: 10 }}>
             <Text style={styles.sectionLabel}>Beheer</Text>
-            {canReview ? (
-              <AdminRow
-                testID="admin-submissions-link"
-                icon="clipboard-check-outline"
-                label="Inzendingen beoordelen"
-                badge={pending}
-                onPress={() => router.push("/admin/submissions")}
-              />
-            ) : null}
-            {canProducts ? (
-              <AdminRow
-                testID="admin-dirk-link"
-                icon="store-plus-outline"
-                label="Supermarkt importeren & prijzen"
-                onPress={() => router.push("/admin/dirk")}
-              />
-            ) : null}
-            {canUsers ? (
-              <AdminRow
-                testID="admin-users-link"
-                icon="account-group-outline"
-                label="Gebruikers & rollen"
-                onPress={() => router.push("/admin/users")}
-              />
-            ) : null}
-            {canUsers ? (
-              <AdminRow
-                testID="admin-dashboard-link"
-                icon="chart-box-outline"
-                label="Dashboard (live gebruik en AI-kosten)"
-                onPress={() => router.push("/admin/dashboard")}
-              />
-            ) : null}
-            {canSettings ? (
-              <AdminRow
-                testID="admin-plans-link"
-                icon="star-cog-outline"
-                label="Abonnementen en AI-model"
-                onPress={() => router.push("/admin/plans")}
-              />
-            ) : null}
-            {canUsers ? (
-              <AdminRow
-                testID="admin-premium-link"
-                icon="star-check-outline"
-                label="Premium-aanvragen"
-                badge={premiumReqs}
-                onPress={() => router.push("/admin/premium-requests")}
-              />
-            ) : null}
-            {canRoles ? (
-              <AdminRow
-                testID="admin-roles-link"
-                icon="shield-edit-outline"
-                label="Rollen beheren"
-                onPress={() => router.push("/admin/roles")}
-              />
-            ) : null}
-            {canSettings ? (
-              <AdminRow
-                testID="admin-settings-link"
-                icon="cog-outline"
-                label="App aanpassen"
-                onPress={() => router.push("/admin/settings")}
-              />
-            ) : null}
-            {canProducts ? (
-              <AdminRow
-                testID="admin-barcodes-link"
-                icon="barcode"
-                label="Barcode-voorstellen"
-                badge={pendingBarcodes}
-                onPress={() => router.push("/admin/barcodes")}
-              />
-            ) : null}
-            {canSettings ? (
-              <AdminRow
-                testID="admin-store-requests-link"
-                icon="storefront-outline"
-                label="Supermarkt-aanvragen"
-                badge={pendingStores}
-                onPress={() => router.push("/admin/store-requests")}
-              />
-            ) : null}
-            {canSettings ? (
-              <AdminRow
-                testID="admin-feedback-link"
-                icon="message-text-outline"
-                label="Feedback van gebruikers"
-                badge={pendingFeedback}
-                onPress={() => router.push("/admin/feedback")}
-              />
-            ) : null}
+            <RowGroup
+              testID="group-admin-content"
+              icon="clipboard-check-outline"
+              title="Inzendingen & producten"
+              badge={(canReview ? pending ?? 0 : 0) + (canProducts ? pendingBarcodes ?? 0 : 0) + (canSettings ? (pendingStores ?? 0) + (pendingFeedback ?? 0) : 0)}
+            >
+              {canReview ? (
+                <AdminRow testID="admin-submissions-link" icon="clipboard-check-outline" label="Inzendingen beoordelen" badge={pending} onPress={() => router.push("/admin/submissions")} />
+              ) : null}
+              {canProducts ? (
+                <AdminRow testID="admin-barcodes-link" icon="barcode" label="Barcode-voorstellen" badge={pendingBarcodes} onPress={() => router.push("/admin/barcodes")} />
+              ) : null}
+              {canSettings ? (
+                <AdminRow testID="admin-store-requests-link" icon="storefront-outline" label="Supermarkt-aanvragen" badge={pendingStores} onPress={() => router.push("/admin/store-requests")} />
+              ) : null}
+              {canSettings ? (
+                <AdminRow testID="admin-feedback-link" icon="message-text-outline" label="Feedback van gebruikers" badge={pendingFeedback} onPress={() => router.push("/admin/feedback")} />
+              ) : null}
+              {canProducts ? (
+                <AdminRow testID="admin-dirk-link" icon="store-plus-outline" label="Supermarkt importeren & prijzen" onPress={() => router.push("/admin/dirk")} />
+              ) : null}
+            </RowGroup>
+            <RowGroup testID="group-admin-users" icon="account-group-outline" title="Gebruikers" badge={canUsers ? premiumReqs : 0}>
+              {canUsers ? (
+                <AdminRow testID="admin-users-link" icon="account-group-outline" label="Gebruikers & rollen" onPress={() => router.push("/admin/users")} />
+              ) : null}
+              {canUsers ? (
+                <AdminRow testID="admin-premium-link" icon="star-check-outline" label="Premium-aanvragen" badge={premiumReqs} onPress={() => router.push("/admin/premium-requests")} />
+              ) : null}
+              {canRoles ? (
+                <AdminRow testID="admin-roles-link" icon="shield-edit-outline" label="Rollen beheren" onPress={() => router.push("/admin/roles")} />
+              ) : null}
+            </RowGroup>
+            <RowGroup testID="group-admin-app" icon="cog-outline" title="App & kosten">
+              {canUsers ? (
+                <AdminRow testID="admin-dashboard-link" icon="chart-box-outline" label="Dashboard (live gebruik en AI-kosten)" onPress={() => router.push("/admin/dashboard")} />
+              ) : null}
+              {canSettings ? (
+                <AdminRow testID="admin-plans-link" icon="star-cog-outline" label="Abonnementen en AI-model" onPress={() => router.push("/admin/plans")} />
+              ) : null}
+              {canSettings ? (
+                <AdminRow testID="admin-settings-link" icon="cog-outline" label="App aanpassen" onPress={() => router.push("/admin/settings")} />
+              ) : null}
+            </RowGroup>
           </View>
         ) : null}
 
         <Button label="Uitloggen" variant="ghost" icon="logout" onPress={logout} testID="logout-button" />
         <Text style={styles.version}>Slim Boodschappenlijstje · v1.0</Text>
       </ScrollView>
+    </View>
+  );
+}
+
+// Een kopje dat openklapt; zonder regels erin (geen rechten) laten we het helemaal weg
+function RowGroup({ icon, title, badge, children, testID }: { icon: any; title: string; badge?: number; children: ReactNode; testID?: string }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const [open, setOpen] = useState(false);
+  const rows = Children.toArray(children);
+  if (!rows.length) return null;
+  return (
+    <View style={{ gap: 8 }}>
+      <Pressable testID={testID} onPress={() => setOpen((o) => !o)} style={({ pressed }) => pressed && { opacity: 0.7 }}>
+        <Card style={styles.adminRow}>
+          <View style={styles.adminIcon}>
+            <Icon name={icon} size={20} color={colors.brandPrimary} />
+          </View>
+          <Text style={styles.adminLabel}>{title}</Text>
+          {!open && badge && badge > 0 ? (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{badge}</Text>
+            </View>
+          ) : null}
+          <View style={styles.adminChevron}>
+            <Icon name={open ? "chevron-up" : "chevron-down"} size={22} color={colors.muted} />
+          </View>
+        </Card>
+      </Pressable>
+      {open ? <View style={{ gap: 8, paddingLeft: 14 }}>{rows}</View> : null}
     </View>
   );
 }
@@ -376,23 +338,24 @@ const useStyles = makeStyles((colors) => ({
   premiumCard: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
-    padding: 16,
-    borderRadius: 16,
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 14,
     backgroundColor: GOLD.bg,
     borderWidth: 1,
     borderColor: colors.brandSecondary,
   },
   premiumIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: colors.brandSecondary,
     alignItems: "center",
     justifyContent: "center",
   },
-  premiumTitle: { fontSize: 17, fontFamily: fonts.bold, color: GOLD.text },
-  premiumText: { fontSize: 13, fontFamily: fonts.regular, color: GOLD.text, marginTop: 2 },
+  premiumTitle: { fontSize: 15, fontFamily: fonts.bold, color: GOLD.text },
+  premiumText: { fontSize: 12, fontFamily: fonts.regular, color: GOLD.text, marginTop: 1 },
   avatarText: { fontSize: 24, fontFamily: fonts.bold, color: colors.onBrandPrimary },
   name: { fontSize: 18, fontFamily: fonts.semibold, color: colors.onSurface },
   email: { fontSize: 14, fontFamily: fonts.regular, color: colors.muted, marginTop: 2 },

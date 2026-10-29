@@ -6,6 +6,7 @@ import { CheckPop, Confetti, CountUp, SkeletonList } from "@/src/components/moti
 import Modal from "@/src/components/Modal";
 import { useHideOnScroll } from "@/src/hideOnScroll";
 import { RestockCard } from "@/src/RestockCard";
+import { TodayPicks, useToday } from "@/src/TodayCard";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -158,6 +159,9 @@ export default function ShoppingScreen() {
     queryKey: ["camp", id],
     queryFn: () => cachedApi<{ name: string }>(`/camps/${id}`),
   });
+  // Het snelle lijstje (Vandaag op Home): hier voeg je zelf producten toe
+  const todayQ = useToday();
+  const quick = !!id && todayQ.data?.list?.id === String(id);
 
   // Waar is deze lijst het goedkoopst? Wordt op de achtergrond uitgerekend, dus even later nog eens vragen
   const [showCompare, setShowCompare] = useState(true);
@@ -424,7 +428,7 @@ export default function ShoppingScreen() {
           <Icon name="chevron-left" size={28} color={colors.onSurface} />
         </Pressable>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Boodschappen</Text>
+          <Text style={styles.headerTitle}>{quick ? "Snel lijstje" : "Boodschappen"}</Text>
           {totalCount > 0 ? (
             <Text style={styles.headerSub}>
               {doneCount}/{totalCount} afgevinkt
@@ -454,6 +458,10 @@ export default function ShoppingScreen() {
         <View style={{ paddingTop: hide.padTop }}>
           <SkeletonList rows={6} />
         </View>
+      ) : totalCount === 0 && quick ? (
+        <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 16 + hide.padTop, paddingBottom: insets.bottom + 32, gap: 16 }}>
+          <TodayPicks stores={data?.stores ?? []} />
+        </ScrollView>
       ) : totalCount === 0 ? (
         <View style={[styles.center, { paddingTop: hide.padTop }]}>
           <EmptyState
@@ -468,6 +476,7 @@ export default function ShoppingScreen() {
           refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={() => { refetch(); cmp.refetch(); live.refetch(); }} tintColor={colors.brandPrimary} />}
           contentContainerStyle={{ padding: 16, paddingTop: 16 + hide.padTop, paddingBottom: insets.bottom + 32, gap: 16 }}
         >
+          {quick ? <TodayPicks stores={data?.stores ?? []} /> : null}
           {id ? <RestockCard campId={String(id)} /> : null}
           {data?.offline_at ? (
             <View style={styles.multiBanner}>

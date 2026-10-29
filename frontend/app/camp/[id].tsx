@@ -782,7 +782,7 @@ export default function CampDetailScreen() {
   );
 }
 
-function ExtraAddModal({
+export function ExtraAddModal({
   visible,
   stores,
   defaultStore,

@@ -15,7 +15,21 @@ import type { Product } from "@/src/ProductBrowser";
 
 type Other = { store: string; product_id?: string; product: string | null; unit?: string; image?: string | null; price?: number; same?: boolean; unit_price?: string | null };
 
-export function ProductPopup({ productId, onClose, onSwap, swapLabel = "Wisselen" }: { productId: string | null; onClose: () => void; onSwap?: () => void; swapLabel?: string }) {
+export function ProductPopup({
+  productId,
+  onClose,
+  onSwap,
+  swapLabel = "Wisselen",
+  onAdd,
+  addLabel = "Op je lijst",
+}: {
+  productId: string | null;
+  onClose: () => void;
+  onSwap?: () => void;
+  swapLabel?: string;
+  onAdd?: () => void;
+  addLabel?: string;
+}) {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -53,6 +67,12 @@ export function ProductPopup({ productId, onClose, onSwap, swapLabel = "Wisselen
                 <Text style={styles.price}>{d.price > 0 ? euro(d.promo?.price ?? d.price) : "—"}</Text>
                 {d.promo ? <Text style={[styles.meta, { color: colors.warning, fontFamily: fonts.semibold }]}>{d.promo.label}</Text> : null}
               </View>
+              {onAdd ? (
+                <Pressable onPress={onAdd} style={[styles.btn, { backgroundColor: colors.brandPrimary, flex: 0 }]} testID="product-popup-add">
+                  <Icon name="cart-plus" size={18} color={colors.onBrandPrimary} />
+                  <Text style={[styles.btnText, { color: colors.onBrandPrimary }]}>{addLabel}</Text>
+                </Pressable>
+              ) : null}
               <View style={{ flexDirection: "row", gap: 8 }}>
                 {onSwap ? (
                   <Pressable onPress={onSwap} style={[styles.btn, { backgroundColor: colors.brandPrimary }]} testID="product-popup-swap">
