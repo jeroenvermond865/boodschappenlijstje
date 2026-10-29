@@ -5,6 +5,17 @@ export type Release = { id: string; version?: string; date: string; title: strin
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-29-v116",
+    version: "1.1.6",
+    date: "29 oktober 2026",
+    title: "Betere uitleg van Slim splitsen en de Voorraadkast",
+    changes: [
+      { kind: "beter", text: "Slim splitsen: een nieuw bewegend voorbeeld laat zien hoe het eerst was, wat er gebeurt als je op Gesplitst halen tikt, en dat je 2 of 3 winkels kunt kiezen. Onder Wat kan het allemaal? staat alles op een rij." },
+      { kind: "beter", text: "Voorraadkast: een langer voorbeeld en uitleg over alles wat erbij hoort, zoals hoe vol iets is, je eigen verbruik, het seintje bij Bijna op, de voorstellen en Heb ik al bij een recept." },
+      { kind: "beter", text: "In Zo werkt de app staan nu ook de bewegende voorbeelden van de looproute, slim splitsen, prijsgeschiedenis, prijsalarm, de voorraadkast en het bespaaroverzicht. Elk heeft de kleur van zijn abonnement." },
+    ],
+  },
+  {
     id: "2026-10-29-v115",
     version: "1.1.5",
     date: "29 oktober 2026",

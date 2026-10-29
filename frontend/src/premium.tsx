@@ -45,13 +45,31 @@ export function useFeatureAccent(key?: FeatureKey) {
 export type FeatureKey = "prijsalarm" | "prijsgeschiedenis" | "extra_besparen" | "slim_splitsen" | "weekmenu" | "voorraadkast" | "slimme_hulp" | "looproute" | "geen_advertenties";
 export type PlanKey = "standaard" | "premium" | "ultra";
 
-export const PREMIUM_FEATURES: { key: FeatureKey; icon: string; title: string; text: string; to?: string; where?: string }[] = [
+// more: langere uitleg op de functiepagina (Wat kan het allemaal?)
+export const PREMIUM_FEATURES: { key: FeatureKey; icon: string; title: string; text: string; to?: string; where?: string; more?: string[] }[] = [
   { key: "prijsalarm", icon: "bell-ring-outline", title: "Prijsalarm", text: "Een seintje als een favoriet product in de aanbieding is of onder jouw prijs zakt.", to: "/alerts", where: "Bij Producten en bij elk product" },
   { key: "prijsgeschiedenis", icon: "chart-line", title: "Prijsgeschiedenis", text: "Zie hoe de prijs van een product zich ontwikkelt, zodat je weet of een aanbieding echt goed is.", to: "/products", where: "Open een product bij Producten" },
   { key: "extra_besparen", icon: "piggy-bank-outline", title: "Extra besparen", text: "In je bespaaroverzicht tellen ook je voorraadkast, slim splitsen en de acties op je boodschappendag mee.", to: "/savings", where: "Op Home: Bespaaroverzicht" },
-  { key: "slim_splitsen", icon: "call-split", title: "Slim splitsen", text: "Haal elk product bij de winkel waar het het goedkoopst is. Wat je daarmee bespaart, telt mee in je bespaaroverzicht.", to: "/", where: "Op Home bij de prijsvergelijking" },
+  { key: "slim_splitsen", icon: "call-split", title: "Slim splitsen", text: "Haal elk product bij de winkel waar het het goedkoopst is. Wat je daarmee bespaart, telt mee in je bespaaroverzicht.", to: "/", where: "Bij je boodschappenlijst, onder Waar is je lijst het goedkoopst?",
+    more: [
+      "Zonder splitsen haal je alles bij één winkel. De app laat zien wat je lijst bij AH, Jumbo en Dirk kost.",
+      "Tik op Gesplitst halen. De app kiest de goedkoopste combinatie en zet elk product bij de winkel waar het het minst kost.",
+      "Zelf kiezen kan ook: tik op de winkels waar je heen wilt. Met 2 winkels scheelt het vaak al veel, met alle 3 het meest.",
+      "Elke winkel krijgt een eigen lijstje, op de looproute van die winkel. Je ziet per product wat het bij de andere winkel had gekost.",
+      "Liever toch één winkel? Tik bovenaan op Terug naar je eigen winkels.",
+      "Wat je gesplitst haalt en afvinkt, telt mee in je bespaaroverzicht.",
+    ] },
   { key: "weekmenu", icon: "calendar-star", title: "Automatisch weekmenu", text: "Een weekmenu met gerechten waarvan de ingrediënten nu in de aanbieding zijn.", to: "/camps", where: "Bovenaan in je planning" },
-  { key: "voorraadkast", icon: "fridge-outline", title: "Voorraadkast", text: "Houd bij wat je al in huis hebt, dan gaat dat van je boodschappenlijst af.", to: "/pantry", where: "Op Home en bij je boodschappenlijst" },
+  { key: "voorraadkast", icon: "fridge-outline", title: "Voorraadkast", text: "Houd bij wat je al in huis hebt, dan gaat dat van je boodschappenlijst af.", to: "/pantry", where: "Op Home en bij je boodschappenlijst",
+    more: [
+      "Wat je al in huis hebt, gaat vanzelf van je boodschappenlijst af. Bij het product zie je: In je voorraadkast.",
+      "Per product stel je in hoe vol het is (vol, half, bijna op) of hoeveel je er hebt (bijvoorbeeld 8 eieren).",
+      "Vul je eigen verbruik in, zoals 10 eieren per week. Dan rekent de app uit wanneer het op is.",
+      "Bijna op? Dan krijg je een seintje en kun je het met één tik op je lijstje zetten, genoeg voor deze en volgende week.",
+      "Snel vullen met voorstellen: wat de meeste mensen al in huis hebben, zoals zout, olie en bloem. Je vinkt aan wat je hebt.",
+      "Bij een recept tik je op Heb ik al en kies je hoe vol het nog is. Dan staat het meteen in je voorraadkast.",
+      "Wat je niet hoeft te kopen omdat je het al had, telt mee in je bespaaroverzicht.",
+    ] },
   { key: "slimme_hulp", icon: "auto-fix", title: "Slimme hulp", text: "Een menu uit één zin, koken met restjes, een recept of foto overnemen, je lijst inspreken en slimme bespaartips.", to: "/slim", where: "Op Home: Slimme hulp" },
   { key: "looproute", icon: "map-marker-path", title: "Looproute", text: "Je boodschappenlijst in de volgorde van de schappen in jouw winkel, zodat je niet heen en weer loopt.", to: "/", where: "Bij je boodschappenlijst" },
   { key: "geen_advertenties", icon: "cancel", title: "Geen advertenties", text: "Als er later advertenties komen, zie jij ze niet." },

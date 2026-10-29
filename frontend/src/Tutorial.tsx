@@ -5,12 +5,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/src/components/ui";
 import { useAppSettings, useTerms } from "@/src/settings";
-import { GOLD } from "@/src/premium";
+import { GOLD, PLAN_NAME, planAccent, usePlans, type FeatureKey, type PlanKey } from "@/src/premium";
 import { DemoKind, TutorialDemo } from "@/src/TutorialDemos";
+import { FeatureDemo } from "@/src/FeatureDemos";
 import { fonts, makeStyles } from "@/src/theme";
 
-// Elke stap: een kort bewegend voorbeeld uit de app, een titel en een paar korte zinnen
-type Step = { demo: DemoKind; title: string; text: string[]; premium?: boolean };
+// Elke stap: een kort bewegend voorbeeld uit de app, een titel en een paar korte zinnen.
+// Een stap met "feature" laat het voorbeeld van die extra functie zien, met het abonnement (goud of paars) erbij.
+type Step = { demo?: DemoKind; feature?: FeatureKey; title: string; text: string[] };
 
 function useSteps(): Step[] {
   const s = useAppSettings();
@@ -40,11 +42,24 @@ function useSteps(): Step[] {
       ],
     },
     {
+      feature: "looproute",
+      title: "Looproute",
+      text: ["Je lijst staat in de volgorde van de schappen in jouw winkel. Zo loop je in één keer door de winkel, zonder heen en weer te lopen."],
+    },
+    {
       demo: "prijzen",
       title: "Goedkoopste winkel",
       text: [
-        "Je ziet wat je lijst bij elke supermarkt kost. Met slim splitsen haal je elk product bij de winkel waar het het goedkoopst is.",
+        "Je ziet wat je lijst bij elke supermarkt kost.",
         "Prijzen komen van de websites van de supermarkten. De prijs in de winkel is altijd leidend.",
+      ],
+    },
+    {
+      feature: "slim_splitsen",
+      title: "Slim splitsen",
+      text: [
+        "Tik op Gesplitst halen. Dan haal je elk product bij de winkel waar het het goedkoopst is.",
+        "Kies zelf 2 of 3 winkels. Elke winkel krijgt een eigen lijstje en je ziet meteen hoeveel het scheelt.",
       ],
     },
     {
@@ -60,20 +75,35 @@ function useSteps(): Step[] {
       title: s.tab_products,
       text: [
         "Zoek producten en vergelijk prijzen. In de folders zie je de aanbiedingen van deze en volgende week.",
-        "Met Premium zet je een prijsalarm. Dan krijg je een mail als het product in de aanbieding is.",
       ],
     },
     {
-      demo: "voorraad",
+      feature: "prijsgeschiedenis",
+      title: "Prijsgeschiedenis",
+      text: ["Bij elk product zie je hoe de prijs week na week ging. Zo weet je of een aanbieding echt goedkoop is."],
+    },
+    {
+      feature: "prijsalarm",
+      title: "Prijsalarm",
+      text: ["Zet een alarm op een product. Je krijgt een seintje als het in de aanbieding is of onder jouw prijs zakt."],
+    },
+    {
+      feature: "voorraadkast",
       title: "Voorraadkast",
       text: [
-        "Houd bij wat je thuis hebt. De app leert hoe snel iets opgaat en zegt het als het bijna op is. Wat je nog hebt, hoef je niet te kopen.",
+        "Houd bij wat je thuis hebt en hoe vol het is. Wat je nog hebt, gaat van je boodschappenlijst af.",
+        "Raakt iets op, dan krijg je een seintje en zet je het met één tik op je lijst. Bij een recept tik je op Heb ik al.",
       ],
+    },
+    {
+      feature: "extra_besparen",
+      title: "Bespaaroverzicht",
+      text: ["Zie per maand wat je bespaart: met aanbiedingen, de goedkoopste winkel, slim splitsen en wat je al in huis had."],
     },
     {
       demo: "slim",
+      feature: "slimme_hulp",
       title: "Slimme hulp",
-      premium: true,
       text: [
         "Typ in één zin wat je wilt en je krijgt een menu. Of kook met restjes, plak een recept, spreek je lijst in en krijg bespaartips.",
       ],
@@ -96,6 +126,10 @@ export function Tutorial({ onDone, doneLabel = "Aan de slag" }: { onDone: () => 
   const [i, setI] = useState(0);
   const [dir, setDir] = useState<1 | -1>(1);
   const step = steps[i];
+  // Bij een extra functie: het abonnement waar hij nu bij hoort (Beheer > Abonnementen), in goud of paars
+  const plans = usePlans().data;
+  const plan: PlanKey | null = step.feature ? plans?.features.find((f) => f.key === step.feature)?.plan ?? "premium" : null;
+  const acc = planAccent(plan);
   const last = i === steps.length - 1;
   const go = (n: number) => {
     setDir(n >= i ? 1 : -1);
@@ -107,10 +141,12 @@ export function Tutorial({ onDone, doneLabel = "Aan de slag" }: { onDone: () => 
       <ScrollView contentContainerStyle={styles.content}>
         {/* Bij elke stap schuift de inhoud vanaf de kant waar je naartoe gaat */}
         <Animated.View key={i} entering={(dir === 1 ? FadeInRight : FadeInLeft).duration(280)} style={styles.step}>
-          <TutorialDemo kind={step.demo} />
+          {step.demo ? <TutorialDemo kind={step.demo} /> : step.feature ? <FeatureDemo k={step.feature} accent={acc.icon} /> : null}
           <View style={styles.titleRow}>
             <Text style={styles.title}>{step.title}</Text>
-            {step.premium ? <Text style={styles.premium}>Premium</Text> : null}
+            {plan && plan !== "standaard" ? (
+              <Text style={[styles.premium, { color: acc.text, backgroundColor: acc.bg, borderColor: acc.border }]}>{PLAN_NAME[plan]}</Text>
+            ) : null}
           </View>
           {step.text.map((p, n) => (
             <Text key={n} style={styles.text}>

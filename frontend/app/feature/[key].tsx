@@ -1,8 +1,7 @@
 // Eén extra functie: wat hij doet, altijd met een bewegend voorbeeld. Heb je hem, dan onderaan "Bekijk in mijn app"
 // (slim splitsen, looproute en weekmenu in je eerstvolgende lijstje). Kan dat nog niet, dan geen knop maar
 // "Je moet eerst een lijstje aanmaken". Heb je hem niet, dan een slotje en een knop om het abonnement te nemen.
-import { useEffect, useRef } from "react";
-import { ActivityIndicator, Animated, Easing, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -12,12 +11,11 @@ import { goBack } from "@/src/nav";
 import { api } from "@/src/api";
 import { PLAN_NAME, PREMIUM_FEATURES, planAccent, planIcon, useFeature, usePlanOf, type FeatureKey } from "@/src/premium";
 import { TutorialDemo, type DemoKind } from "@/src/TutorialDemos";
+import { FeatureDemo } from "@/src/FeatureDemos";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
-// Functies met een bewegend voorbeeld uit "Zo werkt de app"; de rest krijgt een stilstaand voorbeeld hieronder
+// Functies met een voorbeeld uit "Zo werkt de app"; de rest heeft een eigen voorbeeld (src/FeatureDemos)
 const DEMO: Partial<Record<FeatureKey, DemoKind>> = {
-  slim_splitsen: "prijzen",
-  voorraadkast: "voorraad",
   slimme_hulp: "slim",
   weekmenu: "plannen",
 };
@@ -91,8 +89,22 @@ export default function FeatureScreen() {
 
         {/* Altijd een bewegend voorbeeld: zo zie je in een paar tellen wat het doet */}
         <Text style={styles.section}>Zo werkt het</Text>
-        {demo ? <TutorialDemo kind={demo} /> : <Example k={f.key} accent={c.icon} />}
+        {demo ? <TutorialDemo kind={demo} /> : <FeatureDemo k={f.key} accent={c.icon} />}
         {f.where ? <Text style={styles.muted}>In de app: {f.where}</Text> : null}
+
+        {f.more?.length ? (
+          <View style={{ gap: 8 }} testID="feature-more">
+            <Text style={styles.section}>Wat kan het allemaal?</Text>
+            {f.more.map((m, i) => (
+              <View key={i} style={{ flexDirection: "row", gap: 8, alignItems: "flex-start" }}>
+                <View style={{ marginTop: 1 }}>
+                  <Icon name="check-circle-outline" size={18} color={c.icon} />
+                </View>
+                <Text style={[styles.text, { flex: 1 }]}>{m}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
 
         {!has ? (
           <Button label={`Probeer ${PLAN_NAME[plan]}`} icon={planIcon(plan)} onPress={() => router.push("/premium")} testID="feature-get" />
@@ -112,212 +124,6 @@ export default function FeatureScreen() {
           </View>
         ) : null}
       </ScrollView>
-    </View>
-  );
-}
-
-// Bewegende voorbeelden voor functies die er in "Zo werkt de app" geen hebben
-function Example({ k, accent }: { k: FeatureKey; accent: string }) {
-  if (k === "prijsgeschiedenis") return <HistoryDemo accent={accent} />;
-  if (k === "prijsalarm") return <AlarmDemo accent={accent} />;
-  if (k === "extra_besparen") return <SavingsDemo accent={accent} />;
-  if (k === "looproute") return <RouteDemo accent={accent} />;
-  return <NoAdsDemo accent={accent} />;
-}
-
-// Steeds opnieuw van 0 naar 1 (met een korte pauze), voor de bewegende voorbeelden
-function useLoop(ms: number) {
-  const t = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(t, { toValue: 1, duration: ms, easing: Easing.inOut(Easing.cubic), useNativeDriver: false }),
-        Animated.delay(1400),
-        Animated.timing(t, { toValue: 0, duration: 0, useNativeDriver: false }),
-        Animated.delay(500),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [t, ms]);
-  return t;
-}
-
-// Prijsgeschiedenis: de prijs per week groeit van links naar rechts in beeld; de aanbieding kleurt groen
-const WEEKS = [
-  { w: "wk 32", p: 2.49 }, { w: "wk 33", p: 2.49 }, { w: "wk 34", p: 2.29 }, { w: "wk 35", p: 2.49 }, { w: "wk 36", p: 1.79 },
-  { w: "wk 37", p: 2.49 }, { w: "wk 38", p: 2.59 }, { w: "wk 39", p: 2.39 }, { w: "wk 40", p: 1.99 }, { w: "wk 41", p: 2.49 },
-];
-function HistoryDemo({ accent }: { accent: string }) {
-  const styles = useStyles();
-  const { colors } = useTheme();
-  const t = useLoop(3200);
-  const max = Math.max(...WEEKS.map((x) => x.p));
-  const low = Math.min(...WEEKS.map((x) => x.p));
-  const n = WEEKS.length;
-  return (
-    <View style={styles.card} testID="demo-history">
-      <Text style={styles.cardTitle}>Prijs per week · laatste 10 weken</Text>
-      <View style={styles.chart}>
-        {WEEKS.map((x, i) => {
-          const grow = t.interpolate({ inputRange: [i / n, (i + 1) / n], outputRange: [0, 1], extrapolate: "clamp" });
-          const deal = x.p === low;
-          return (
-            <View key={x.w} style={{ flex: 1, alignItems: "center", justifyContent: "flex-end", gap: 2 }}>
-              <Animated.Text style={[styles.small, { opacity: grow }, deal && { color: colors.success, fontFamily: fonts.bold }]}>
-                {x.p.toFixed(2).replace(".", ",")}
-              </Animated.Text>
-              <Animated.View
-                style={{
-                  width: "62%",
-                  borderRadius: 4,
-                  height: grow.interpolate({ inputRange: [0, 1], outputRange: [0, (x.p / max) * 90] }),
-                  backgroundColor: deal ? colors.success : accent,
-                }}
-              />
-              <Text style={[styles.small, { fontSize: 9 }]}>{x.w}</Text>
-            </View>
-          );
-        })}
-      </View>
-      <Animated.Text style={[styles.small, { opacity: t.interpolate({ inputRange: [0.85, 1], outputRange: [0, 1], extrapolate: "clamp" }) }]}>
-        Laagste prijs: € {low.toFixed(2).replace(".", ",")} (groen). Zo zie je of een aanbieding echt goedkoop is.
-      </Animated.Text>
-    </View>
-  );
-}
-
-// Looproute: je lijst staat door elkaar en schuift in de volgorde van de winkel
-const ROUTE = [
-  { n: "Melk", a: "Zuivel", at: 2 },
-  { n: "Bananen", a: "Groente & fruit", at: 0 },
-  { n: "Diepvriespizza", a: "Diepvries", at: 4 },
-  { n: "Brood", a: "Brood", at: 1 },
-  { n: "Kipfilet", a: "Vlees", at: 3 },
-];
-const ROW_H = 40;
-function RouteDemo({ accent }: { accent: string }) {
-  const styles = useStyles();
-  const t = useLoop(1800);
-  return (
-    <View style={styles.card} testID="demo-route">
-      <Animated.Text style={[styles.cardTitle, { opacity: t.interpolate({ inputRange: [0, 0.5, 1], outputRange: [1, 0, 0] }) }]}>Zonder looproute: door elkaar</Animated.Text>
-      <Animated.Text style={[styles.cardTitle, { position: "absolute", top: 14, left: 14, opacity: t.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0, 1] }) }]}>
-        Met looproute: zoals je door de winkel loopt
-      </Animated.Text>
-      <View style={{ height: ROUTE.length * ROW_H }}>
-        {ROUTE.map((x, i) => (
-          <Animated.View
-            key={x.n}
-            style={[
-              styles.row,
-              { position: "absolute", left: 0, right: 0, height: ROW_H },
-              { top: t.interpolate({ inputRange: [0, 1], outputRange: [i * ROW_H, x.at * ROW_H] }) },
-            ]}
-          >
-            <Animated.View style={[styles.step, { backgroundColor: accent, opacity: t.interpolate({ inputRange: [0.6, 1], outputRange: [0, 1], extrapolate: "clamp" }) }]}>
-              <Text style={styles.stepText}>{x.at + 1}</Text>
-            </Animated.View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.text}>{x.n}</Text>
-              <Text style={styles.small}>{x.a}</Text>
-            </View>
-          </Animated.View>
-        ))}
-      </View>
-    </View>
-  );
-}
-
-// Prijsalarm: de meldingen komen één voor één binnen
-const ALARMS = [
-  { n: "Koffiebonen 1 kg", t: "Nu € 8,99 bij Jumbo (was € 12,49)" },
-  { n: "Wasmiddel", t: "Onder jouw prijs van € 6,00" },
-  { n: "Olijfolie 1 L", t: "In de aanbieding bij AH: 2e halve prijs" },
-];
-function AlarmDemo({ accent }: { accent: string }) {
-  const styles = useStyles();
-  const { colors } = useTheme();
-  const t = useLoop(2400);
-  return (
-    <View style={styles.card} testID="demo-alarm">
-      <Text style={styles.cardTitle}>Je prijsalarmen</Text>
-      {ALARMS.map((x, i) => {
-        const v = t.interpolate({ inputRange: [i / 3, (i + 0.7) / 3], outputRange: [0, 1], extrapolate: "clamp" });
-        return (
-          <Animated.View key={x.n} style={[styles.row, { opacity: v, transform: [{ translateY: v.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) }] }]}>
-            <Icon name="bell-ring" size={20} color={accent} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>{x.n}</Text>
-              <Text style={[styles.small, { color: colors.success }]}>{x.t}</Text>
-            </View>
-          </Animated.View>
-        );
-      })}
-    </View>
-  );
-}
-
-// Extra besparen: de bedragen komen erbij en het totaal verschijnt
-const SAVES = [
-  { a: "Aanbiedingen", v: 6.4 },
-  { a: "Al in je voorraadkast", v: 4.15 },
-  { a: "Slim splitsen", v: 7.8 },
-  { a: "Acties op je boodschappendag", v: 2.35 },
-];
-function SavingsDemo({ accent }: { accent: string }) {
-  const styles = useStyles();
-  const t = useLoop(2600);
-  const total = SAVES.reduce((n, x) => n + x.v, 0);
-  return (
-    <View style={styles.card} testID="demo-savings">
-      <Text style={styles.cardTitle}>Je bespaaroverzicht deze maand</Text>
-      {SAVES.map((x, i) => {
-        const v = t.interpolate({ inputRange: [i / 5, (i + 1) / 5], outputRange: [0, 1], extrapolate: "clamp" });
-        return (
-          <Animated.View key={x.a} style={[styles.row, { opacity: v }]}>
-            <Text style={[styles.text, { flex: 1 }]}>{x.a}</Text>
-            <Text style={[styles.cardTitle, { color: accent }]}>€ {x.v.toFixed(2).replace(".", ",")}</Text>
-          </Animated.View>
-        );
-      })}
-      <View style={{ height: 8, borderRadius: 4, backgroundColor: "rgba(0,0,0,0.08)", overflow: "hidden" }}>
-        <Animated.View style={{ height: 8, backgroundColor: accent, width: t.interpolate({ inputRange: [0, 0.8], outputRange: ["0%", "100%"], extrapolate: "clamp" }) }} />
-      </View>
-      <Animated.View style={[styles.row, { opacity: t.interpolate({ inputRange: [0.8, 1], outputRange: [0, 1], extrapolate: "clamp" }) }]}>
-        <Text style={[styles.cardTitle, { flex: 1 }]}>Samen bespaard</Text>
-        <Text style={[styles.section, { color: accent }]}>€ {total.toFixed(2).replace(".", ",")}</Text>
-      </Animated.View>
-    </View>
-  );
-}
-
-// Geen advertenties: een advertentieblok verdwijnt en de inhoud schuift netjes op
-function NoAdsDemo({ accent }: { accent: string }) {
-  const styles = useStyles();
-  const t = useLoop(1600);
-  return (
-    <View style={styles.card} testID="demo-noads">
-      <Text style={styles.cardTitle}>Je lijstje</Text>
-      <View style={styles.row}>
-        <Icon name="checkbox-blank-circle-outline" size={20} color={accent} />
-        <Text style={styles.text}>Bananen</Text>
-      </View>
-      <Animated.View
-        style={{
-          overflow: "hidden",
-          height: t.interpolate({ inputRange: [0.3, 0.8], outputRange: [44, 0], extrapolate: "clamp" }),
-          opacity: t.interpolate({ inputRange: [0, 0.5], outputRange: [1, 0], extrapolate: "clamp" }),
-        }}
-      >
-        <View style={styles.ad}>
-          <Text style={styles.small}>Advertentie</Text>
-        </View>
-      </Animated.View>
-      <View style={styles.row}>
-        <Icon name="checkbox-blank-circle-outline" size={20} color={accent} />
-        <Text style={styles.text}>Melk</Text>
-      </View>
     </View>
   );
 }

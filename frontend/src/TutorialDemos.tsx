@@ -22,7 +22,7 @@ import { useAuth } from "@/src/auth";
 import Image from "@/src/components/SafeImage";
 import { Icon } from "@/src/components/ui";
 import { DISH_GROUPS } from "@/src/constants";
-import { GOLD } from "@/src/premium";
+import { GOLD, PLAN_NAME, planAccent, planIcon, usePlanOf } from "@/src/premium";
 import type { Product } from "@/src/ProductBrowser";
 import { euro, fetchProducts, NO_FILTERS } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
@@ -332,18 +332,19 @@ function Bar({ t, at, label, total, frac, gold }: { t: SharedValue<number>; at: 
   const grow = useAnimatedStyle(() => ({ width: `${clamp(t.value, [at, at + 0.16], [0, frac * 100])}%` }));
   const price = useAnimatedStyle(() => ({ opacity: clamp(t.value, [at + 0.12, at + 0.18], [0, 1]) }));
   const badge = usePop(t, 0.66, 0.07);
+  const split = planAccent(usePlanOf("slim_splitsen")); // goud of paars, net als het abonnement van slim splitsen
   return (
     <View style={styles.barRow}>
       <Text style={styles.barLabel} numberOfLines={1}>
         {label}
       </Text>
       <View style={styles.barTrack}>
-        <Animated.View style={[styles.barFill, { backgroundColor: gold ? GOLD.icon : colors.brand }, grow]} />
+        <Animated.View style={[styles.barFill, { backgroundColor: gold ? split.icon : colors.brand }, grow]} />
       </View>
       <Animated.Text style={[styles.barPrice, price]}>{euro(total)}</Animated.Text>
       {gold ? (
         <Animated.View style={[styles.crown, badge]}>
-          <Icon name="crown" size={14} color={GOLD.icon} />
+          <Icon name="crown" size={14} color={split.icon} />
         </Animated.View>
       ) : null}
     </View>
@@ -413,9 +414,9 @@ function ProductsDemo() {
       <View style={styles.card}>
         <View style={styles.rowBetween}>
           <Text style={styles.cardTitle}>{offers.length ? "Nu in de aanbieding" : "Aanbiedingen"}</Text>
-          <Animated.View style={[styles.pill, { backgroundColor: GOLD.bg, borderColor: GOLD.border, borderWidth: 1 }, bell]}>
-            <Icon name="bell-ring-outline" size={14} color={GOLD.icon} />
-            <Text style={[styles.pillText, { color: GOLD.text }]}>Prijsalarm</Text>
+          <Animated.View style={[styles.pill, { backgroundColor: alarm.bg, borderColor: alarm.border, borderWidth: 1 }, bell]}>
+            <Icon name="bell-ring-outline" size={14} color={alarm.icon} />
+            <Text style={[styles.pillText, { color: alarm.text }]}>Prijsalarm</Text>
           </Animated.View>
         </View>
         {items.map((p, n) => (
@@ -533,9 +534,9 @@ function SmartDemo() {
       <View style={styles.card}>
         <View style={styles.rowBetween}>
           <Text style={styles.cardTitle}>Slimme hulp</Text>
-          <View style={[styles.pill, { backgroundColor: GOLD.bg, borderColor: GOLD.border, borderWidth: 1 }]}>
-            <Icon name="star" size={12} color={GOLD.icon} />
-            <Text style={[styles.pillText, { color: GOLD.text }]}>Premium</Text>
+          <View style={[styles.pill, { backgroundColor: smart.bg, borderColor: smart.border, borderWidth: 1 }]}>
+            <Icon name={planIcon(smartPlan)} size={12} color={smart.icon} />
+            <Text style={[styles.pillText, { color: smart.text }]}>{PLAN_NAME[smartPlan]}</Text>
           </View>
         </View>
         <View style={styles.input}>
