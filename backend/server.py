@@ -1474,8 +1474,11 @@ async def _dish_for_user(dish_id: str, user: dict) -> dict:
 
 @api_router.get("/dishes/{dish_id}")
 async def get_dish(dish_id: str, user: dict = Depends(get_current_user)):
-    # Eén gerecht (bijv. vanuit "Op het menu" op Home)
-    return dish_public(await _dish_for_user(dish_id, user))
+    # Eén gerecht (bijv. vanuit "Op het menu" op Home); zonder foto zoeken we er een op de achtergrond
+    d = await _dish_for_user(dish_id, user)
+    if not (d.get("photo") or (d.get("source") or {}).get("image") or d.get("image")):
+        _photo_later(d)
+    return dish_public(d)
 
 
 # Bereiding bij een gerecht: van het recept op de site, aangepast als je andere producten gebruikt,
@@ -3501,6 +3504,13 @@ def _same_staple(a: str, b: str) -> bool:
     return bool(wa and wb) and (wa <= wb or wb <= wa)
 
 
+PANTRY_SEEN_DAYS = 60  # een voorstel dat je al zag, komt pas na zoveel dagen terug
+
+
+def _mongo_key(k: str) -> str:
+    return k.replace(".", " ").replace("$", " ")
+
+
 @api_router.get("/pantry/suggestions")
 async def pantry_suggestions(skip: str = "", user: dict = Depends(get_current_user)):
     # Voorstellen voor je voorraadkast: wat de meeste mensen al in huis hebben (vaste lijst + wat andere gebruikers vaak invullen),
@@ -3511,6 +3521,11 @@ async def pantry_suggestions(skip: str = "", user: dict = Depends(get_current_us
     by_pid = _product_cache.get("by_pid") or {}
     have_names = [m["name"] for m in mine] + [by_pid[m["product_id"]]["name"] for m in mine if m.get("product_id") in by_pid]
     seen = {x.strip().lower() for x in skip.split("|") if x.strip()}
+    # Wat je eerder al voorgesteld kreeg, onthouden we per gebruiker: dat komt pas na PANTRY_SEEN_DAYS weer terug
+    since = now_utc() - timedelta(days=PANTRY_SEEN_DAYS)
+    for k, at in ((user.get("pantry_seen") or {})).items():
+        if isinstance(at, datetime) and (at if at.tzinfo else at.replace(tzinfo=timezone.utc)) >= since:
+            seen.add(k)
     popular: Dict[str, int] = {}
     async for row in db.pantry.aggregate([{"$group": {"_id": "$name_l", "n": {"$addToSet": "$user_id"}}},
                                           {"$project": {"n": {"$size": "$n"}}}, {"$match": {"n": {"$gte": 3}}},
@@ -3531,6 +3546,14 @@ async def pantry_suggestions(skip: str = "", user: dict = Depends(get_current_us
     items = first + [x for row in itertools.zip_longest(*by_group.values()) for x in row if x]
     left = [i for i in items if i["name"].lower() not in seen and not any(_same_staple(i["name"], h) for h in have_names)]
     batch = left[:12]
+    if not batch and not skip:
+        # Alles al eens gezien: dan de voorstellen die het langst geleden waren
+        old = user.get("pantry_seen") or {}
+        rest = [i for i in items if not any(_same_staple(i["name"], h) for h in have_names)]
+        rest.sort(key=lambda i: old.get(_mongo_key(i["name"].lower())) or datetime.min)
+        batch = rest[:12]
+    if batch:
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {f"pantry_seen.{_mongo_key(i['name'].lower())}": now_utc() for i in batch}})
     store = user.get("store") or DEFAULT_STORE
     docs = await _global_products()
     pool = [d for d in docs if d.get("_src") == store and d.get("is_global")]
@@ -10298,7 +10321,8 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
         upcoming = sorted((x for x in mains if x.get("start_date") and last_day(x) >= today), key=lambda x: x["start_date"])
         c = upcoming[0] if upcoming else mains[0]
         dish_ids = {did for day in c.get("days", []) for cat in MEAL_CATEGORIES for did in (day.get("meals") or {}).get(cat, [])}
-        dishes = await db.dishes.find({"dish_id": {"$in": list(dish_ids)}}, {"_id": 0, "dish_id": 1, "name": 1, "ingredients": 1, "image": 1, "photo": 1, "source.image": 1}).to_list(500)
+        dishes = await db.dishes.find({"dish_id": {"$in": list(dish_ids)}}, {"_id": 0, "dish_id": 1, "name": 1, "ingredients": 1, "image": 1, "photo": 1, "source.image": 1,
+                                                                           "photo_for": 1, "photo_v": 1}).to_list(500)
         names = {}
         for d in dishes:
             for i in d.get("ingredients") or []:
@@ -10333,6 +10357,11 @@ async def home(shuffle: int = 0, user: dict = Depends(get_current_user)):
                          for cat in MEAL_CATEGORIES for did in (day.get("meals") or {}).get(cat, []) if did in dish_by]
                 if meals:
                     soon.append({"date": dt, "index": k, "meals": meals, "in_list": bool(day.get("is_shopping_day"))})
+            # Gerechten zonder foto (bijv. nadat winkelfoto's uit gingen): op de achtergrond een vrije foto zoeken,
+            # dan staat hij er de volgende keer wel, op Home én in de pop-up
+            missing = [dish_by[m["dish_id"]] for d in soon for m in d["meals"] if not m["image"]]
+            for d in list({x["dish_id"]: x for x in missing}.values())[:6]:
+                _photo_later(d)
         camp["soon"] = soon
         # Wat op je lijstje staat en nu in de aanbieding is (bij de winkel van dat product)
         by_pid = _product_cache.get("by_pid") or {}
@@ -10595,6 +10624,12 @@ def _same_kind(base: dict, cand: dict, strict: bool = True) -> bool:
     # Het andere product moet zelf ook dat soort zijn: "kikkererwten tomatensoep" is soep, "linzen penne" is pasta
     ch = stem(head_of([stem(w) for w in cw]))
     if not (same(ch, head) or (len(head) >= 5 and ch.endswith(head))):  # "kristalsuiker" is ook suiker
+        return False
+    # Is het gevraagde een bewerkt product (tapenade, soep, saus, ...), dan moet het andere dat ook zijn:
+    # "tapenade paddenstoelen met truffel" is geen "zoete paddenstoelen" (snoep) en geen gewone champignons
+    def kinds(ws):
+        return {x for w in ws for x in _PROCESSED if w == x or (len(x) >= 4 and (w.endswith(x) or w.startswith(x)))}
+    if not kinds(bw) <= kinds([stem(w) for w in cw]) | kinds(cw):
         return False
     if not strict:
         # vergelijken per winkel: "pasta gnocchi" mag voor gnocchi. Maar een bewerkt product waar het alleen in zit niet:
@@ -13628,6 +13663,55 @@ async def _track_bought(user: dict, meta: Dict[str, dict]) -> None:
             "$inc": {"n": 1}, "$setOnInsert": {"first": now}}, upsert=True)
 
 
+@api_router.get("/deals/soon")
+async def deals_soon(user: dict = Depends(get_current_user)):
+    # Binnenkort in de aanbieding (nog niet nu): je favorieten, wat je vaak koopt en wat op je lijstjes staat.
+    # Zo kun je een aankoop een paar dagen uitstellen en geld besparen.
+    await _global_products()
+    by_pid = _product_cache.get("by_pid") or {}
+    uid = user["user_id"]
+    why: Dict[str, set] = {}
+    for pid in user.get("favorite_products") or []:
+        why.setdefault(pid, set()).add("favoriet")
+    async for b in db.bought.find({"user_id": uid, "n": {"$gte": 2}, "product_id": {"$ne": None}}, {"_id": 0, "product_id": 1}).limit(200):
+        why.setdefault(b["product_id"], set()).add("vaak gekocht")
+    camps = await db.camps.find({"$or": [{"owner_id": uid}, {"member_ids": uid}], "deleted_at": None},
+                                {"_id": 0, "days": 1, "general": 1, "archived_by": 1, "product_swaps": 1}).to_list(50)
+    dish_ids, list_pids = set(), set()
+    for c in camps:
+        if uid in (c.get("archived_by") or []):
+            continue
+        for e in c.get("general") or []:
+            list_pids.add(e.get("product_id"))
+        for d in c.get("days") or []:
+            for e in d.get("extras") or []:
+                list_pids.add(e.get("product_id"))
+            for ids in (d.get("meals") or {}).values():
+                dish_ids.update(ids)
+        list_pids.update((c.get("product_swaps") or {}).values())
+    if dish_ids:
+        async for d in db.dishes.find({"dish_id": {"$in": list(dish_ids)[:500]}}, {"_id": 0, "ingredients.product_id": 1}):
+            list_pids.update(i.get("product_id") for i in d.get("ingredients") or [])
+    for pid in list_pids:
+        if pid:
+            why.setdefault(pid, set()).add("op je lijstje")
+    store = user.get("store", DEFAULT_STORE)
+    out = []
+    for pid, reasons in why.items():
+        d = by_pid.get(pid)
+        if not d:
+            continue
+        st = product_source(d) or store
+        price = resolve_price(d.get("prices") or {}, st, d.get("unavailable") or [])
+        now_p, next_p = _promo_public(d, price)
+        if now_p or not next_p:
+            continue
+        out.append({"product_id": pid, "name": d["name"], "image": d.get("image"), "store": st, "unit": d.get("unit"),
+                    "price": price, "promo": next_p, "why": sorted(reasons)})
+    out.sort(key=lambda x: (x["promo"].get("start") or "", x["name"]))
+    return {"items": out[:24]}
+
+
 @api_router.get("/today")
 async def today_info(user: dict = Depends(get_current_user)):
     c = await _today_camp(user, create=False)
@@ -13818,6 +13902,74 @@ async def _dish_preview(d: dict, user: dict) -> dict:
 # 1. Menu uit één zin: de AI begrijpt je zin, de app maakt het lijstje en vult het menu (zoals "Menu automatisch invullen")
 class AiMenuInput(BaseModel):
     text: str
+
+
+# Voorbeeldzinnen bij "Menu in één zin": elke keer andere, en passend bij wat je meestal doet
+# (met hoeveel je bent, hoeveel dagen, wat je vaak eet, je budget en je voorkeuren). Zonder AI: uit je eigen lijstjes.
+_MENU_WORDS = ["pasta", "rijst", "curry", "soep", "ovenschotel", "wraps", "stamppot", "kip", "vis", "pizza", "salade", "noedels",
+               "gehakt", "taco", "burger", "lasagne", "risotto", "quiche", "couscous", "aardappel"]
+_MENU_GENERIC = [
+    "5 dagen avondeten voor 2 personen, vega, max 40 euro",
+    "Een week ontbijt, lunch en avondeten voor 2 volwassenen en 2 kinderen, geen vis",
+    "3 dagen kamp met 20 kinderen en 4 leiding, goedkoop",
+    "Een weekend voor 4 personen, zaterdag iets op de barbecue",
+    "4 dagen snelle avondmaaltijden voor 1 persoon, binnen 20 minuten klaar",
+    "Een week gezond eten voor 2 personen, veel groente, max 50 euro",
+    "Kinderfeestje met 10 kinderen: lunch en iets lekkers",
+    "5 dagen lunch voor op het werk voor 1 persoon",
+]
+
+
+_MEAL_WORD = {"ontbijt": "ontbijt", "lunch": "lunch", "avondeten": "avondeten", "snacks": "tussendoortjes"}
+
+
+def _people_text(a: int, c: int) -> str:
+    if not c:
+        return "1 persoon" if a == 1 else f"{a} personen"
+    return f"{a} {'volwassene' if a == 1 else 'volwassenen'} en {c} {'kind' if c == 1 else 'kinderen'}"
+
+
+@api_router.get("/ai/menu-examples")
+async def menu_examples(user: dict = Depends(get_current_user)):
+    uid = user["user_id"]
+    camps = await db.camps.find({"$or": [{"owner_id": uid}, {"member_ids": uid}], "daily": {"$ne": True}},
+                                {"_id": 0, "days": 1, "budget_target": 1}).sort("created_at", -1).to_list(30)
+    out = []
+    if camps:
+        from collections import Counter
+        people = Counter((d.get("adults", 0), d.get("children", 0)) for c in camps for d in (c.get("days") or [])[:1] if d.get("adults") or d.get("children"))
+        lens = Counter(len(c.get("days") or []) for c in camps if c.get("days"))
+        meals = Counter(cat for c in camps for d in c.get("days") or [] for cat, ids in (d.get("meals") or {}).items() if ids)
+        budgets = sorted(float(c.get("budget_target") or 0) for c in camps if (c.get("budget_target") or 0) > 0)
+        dish_ids = {i for c in camps for d in c.get("days") or [] for ids in (d.get("meals") or {}).values() for i in ids}
+        words: Counter = Counter()
+        async for d in db.dishes.find({"dish_id": {"$in": list(dish_ids)[:400]}}, {"_id": 0, "name": 1}):
+            n = _norm_text(d.get("name") or "")
+            words.update(w for w in _MENU_WORDS if w in n)
+        a, c = people.most_common(1)[0][0] if people else (2, 0)
+        who = _people_text(a, c)
+        days = lens.most_common(1)[0][0] if lens else 5
+        days = days if 1 < days <= 14 else 5
+        cats = [k for k, _ in meals.most_common(3)] or ["avondeten"]
+        meal_text = " en ".join(_MEAL_WORD.get(x, x) for x in cats[:2]) if len(cats) > 1 else _MEAL_WORD.get(cats[0], cats[0])
+        fav = [w for w, _ in words.most_common(4)]
+        prefs = user.get("menu_prefs") or {}
+        diet = (prefs.get("diet") or "").split(",")[0]
+        avoid = (prefs.get("avoid") or [None])[0]
+        budget = budgets[len(budgets) // 2] if budgets else None
+        out += [
+            f"{days} dagen {meal_text} voor {who}" + (f", max {round(budget)} euro" if budget else ", goedkoop"),
+            f"Een week avondeten voor {who}" + (f", {fav[0]} en {fav[1]}" if len(fav) > 1 else "") + (f", {diet}" if diet else ""),
+            f"{days} dagen voor {who}, iets nieuws proberen" + (f", liever geen {avoid}" if avoid else ""),
+            f"Weekend voor {who}" + (f": zaterdag {fav[0]}, zondag iets uit de oven" if fav else ", zaterdag iets makkelijks"),
+            f"{days} dagen {meal_text} voor {who}, met wat nu in de aanbieding is",
+        ]
+        if budget:
+            out.append(f"Een week voor {who}, nog goedkoper dan {round(budget)} euro")
+    random.shuffle(out)
+    gen = random.sample(_MENU_GENERIC, 3)
+    picks = (out[:2] + gen[:1]) if out else gen
+    return {"examples": picks, "personal": bool(out)}
 
 
 @api_router.post("/ai/menu")

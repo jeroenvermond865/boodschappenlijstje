@@ -16,6 +16,8 @@ import { GOLD, PremiumLock, useFeature, useFeatureAccent, usePlans } from "@/src
 import { euro } from "@/src/search";
 import { useTerms } from "@/src/settings";
 import { useToast } from "@/src/toast";
+import { useAuth } from "@/src/auth";
+import { ShopSwapSheet } from "@/src/ShopSwap";
 import { CATEGORY_LABELS, formatQty, type MealCategory } from "@/src/constants";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -144,11 +146,14 @@ function Waiting({ text }: { text: string }) {
 // 1. Menu uit één zin
 function MenuTab() {
   const styles = useStyles();
+  const { colors } = useTheme();
   const router = useRouter();
   const T = useTerms();
   const qc = useQueryClient();
   const [text, setText] = useState("");
-  const examples = ["5 dagen avondeten voor 2 personen, vega, max 40 euro", "Een week ontbijt, lunch en avondeten voor 2 volwassenen en 2 kinderen, geen vis", "3 dagen kamp met 20 kinderen en 4 leiding, goedkoop"];
+  // Elke keer andere voorbeelden, passend bij wat je meestal doet (met hoeveel, hoeveel dagen, wat je vaak eet, je budget)
+  const ex = useQuery({ queryKey: ["menu-examples"], queryFn: () => api<{ examples: string[] }>("/ai/menu-examples"), staleTime: 0, gcTime: 0 });
+  const examples = ex.data?.examples ?? [];
   const run = useMutation({
     mutationFn: () => api<{ camp: { id: string; name: string }; filled: number; understood: any }>("/ai/menu", { method: "POST", body: { text } }),
     onSuccess: () => {
@@ -160,13 +165,17 @@ function MenuTab() {
   return (
     <View style={{ gap: 12 }}>
       <Intro icon="message-text-outline" title="Menu maken uit één zin" text={`Vertel wat je wilt. De app maakt een nieuw ${T.one} met gerechten en je boodschappenlijst.`} />
-      <TextInput value={text} onChangeText={setText} multiline placeholder="Bijvoorbeeld: 5 dagen avondeten voor 2 personen, vega, max 40 euro" style={styles.input} testID="ai-menu-text" />
+      <SpeakInput value={text} onChangeText={setText} placeholder={examples[0] ? `Bijvoorbeeld: ${examples[0]}` : "Bijvoorbeeld: 5 dagen avondeten voor 2 personen"} testID="ai-menu-text" />
       <View style={styles.chips}>
         {examples.map((e) => (
           <Pressable key={e} onPress={() => setText(e)} style={styles.chip}>
             <Text style={styles.chipText}>{e}</Text>
           </Pressable>
         ))}
+        <Pressable onPress={() => ex.refetch()} style={[styles.chip, { flexDirection: "row", alignItems: "center", gap: 4 }]} testID="ai-menu-more-examples">
+          <Icon name="refresh" size={14} color={colors.brandPrimary} />
+          <Text style={[styles.chipText, { color: colors.brandPrimary }]}>Andere voorbeelden</Text>
+        </Pressable>
       </View>
       <Big label="Maak mijn menu" icon="auto-fix" busy={run.isPending} disabled={text.trim().length < 4} onPress={() => run.mutate()} testID="ai-menu-go" />
       {run.isPending ? <Waiting text="De app zoekt gerechten die bij je passen. Dit duurt soms een halve minuut." /> : null}
@@ -206,7 +215,7 @@ function LeftoversTab() {
   return (
     <View style={{ gap: 12 }}>
       <Intro icon="pot-steam-outline" title="Koken met wat je nog hebt" text="De app bedenkt gerechten met wat er nog in huis is, zodat je weinig hoeft weg te gooien en weinig hoeft bij te kopen." />
-      <TextInput value={text} onChangeText={setText} multiline placeholder="Wat heb je nog? Bijvoorbeeld: halve courgette, 3 eieren, restje rijst, feta" style={styles.input} testID="ai-left-text" />
+      <SpeakInput value={text} onChangeText={setText} placeholder="Wat heb je nog? Bijvoorbeeld: halve courgette, 3 eieren, restje rijst, feta" testID="ai-left-text" />
       <View style={styles.switchRow}>
         <Text style={[styles.body, { flex: 1 }]}>Ook mijn voorraadkast gebruiken</Text>
         <Switch value={pantry} onValueChange={setPantry} />
@@ -437,13 +446,15 @@ function DishCard({ dish, kind }: { dish: AiDish; kind: "recept" | "restjes" }) 
   );
 }
 
-// Inspreken in de browser (Chrome, Edge, Safari); anders de microfoon van je toetsenbord
-function useSpeech(onText: (t: string) => void) {
+// Inspreken in de browser (Chrome, Edge, Safari); anders de microfoon van je toetsenbord.
+// Wat je zegt, verschijnt meteen in het tekstvak (ook halve zinnen), achter wat er al stond.
+function useSpeech(value: string, onChange: (t: string) => void) {
   const SR = Platform.OS === "web" && typeof window !== "undefined" ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition : null;
   const [on, setOn] = useState(false);
   const rec = useRef<any>(null);
-  const cb = useRef(onText);
-  cb.current = onText;
+  const cb = useRef(onChange);
+  cb.current = onChange;
+  const base = useRef("");
   useEffect(() => () => rec.current?.stop?.(), []);
   const toggle = () => {
     if (!SR) return;
@@ -451,12 +462,16 @@ function useSpeech(onText: (t: string) => void) {
       rec.current?.stop();
       return;
     }
+    base.current = value.trim();
     const r = new SR();
     r.lang = "nl-NL";
     r.continuous = true;
-    r.interimResults = false;
+    r.interimResults = true;
     r.onresult = (e: any) => {
-      for (let k = e.resultIndex; k < e.results.length; k++) if (e.results[k].isFinal) cb.current(e.results[k][0].transcript);
+      let said = "";
+      for (let k = 0; k < e.results.length; k++) said += e.results[k][0].transcript;
+      said = said.trim();
+      cb.current(base.current && said ? `${base.current}, ${said}` : base.current || said);
     };
     r.onend = () => setOn(false);
     r.onerror = () => setOn(false);
@@ -465,6 +480,62 @@ function useSpeech(onText: (t: string) => void) {
     setOn(true);
   };
   return { can: !!SR, on, toggle };
+}
+
+// Bewegend balkje terwijl de app luistert
+function ListenBar({ onStop }: { onStop: () => void }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const bars = useRef([0, 1, 2, 3, 4, 5, 6].map(() => new Animated.Value(0.3))).current;
+  useEffect(() => {
+    const loops = bars.map((v, i) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(i * 90),
+          Animated.timing(v, { toValue: 1, duration: 320 + (i % 3) * 80, useNativeDriver: false }),
+          Animated.timing(v, { toValue: 0.25, duration: 320 + (i % 2) * 90, useNativeDriver: false }),
+        ]),
+      ),
+    );
+    loops.forEach((l) => l.start());
+    return () => loops.forEach((l) => l.stop());
+  }, [bars]);
+  return (
+    <View style={styles.listen} testID="listen-bar">
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 3, height: 26 }}>
+        {bars.map((v, i) => (
+          <Animated.View key={i} style={{ width: 4, borderRadius: 2, backgroundColor: colors.error, height: v.interpolate({ inputRange: [0, 1], outputRange: [4, 26] }) }} />
+        ))}
+      </View>
+      <Text style={[styles.body, { flex: 1, color: colors.error }]}>Ik luister... praat maar</Text>
+      <Pressable onPress={onStop} style={styles.stopBtn} hitSlop={6} testID="listen-stop">
+        <Icon name="stop" size={16} color="#FFFFFF" />
+        <Text style={[styles.small, { color: "#FFFFFF", fontFamily: fonts.semibold }]}>Stop</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+// Tekstvak met een microfoon erin: tik erop en praat, de tekst typt mee
+function SpeakInput({ value, onChangeText, placeholder, testID }: { value: string; onChangeText: (t: string) => void; placeholder: string; testID?: string }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const speech = useSpeech(value, onChangeText);
+  return (
+    <View style={{ gap: 8 }}>
+      <View>
+        <TextInput value={value} onChangeText={onChangeText} multiline placeholder={placeholder} placeholderTextColor={colors.muted}
+          style={[styles.input, { paddingRight: 52 }]} testID={testID} />
+        {speech.can ? (
+          <Pressable onPress={speech.toggle} style={[styles.micBtn, speech.on && { backgroundColor: colors.error }]} hitSlop={6} testID={testID ? `${testID}-mic` : undefined}>
+            <Icon name={speech.on ? "stop" : "microphone"} size={20} color={speech.on ? "#FFFFFF" : colors.brandPrimary} />
+          </Pressable>
+        ) : null}
+      </View>
+      {speech.on ? <ListenBar onStop={speech.toggle} /> : null}
+      {!speech.can ? <Text style={styles.small}>Inspreken kan met de microfoon op je toetsenbord.</Text> : null}
+    </View>
+  );
 }
 
 type AiItem = { name: string; qty: number; unit: string; product: Prod | null };
@@ -480,7 +551,8 @@ function ItemsTab() {
   const [text, setText] = useState("");
   const [items, setItems] = useState<AiItem[]>([]);
   const [campId, setCampId] = useState<string | null>(null);
-  const speech = useSpeech((t) => setText((x) => (x.trim() ? `${x.trim()}, ${t.trim()}` : t.trim())));
+  const [swapAt, setSwapAt] = useState<number | null>(null); // product wisselen in de gevonden lijst
+  const { user } = useAuth();
   const camps = useCamps(items.length > 0);
   const list = camps.data?.camps ?? [];
   const camp = list.find((c) => c.id === campId) ?? list[0];
@@ -507,32 +579,25 @@ function ItemsTab() {
   return (
     <View style={{ gap: 12 }}>
       <Intro icon="microphone-outline" title="Je lijst typen of inspreken" text="Zeg of typ gewoon wat je nodig hebt, zoals je het tegen iemand zou zeggen. De app zoekt de producten erbij." />
-      <TextInput value={text} onChangeText={setText} multiline placeholder="Bijvoorbeeld: 2 pakken melk, brood, iets voor bij de koffie en 500 gram gehakt" style={styles.input} testID="ai-items-text" />
-      <View style={{ flexDirection: "row", gap: 10 }}>
-        {speech.can ? (
-          <View style={{ flex: 1 }}>
-            <Big label={speech.on ? "Stop" : "Inspreken"} icon={speech.on ? "stop" : "microphone"} ghost onPress={speech.toggle} />
-          </View>
-        ) : null}
-        <View style={{ flex: 1 }}>
-          <Big label="Maak mijn lijst" icon="format-list-checks" busy={run.isPending} disabled={text.trim().length < 2} onPress={() => run.mutate()} testID="ai-items-go" />
-        </View>
-      </View>
-      {speech.on ? <Text style={[styles.body, { color: colors.error }]}>Ik luister... Tik op Stop als je klaar bent.</Text> : null}
-      {!speech.can ? <Text style={styles.small}>Inspreken kan met de microfoon op je toetsenbord.</Text> : null}
+      <SpeakInput value={text} onChangeText={setText} placeholder="Bijvoorbeeld: 2 pakken melk, brood, iets voor bij de koffie en 500 gram gehakt" testID="ai-items-text" />
+      <Big label="Maak mijn lijst" icon="format-list-checks" busy={run.isPending} disabled={text.trim().length < 2} onPress={() => run.mutate()} testID="ai-items-go" />
       <Err error={run.error} />
       {items.length ? (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Gevonden producten</Text>
+          <Text style={styles.small}>Tik op een product om een ander te kiezen of zelf te zoeken.</Text>
           {items.map((i, k) => (
             <View key={k} style={styles.ingRow}>
-              {i.product?.image ? <Image source={{ uri: i.product.image }} style={styles.thumb} resizeMode="contain" /> : <Icon name="cart-outline" size={18} color={colors.muted} />}
-              <View style={{ flex: 1 }}>
-                <Text style={styles.body}>
-                  {formatQty(i.qty)} {i.unit === "stuks" ? "x" : i.unit} {i.product?.name ?? i.name}
-                </Text>
-                <Text style={styles.small}>{i.product ? `${i.product.unit} · ${euro(i.product.price)}` : "Geen product gevonden; komt als tekst op je lijst"}</Text>
-              </View>
+              <Pressable onPress={() => setSwapAt(k)} style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 10 }} testID={`ai-item-swap-${k}`}>
+                {i.product?.image ? <Image source={{ uri: i.product.image }} style={styles.thumb} resizeMode="contain" /> : <Icon name="cart-outline" size={18} color={colors.muted} />}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.body}>
+                    {formatQty(i.qty)} {i.unit === "stuks" ? "x" : i.unit} {i.product?.name ?? i.name}
+                  </Text>
+                  <Text style={styles.small}>{i.product ? `${i.product.unit} · ${euro(i.product.price)}` : "Geen product gevonden: tik om er een te kiezen"}</Text>
+                </View>
+                <Icon name="swap-horizontal" size={20} color={colors.brandPrimary} />
+              </Pressable>
               <Pressable onPress={() => setItems(items.filter((_, j) => j !== k))} hitSlop={10}>
                 <Icon name="close" size={20} color={colors.muted} />
               </Pressable>
@@ -550,6 +615,20 @@ function ItemsTab() {
           <Err error={add.error} />
         </View>
       ) : null}
+      {/* Wisselen zoals elders in de app: voorstellen, zelf zoeken of de barcode scannen */}
+      <ShopSwapSheet
+        item={swapAt != null && items[swapAt] ? { name: items[swapAt].name, product: items[swapAt].product?.name, product_id: items[swapAt].product?.id } : null}
+        store={user?.store ?? "Albert Heijn"}
+        title={swapAt != null && items[swapAt] ? `Ander product: ${items[swapAt].name}` : undefined}
+        addLabel="Dit product kiezen"
+        onClose={() => setSwapAt(null)}
+        onPick={(p) => {
+          const k = swapAt;
+          if (k == null) return;
+          setItems((cur) => cur.map((x, j) => (j === k ? { ...x, product: { id: p.id, name: p.name, price: p.promo?.price ?? p.price, unit: p.unit, image: p.image ?? null, unit_price: p.unit_price ?? null } } : x)));
+          setSwapAt(null);
+        }}
+      />
     </View>
   );
 }
@@ -652,6 +731,9 @@ const useStyles = makeStyles((colors) => ({
   intro: { flexDirection: "row", gap: 12, backgroundColor: GOLD.bg, borderColor: GOLD.border, borderWidth: 1, borderRadius: 16, padding: 14 },
   introTitle: { fontSize: 16, fontFamily: fonts.bold, color: GOLD.text },
   introText: { fontSize: 13, lineHeight: 18, fontFamily: fonts.regular, color: GOLD.text },
+  micBtn: { position: "absolute", right: 8, bottom: 8, width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceSecondary },
+  listen: { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.error },
+  stopBtn: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: colors.error, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 },
   input: { minHeight: 80, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 12, fontSize: 15, fontFamily: fonts.regular, color: colors.onSurface, backgroundColor: colors.surface, textAlignVertical: "top" },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: { paddingVertical: 7, paddingHorizontal: 12, borderRadius: 16, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, maxWidth: "100%" },

@@ -74,6 +74,13 @@ export default function HomeScreen() {
 
   // Verversen (omlaag trekken): andere recepten en acties die nog steeds bij je passen
   const shuffle = useRef(0);
+  // Binnenkort in de aanbieding: favorieten, vaak gekocht en wat op je lijstjes staat
+  const soon = useQuery({
+    queryKey: ["deals-soon"],
+    queryFn: () => api<{ items: { product_id: string; name: string; image?: string | null; store: string; price?: number; why: string[];
+      promo: { label: string; period?: string | null; price?: number | null } }[] }>("/deals/soon"),
+    staleTime: 30 * 60 * 1000,
+  });
   const { data, refetch, isRefetching, isLoading } = useQuery({
     queryKey: ["home"],
     queryFn: () => {
@@ -394,6 +401,28 @@ export default function HomeScreen() {
                   <Text style={styles.dealStore}>{SHORT[d.store] ?? d.store}</Text>
                   {d.price ? <Text style={styles.dealPrice}>{euro(d.price)}</Text> : null}
                 </View>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
+      {(soon.data?.items ?? []).length ? (
+        // Je favorieten, wat je vaak koopt en wat op je lijstjes staat, dat binnenkort in de aanbieding komt: even wachten scheelt geld
+        <View style={styles.pad} testID="home-deals-soon">
+          <Text style={styles.soonTitle}>Binnenkort in de aanbieding</Text>
+          <Text style={[styles.dealStore, { marginTop: -6, marginBottom: 8, fontFamily: fonts.regular }]}>Wacht nog even met kopen, dan bespaar je.</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+            {soon.data!.items.map((d) => (
+              <Pressable key={d.product_id} onPress={() => router.push({ pathname: "/product/[id]", params: { id: d.product_id } })} style={styles.dealTile}>
+                {d.image ? <Image source={{ uri: d.image }} style={styles.dealImg} resizeMode="contain" /> : <View style={styles.dealImg} />}
+                <Text style={styles.dealName} numberOfLines={2}>{d.name}</Text>
+                <Text style={[styles.dealLabel, { color: colors.warning }]} numberOfLines={2}>{d.promo.label}</Text>
+                {d.promo.period ? <Text style={styles.dealStore} numberOfLines={1}>{d.promo.period}</Text> : null}
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                  <Text style={styles.dealStore}>{SHORT[d.store] ?? d.store}</Text>
+                  {d.promo.price ? <Text style={styles.dealPrice}>{euro(d.promo.price)}</Text> : d.price ? <Text style={styles.dealPrice}>{euro(d.price)}</Text> : null}
+                </View>
+                <Text style={[styles.dealStore, { color: colors.brandPrimary }]} numberOfLines={1}>{d.why.map((w) => w[0].toUpperCase() + w.slice(1)).join(" · ")}</Text>
               </Pressable>
             ))}
           </ScrollView>

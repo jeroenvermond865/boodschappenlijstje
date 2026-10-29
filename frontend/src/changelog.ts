@@ -5,6 +5,21 @@ export type Release = { id: string; version?: string; date: string; title: strin
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-29-v120",
+    version: "1.2.0",
+    date: "29 oktober 2026",
+    title: "Slimme hulp met inspreken overal, binnenkort in de aanbieding en betere tips",
+    changes: [
+      { kind: "nieuw", text: "Op Home: Binnenkort in de aanbieding. Je ziet welke favorieten, producten die je vaak koopt en producten op je lijstjes binnenkort in de aanbieding zijn. Even wachten met kopen scheelt dan geld." },
+      { kind: "nieuw", text: "Slimme hulp: bij Menu in één zin, Restjes koken en Lijst typen tik je op de microfoon in het tekstvak. Een bewegend balkje laat zien dat de app luistert, en je tekst verschijnt meteen terwijl je praat." },
+      { kind: "nieuw", text: "Lijst typen: tik op een gevonden product om een ander te kiezen, zelf te zoeken of de barcode te scannen." },
+      { kind: "beter", text: "De voorbeeldzinnen bij Menu in één zin zijn elke keer anders en passen bij jou: met hoeveel je meestal bent, hoeveel dagen, wat je vaak eet en je budget. Met Andere voorbeelden krijg je nieuwe." },
+      { kind: "opgelost", text: "Bespaartips stelden soms iets heel anders voor, zoals snoep in plaats van tapenade. Een bewerkt product (tapenade, soep, saus) wordt nu alleen vervangen door hetzelfde soort." },
+      { kind: "beter", text: "De voorstellen voor je voorraadkast onthouden wat je al zag. Je krijgt steeds nieuwe; oude komen pas na twee maanden terug." },
+      { kind: "opgelost", text: "Gerechten zonder foto bij Op het menu krijgen nu vanzelf een foto. Die zie je de volgende keer op Home en in de pop-up." },
+    ],
+  },
+  {
     id: "2026-10-29-v117",
     version: "1.1.7",
     date: "29 oktober 2026",

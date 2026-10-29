@@ -1161,3 +1161,52 @@ def test_besparing_gemiddeld_en_actief():
     assert r["users"] == 2 and r["active_users"] == 1
     assert r["active"]["standaard"] == 15 and r["you"]["standaard"] == 15
     assert r["average"]["standaard"] == 8
+
+
+def test_tapenade_is_geen_snoep():
+    base = {"name": "AH Tapenade paddenstoelen met truffel"}
+    assert not S._same_kind(base, {"name": "Red Band Zoete paddenstoelen"})
+    assert not S._same_kind(base, {"name": "Red Band Zoete paddenstoelen"}, strict=False)
+    assert S._same_kind(base, {"name": "Jumbo Tapenade paddenstoelen"}, strict=False)
+    assert S._same_kind({"name": "Tomatensoep"}, {"name": "Unox tomatensoep"}, strict=False)
+
+
+def test_voorraad_voorstellen_niet_opnieuw(monkeypatch):
+    async def ok(*a, **k):
+        return None
+    monkeypatch.setattr(S, "require_feature", ok)
+
+    async def t():
+        await S.db.users.insert_one({"user_id": "u1"})
+        r1 = await S.pantry_suggestions("", {**U1})
+        u = await S.db.users.find_one({"user_id": "u1"})
+        r2 = await S.pantry_suggestions("", {**U1, "pantry_seen": u["pantry_seen"]})
+        return [i["name"] for i in r1["items"]], [i["name"] for i in r2["items"]]
+    a, b = run(t())
+    assert a and b and not set(a) & set(b)
+
+
+def test_binnenkort_in_de_aanbieding(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    later = (datetime.now(timezone.utc) + timedelta(days=4)).date().isoformat()
+    eind = (datetime.now(timezone.utc) + timedelta(days=10)).date().isoformat()
+    doc = {"product_id": "p1", "name": "Koffie", "dirk_id": 7, "_src": "Dirk", "prices": {"Dirk": 5.0},
+           "promos": [{"id": "x1", "title": "Koffie", "label": "2e halve prijs", "start": later, "end": eind}]}
+
+    async def niks():
+        return []
+    monkeypatch.setattr(S, "_global_products", niks)
+    S._product_cache["by_pid"] = {"p1": doc}
+    r = run(S.deals_soon({**U1, "favorite_products": ["p1"]}))
+    assert [x["product_id"] for x in r["items"]] == ["p1"] and r["items"][0]["why"] == ["favoriet"]
+
+
+def test_voorbeeldzinnen_persoonlijk():
+    async def t():
+        await S.db.camps.insert_one({"camp_id": "c1", "owner_id": "u1", "deleted_at": None, "budget_target": 60,
+                                     "days": [{"index": 0, "adults": 3, "children": 1, "meals": {"avondeten": ["d1"]}}] * 4})
+        await S.db.dishes.insert_one({"dish_id": "d1", "name": "Pasta pesto"})
+        return await S.menu_examples(U1)
+    r = run(t())
+    assert r["personal"] and len(r["examples"]) == 3
+    assert any("3 volwassenen en 1 kind" in e for e in r["examples"])
