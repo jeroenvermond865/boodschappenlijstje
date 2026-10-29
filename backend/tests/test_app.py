@@ -1046,3 +1046,13 @@ def test_limieten_staan_in_de_database():
         return e.value.status_code, await S.db.rate_hits.count_documents({"key": "test:x"})
     code, n = run(t())
     assert code == 429 and n == 3
+
+
+def test_oude_backups_opruimen_alleen_met_toestemming(monkeypatch):
+    monkeypatch.setattr(S, "GOOGLE_CLIENT_ID", "id")
+    monkeypatch.setattr(S, "GOOGLE_CLIENT_SECRET", "geheim")
+
+    async def t():
+        await S.db.settings.insert_one({"key": "gmail_sender", "email": "x@gmail.com", "refresh_token": "r", "scope": "gmail.send"})
+        return await S._cleanup_backup_mails()
+    assert run(t()) == 0  # zonder gmail.modify niets aanraken

@@ -6,15 +6,16 @@ export const LEGAL = {
   owner: "Jeroen Vermond",
   email: "info@slimboodschappenlijstje.nl",
   site: "slimboodschappenlijstje.nl",
-  updated: "27 oktober 2026",
+  updated: "29 oktober 2026",
   minAge: 16,
-  aiDaily: 60,
+  aiPremium: 100, // vragen per maand aan de slimme hulp
+  aiStandard: 3,
 };
 
 export type LegalDoc = "voorwaarden" | "privacy" | "cookies" | "herroepen";
 export type LegalSection = { h: string; p: string[] };
 
-const { owner, email, site, minAge, aiDaily } = LEGAL;
+const { owner, email, site, minAge, aiPremium, aiStandard } = LEGAL;
 
 export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sections: LegalSection[] }> = {
   voorwaarden: {
@@ -83,7 +84,8 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
         p: [
           "Slimme hulp (Premium) maakt met AI een menu uit één zin, bedenkt gerechten met je restjes, neemt recepten over van een tekst, link of foto, zet je getypte boodschappen op je lijst en geeft bespaartips. Daarnaast kijkt AI op de achtergrond productvoorstellen na en helpt het bij zoeken.",
           "AI maakt soms fouten. Een gerecht, hoeveelheid, product of tip kan dus niet kloppen. Kijk het altijd even na, zeker bij allergieën en diëten. Jij beslist wat er op je lijst komt.",
-          `Je kunt Slimme hulp tot ${aiDaily} keer per dag gebruiken. AI kost ons geld per vraag, daarom kunnen we deze grens later aanpassen.`,
+          `Met Premium kun je Slimme hulp tot ${aiPremium} keer per maand gebruiken, zonder Premium ${aiStandard} keer per maand om te proberen. AI kost ons geld per vraag, daarom kunnen we deze grens later aanpassen.`,
+          "Bij gerechten zonder eigen foto kan de app een afbeelding laten maken met AI. Die is herkenbaar als AI-afbeelding en laat zien hoe het gerecht eruit kan zien, niet hoe het precies wordt.",
           "Zet in Slimme hulp geen gevoelige gegevens, zoals medische informatie. Maak alleen foto's van recepten die je zelf mag gebruiken, en gebruik overgenomen recepten alleen voor jezelf.",
         ],
       },
@@ -166,7 +168,7 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
       {
         h: "2. Welke gegevens we bewaren",
         p: [
-          "Accountgegevens: je naam en e-mailadres, en je wachtwoord in versleutelde vorm (we kunnen het zelf niet lezen). Log je in met Google, dan krijgen we van Google je naam, e-mailadres en profielfoto. We bewaren ook wanneer je akkoord gaf met de voorwaarden.",
+          "Accountgegevens: je naam en e-mailadres (en of je het bevestigd hebt), en je wachtwoord in versleutelde vorm (we kunnen het zelf niet lezen). Log je in met Google, dan krijgen we van Google je naam, e-mailadres en profielfoto. We bewaren ook wanneer je akkoord gaf met de voorwaarden.",
           "Wat je zelf invult (niet verplicht): gebruikersnaam, telefoonnummer, profielfoto en favoriete winkel.",
           "Wat je in de app maakt: je planningen (dagen, aantal personen en vega-eters, maaltijden, budget), boodschappenlijsten, eigen gerechten en pakketten, je voorraadkast, prijsmeldingen, favoriete producten en recepten, feedback en supermarkt-aanvragen.",
           "Premium: of je Premium hebt en tot wanneer, je aanvraag voor een vereniging (naam van de vereniging en je toelichting), en wie jou heeft uitgenodigd of wie jij hebt uitgenodigd met je deelcode. Kun je later Premium kopen, dan bewaren we ook je betalingen (bedrag, datum en of het gelukt is). Je bankgegevens zelf ziet alleen de betaaldienst.",
@@ -202,11 +204,14 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
           "Mensen met wie je een planning deelt, zien je naam en wat je in die planning zet.",
           "Beheerders van de app kunnen je naam, e-mailadres, rol en Premium zien om accounts te beheren en hulp te geven. Feedback en aanvragen die je instuurt, zien ze ook.",
           "Voor het draaien van de app gebruiken we deze diensten, die je gegevens alleen voor ons verwerken:",
-          "• Render: hosting van de app en de database, met servers in Frankfurt (Duitsland).",
-          "• Google Workspace (Gmail): versturen van e-mails van de app, en de mailbox waarin back-ups en foutmeldingen binnenkomen. Als reserve kan e-mail ook via Resend gaan.",
-          "• Anthropic (Claude): de AI achter Slimme hulp, het nakijken van productvoorstellen en slimmer zoeken. Anthropic krijgt alleen wat nodig is voor de vraag, zoals wat je in Slimme hulp typt of fotografeert, of een zoekwoord. Geen naam of e-mailadres. Anthropic gebruikt dit niet om zijn AI te trainen.",
+          "• Render: hosting van de app, met servers in Frankfurt (Duitsland).",
+          "• MongoDB Atlas: de database waarin je account, lijstjes, gerechten en voorraad staan.",
+          "• Cloudflare: zorgt voor een veilige, snelle verbinding met de website en houdt aanvallen tegen. Al het verkeer naar de app gaat daar doorheen.",
+          "• Google Workspace (Gmail): versturen van e-mails van de app, en de mailbox waarin versleutelde back-ups en foutmeldingen binnenkomen. Als reserve kan e-mail ook via Resend gaan.",
+          "• Anthropic (Claude): de AI achter Slimme hulp, het nakijken van productvoorstellen, slimmer zoeken en het in eigen woorden schrijven van een bereiding. Anthropic krijgt alleen wat nodig is voor de vraag, zoals wat je in Slimme hulp typt of fotografeert, een recepttitel met ingrediënten, je lijstje (voor bespaartips) of een zoekwoord. Geen naam of e-mailadres. Anthropic gebruikt dit niet om zijn AI te trainen.",
+          "• OpenAI: maakt AI-afbeeldingen bij gerechten zonder foto. OpenAI krijgt alleen de naam van het gerecht, geen gegevens over jou.",
           "• Google: alleen als je kiest voor \"Doorgaan met Google\".",
-          "• Later een betaaldienst (bijvoorbeeld voor iDEAL), als je Premium koopt. Die noemen we hier zodra het zover is.",
+          "• Mollie: de betaaldienst (bijvoorbeeld iDEAL), alleen als je later Premium of Ultra koopt. Je bankgegevens ziet alleen Mollie.",
           "Sommige van deze bedrijven zijn Amerikaans. Komen gegevens buiten de Europese Unie terecht, dan gebeurt dat met de waarborgen uit de AVG, zoals het EU-VS Data Privacy Framework of de standaardcontractbepalingen van de Europese Commissie.",
           "We verkopen je gegevens nooit en geven ze niet aan adverteerders of supermarkten.",
         ],
@@ -215,9 +220,9 @@ export const LEGAL_DOCS: Record<LegalDoc, { title: string; intro: string; sectio
         h: "6. Hoe lang we gegevens bewaren",
         p: [
           "Zolang je account bestaat. Verwijder je je account, dan worden je gegevens direct en definitief uit de app gewist. Gedeelde planningen blijven bestaan voor de andere deelnemers, en standaardgerechten die je hebt aangemeld blijven zonder je naam staan.",
-          "Back-ups: elke nacht maken we een back-up van de database. Daarin kunnen je gegevens nog staan tot de back-up wordt gewist. We bewaren back-ups hoogstens 30 dagen en gebruiken ze alleen om gegevens terug te zetten na een storing.",
+          "Back-ups: elke nacht maken we een versleutelde back-up van de database, zonder wachtwoorden. Daarin kunnen je gegevens nog staan tot de back-up wordt gewist. Na 30 dagen gaan back-ups naar de prullenbak en daarna worden ze gewist. We gebruiken ze alleen om gegevens terug te zetten na een storing.",
           "Dingen die je zelf verwijdert, staan nog 30 dagen in \"Recent verwijderd\" zodat je ze terug kunt zetten. Daarna zijn ze weg.",
-          "Een inlogsessie verloopt na 7 dagen. Een code om je wachtwoord te herstellen verloopt na 1 uur.",
+          "Je blijft ingelogd zolang je de app gebruikt; gebruik je hem 90 dagen niet, dan log je opnieuw in. Een code om je wachtwoord te herstellen verloopt na 1 uur, een code om je e-mailadres te bevestigen na 30 minuten.",
           "Gebruik je je account twee jaar niet, dan sturen we je een e-mail. Log je daarna binnen 30 dagen niet in, dan verwijderen we je account en je gegevens. Inloggen is genoeg om je account te houden.",
           "Herroepingen bewaren we 2 jaar, als bewijs voor jou en voor ons. Betalingen bewaren we 7 jaar, omdat de belastingwet dat vraagt.",
           "Logboeken van de server worden na korte tijd automatisch gewist.",

@@ -8,3 +8,8 @@ __pycache__/
 backend/web/
 dist/
 .DS_Store
+
+# Lokaal houden (OneDrive), niet naar GitHub: juridische stukken en rapporten
+Juridisch/
+Bronnen-overzicht.md
+Beveiligingsrapport.md

@@ -237,7 +237,7 @@ async def create_session(user_id: str) -> str:
 
 # Datum van de huidige voorwaarden en privacyverklaring. Verander je de teksten wezenlijk, zet dan een nieuwe datum:
 # iedereen moet dan bij de volgende keer inloggen opnieuw akkoord geven.
-TERMS_VERSION = "2026-10-27"
+TERMS_VERSION = "2026-10-29"
 
 
 def public_user(doc: dict) -> dict:
@@ -972,7 +972,8 @@ async def gmail_connect(key: str = ""):
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": google_callback_url(),
         "response_type": "code",
-        "scope": "openid email https://www.googleapis.com/auth/gmail.send",
+        # modify: alleen om oude back-upmails na 30 dagen naar de prullenbak te doen
+        "scope": "openid email https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.modify",
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -1034,7 +1035,7 @@ async def google_callback(state: str = "", code: str = "", error: str = ""):
             raise HTTPException(status_code=403, detail="Dit Gmail-account is niet ingesteld als afzender (GMAIL_SENDER)")
         await db.settings.update_one(
             {"key": "gmail_sender"},
-            {"$set": {"email": email, "refresh_token": refresh_token, "updated_at": now_utc()}},
+            {"$set": {"email": email, "refresh_token": refresh_token, "scope": tok.json().get("scope") or "", "updated_at": now_utc()}},
             upsert=True,
         )
         return HTMLResponse(f"<p style='font-family:sans-serif'>Gmail gekoppeld: e-mails worden nu verstuurd vanaf {escape(email)}.</p>")
@@ -12893,6 +12894,32 @@ async def _backup_zip(history: bool = True, files: bool = False, for_mail: bool 
     return buf.getvalue(), counts
 
 
+BACKUP_KEEP_DAYS = 30
+
+
+async def _cleanup_backup_mails() -> int:
+    # Back-upmails ouder dan 30 dagen naar de prullenbak (Gmail leegt die zelf na 30 dagen). Alleen als Gmail met
+    # de juiste toestemming is gekoppeld, en alleen in de mailbox van de afzender.
+    sender = await gmail_sender()
+    if not sender or "gmail.modify" not in (sender.get("scope") or ""):
+        return 0
+    async with httpx.AsyncClient(timeout=30) as c:
+        tok = await c.post("https://oauth2.googleapis.com/token", data={
+            "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": sender["refresh_token"], "grant_type": "refresh_token"})
+        if tok.status_code != 200:
+            return 0
+        h = {"Authorization": f"Bearer {tok.json()['access_token']}"}
+        q = f'subject:"Back-up Slim Boodschappenlijstje" has:attachment older_than:{BACKUP_KEEP_DAYS}d'
+        r = await c.get("https://gmail.googleapis.com/gmail/v1/users/me/messages", headers=h, params={"q": q, "maxResults": 100})
+        ids = [m["id"] for m in (r.json().get("messages") or [])] if r.status_code == 200 else []
+        for mid in ids:
+            await c.post(f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}/trash", headers=h)
+    if ids:
+        logger.info("Oude back-upmails naar de prullenbak: %d", len(ids))
+    return len(ids)
+
+
 def _backup_due(doc: dict) -> bool:
     # Gelukt: na 22 uur weer. Eén keer mislukt: na een uur opnieuw. Twee keer: de volgende nacht weer
     at = doc.get("at")
@@ -14927,6 +14954,7 @@ async def _daily_refresh_loop():
         try:
             if _backup_due(await db.meta.find_one({"key": "backup"}) or {}):
                 await _backup_mail()
+                await _cleanup_backup_mails()
         except Exception as e:
             logger.warning("Back-up mislukt: %r", e)
         try:
