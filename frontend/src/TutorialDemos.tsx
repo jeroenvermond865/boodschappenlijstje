@@ -22,7 +22,7 @@ import { useAuth } from "@/src/auth";
 import Image from "@/src/components/SafeImage";
 import { Icon } from "@/src/components/ui";
 import { DISH_GROUPS } from "@/src/constants";
-import { GOLD, PLAN_NAME, planAccent, planIcon, usePlanOf } from "@/src/premium";
+import { PLAN_NAME, planAccent, planIcon, usePlanOf } from "@/src/premium";
 import type { Product } from "@/src/ProductBrowser";
 import { euro, fetchProducts, NO_FILTERS } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
