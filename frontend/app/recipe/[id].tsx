@@ -33,6 +33,8 @@ type Recipe = {
   url: string;
   is_favorite?: boolean;
   steps: string[];
+  steps_own?: boolean; // in eigen woorden geschreven, niet de tekst van de winkel
+  steps_pending?: boolean; // wordt nu geschreven
   ingredients: { text: string; name: string; qty: number | null; unit: string; pantry?: boolean; stock?: "yes" | "low" | "maybe" | null; site_packs?: number | null; product: Product | null; alt_for?: number | null }[];
   in_stock?: string[];
   alt_swaps?: AltSwap[];
@@ -72,6 +74,7 @@ export default function RecipeScreen() {
     queryFn: () => api<Recipe>(`/recipes/detail?id=${encodeURIComponent(id)}`),
     staleTime: 30 * 60 * 1000,
     retry: 1,
+    refetchInterval: (query) => (query.state.data?.steps_pending ? 5000 : false),
   });
   // Zelf gewisseld (bijv. naar een voordeligere verpakking): per ingrediënt het andere product
   // Sleutel is het volgnummer van het ingrediënt, of "add-…" voor een product dat er via een tip bij komt
@@ -267,6 +270,9 @@ export default function RecipeScreen() {
               {r.steps.length ? (
                 <>
                   <Text style={styles.section}>Bereiding</Text>
+                  {r.steps_own ? (
+                    <Text style={styles.muted}>In eigen woorden beschreven. Het originele recept staat op {SITE[r.store] ?? "de site"}.</Text>
+                  ) : null}
                   {r.steps.map((s, n) => (
                     <View key={n} style={styles.step}>
                       <View style={styles.stepNum}>
@@ -275,6 +281,14 @@ export default function RecipeScreen() {
                       <Text style={[styles.body, { flex: 1 }]}>{s}</Text>
                     </View>
                   ))}
+                </>
+              ) : r.steps_pending ? (
+                <>
+                  <Text style={styles.section}>Bereiding</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <ActivityIndicator color={colors.brandPrimary} />
+                    <Text style={styles.muted}>Bereiding wordt geschreven…</Text>
+                  </View>
                 </>
               ) : null}
               {r.tip ? (

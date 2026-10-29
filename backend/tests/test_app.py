@@ -223,6 +223,44 @@ def test_mail_naar_info_krijgt_bcc_naar_beheer(monkeypatch):
     assert verstuurd == [("Info@slimboodschappenlijstje.nl", "beheer@slimboodschappenlijstje.nl"), ("klant@example.com", None)]
 
 
+# --- Bronnen van supermarkten ---
+def test_recept_van_winkel_zonder_tekst_en_foto():
+    S._sources.update(S.SOURCE_DEFAULTS)
+    r = S._safe_recipe({"id": "ah-1", "title": "Pasta pesto", "image": "https://static.ah.nl/x.jpg", "description": "Lekker",
+                        "steps": ["Kook de pasta"], "tip": "Met kaas", "alt_text": "Liever vlees?", "ingredients": [{"text": "200 g pasta"}],
+                        "url": "https://www.ah.nl/allerhande/recept/R-R1"})
+    assert r["title"] == "Pasta pesto" and r["ingredients"] and r["url"].startswith("https://www.ah.nl")
+    assert r["image"] is None and r["description"] is None and r["steps"] == [] and r["tip"] is None and r["alt_text"] == ""
+
+
+def test_bronnen_weer_aanzetten_na_toestemming(monkeypatch):
+    S._sources.update(S.SOURCE_DEFAULTS)
+
+    async def mag_alles(user, perm):
+        return [perm]
+    monkeypatch.setattr(S, "require_perm", mag_alles)
+
+    async def t():
+        return await S.admin_sources_update(S.SourcesUpdate(recipe_content=True), {"user_id": "a"})
+    try:
+        assert run(t())["recipe_content"] is True
+        assert S._safe_recipe({"steps": ["Kook"], "image": "https://static.ah.nl/x.jpg"})["steps"] == ["Kook"]
+    finally:
+        S._sources.update(S.SOURCE_DEFAULTS)
+
+
+def test_geen_winkelfotos_via_eigen_server():
+    S._sources.update(S.SOURCE_DEFAULTS)
+    with pytest.raises(HTTPException) as e:
+        run(S.image_proxy("https://static.ah.nl/dam/product/x.jpg"))
+    assert e.value.status_code == 404
+
+
+def test_eerlijke_naam_bij_winkels():
+    for h in (S.AH_HEADERS, S.JUMBO_HEADERS, S.DIRK_HEADERS, S._PAGE_HEADERS):
+        assert h["User-Agent"] == S.APP_AGENT and "slimboodschappenlijstje.nl" in h["User-Agent"]
+
+
 # --- Foutmelding ---
 def test_foutmelding_pas_na_veel_fouten_en_niet_te_vaak():
     uitkomst = [S._note_error("GET /api/x: 500") for _ in range(S.ALERT_MIN * 2)]

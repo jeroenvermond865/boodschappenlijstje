@@ -60,6 +60,8 @@ EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "onboarding@resend.dev
 # Zakelijke adressen: beheer@ krijgt de back-ups, foutmeldingen en aanvragen; antwoorden van gebruikers gaan naar info@
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "beheer@slimboodschappenlijstje.nl").strip()
 INFO_EMAIL = os.environ.get("INFO_EMAIL", "info@slimboodschappenlijstje.nl").strip()
+# Bij elk verzoek aan een winkel zeggen we eerlijk wie we zijn, zodat ze ons kunnen mailen in plaats van blokkeren
+APP_AGENT = "SlimBoodschappenlijstje/1.0 (+https://slimboodschappenlijstje.nl; info@slimboodschappenlijstje.nl)"
 ADMIN_SEED_EMAILS = ["jeroenvermond865@gmail.com", ADMIN_EMAIL.lower()]
 DEFAULT_ROLE = "gebruiker"
 ALL_PERMISSIONS = ["manage_standard_dishes", "review_submissions", "manage_users", "manage_roles", "view_budget", "manage_budget", "manage_settings", "manage_products"]
@@ -1398,7 +1400,8 @@ async def _prep_ai(name: str, base: List[str], items: list) -> Optional[List[str
     ask = (f"Gerecht: {name}\n\nIngrediënten (per volwassene):\n" + "\n".join(lines) + "\n\n" +
            (("Bereiding van het oorspronkelijke recept:\n" + "\n".join(f"{k + 1}. {st}" for k, st in enumerate(base)) +
              "\n\nPas deze bereiding aan aan de producten hierboven (sommige zijn vervangen of toegevoegd). Houd wat klopt, verander wat moet.")
-            if base else "Er is nog geen bereiding. Bedenk een goede, eenvoudige bereiding met deze producten.") +
+            if base else "Er is nog geen bereiding. Bedenk zelf een goede, eenvoudige bereiding met deze producten, "
+                        "in je eigen woorden: neem geen tekst over van recepten die je tegenkomt.") +
            "\nGebruik de tekst op de verpakking. Twijfel je hoe je iets het beste klaarmaakt, zoek het dan even op internet."
            "\nSchrijf in eenvoudig Nederlands, kort, als genummerde stappen (1. 2. 3.), maximaal 10 stappen, en verder niets.")
     try:
@@ -1434,6 +1437,9 @@ async def dish_preparation(dish_id: str, camp_id: Optional[str] = None, user: di
             base = (await _recipe_detail(rid.replace(":", "-"))).get("steps") or []
         except Exception as e:
             logger.info("Bereiding %s: recept %r", dish_id, e)
+        if not base:
+            own = await db.own_steps.find_one({"rid": rid.replace(":", "-")}, {"_id": 0, "steps": 1})
+            base = list((own or {}).get("steps") or [])
     items = []
     for i in doc.get("ingredients") or []:
         pid = swaps.get(i.get("product_id") or "") or i.get("product_id")
@@ -2465,7 +2471,7 @@ async def _photo_candidates(name: str) -> list:
             break
     try:
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get("https://commons.wikimedia.org/w/api.php", headers={"User-Agent": "SlimBoodschappenlijstje/1.0 (https://slimboodschappenlijstje.nl; jeroenvermond865@users.noreply.github.com)", "Accept": "application/json"}, params={
+            r = await c.get("https://commons.wikimedia.org/w/api.php", headers={"User-Agent": APP_AGENT, "Accept": "application/json"}, params={
                 "action": "query", "format": "json", "generator": "search", "gsrnamespace": 6, "gsrlimit": 6,
                 "gsrsearch": name + " filetype:bitmap", "prop": "imageinfo", "iiprop": "url", "iiurlwidth": 600})
         if r.status_code != 200:
@@ -5424,7 +5430,7 @@ async def product_other_stores(product_id: str, user: dict = Depends(get_current
 DETAIL_CACHE_SECONDS = 6 * 3600
 _detail_cache: dict = {}
 _detail_logged = {"Jumbo": 0}
-_PAGE_HEADERS = {"Accept": "text/html", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
+_PAGE_HEADERS = {"Accept": "text/html", "User-Agent": APP_AGENT}
 
 
 def _euro(v: float) -> str:
@@ -6106,7 +6112,7 @@ async def delete_product(product_id: str, user: dict = Depends(get_current_user)
 
 
 # --- Open Food Facts lookup (barcode + search) ---
-OFF_HEADERS = {"User-Agent": "SlimBoodschappenlijstje/1.0 (scoutkook app)"}
+OFF_HEADERS = {"User-Agent": APP_AGENT}
 
 
 def _off_normalize(p: dict) -> Optional[dict]:
@@ -6216,7 +6222,7 @@ DIRK_GQL = "https://web-gateway.dirk.nl/graphql"
 DIRK_STORE_ID = 66  # webwinkel van dirk.nl; filiaalnummers (bijv. Leiderdorp 1067) geven geen productdata
 DIRK_HEADERS = {
     "Content-Type": "application/json",
-    "User-Agent": "Mozilla/5.0 (Linux; Android 10) Chrome/120 Mobile Safari/537.36",
+    "User-Agent": APP_AGENT,
     "Origin": "https://www.dirk.nl",
 }
 
@@ -6926,6 +6932,69 @@ def _promo_public(doc: dict, price: float) -> tuple:
     return now_p, next_p
 
 
+# --- Wat de app van de supermarkten overneemt ---
+# Zolang er geen toestemming is: alleen feiten (titel, ingrediënten, prijzen) en een link naar de winkel. Geen bereidingsteksten,
+# beschrijvingen of foto's van hun recepten, geen foto's via onze eigen server, en geen volledige import van hun assortiment.
+# Na toestemming per onderdeel weer aanzetten via Beheer (PUT /api/admin/sources), bijv. {"recipe_content": true}.
+SOURCE_DEFAULTS = {
+    "recipe_content": False,  # bereiding, beschrijving, tip en foto van recepten van de winkel tonen
+    "image_proxy": False,  # foto's van winkels via onze eigen server doorgeven (anders laat de browser ze direct bij de winkel zien)
+    "full_import": False,  # het hele assortiment ophalen met zoektermen, en nieuwe producten toevoegen bij de prijsronde
+}
+STORE_HOSTS = ("ah.nl", "jumbo.com", "dirk.nl", "static-images.jumbo.com")
+_sources: dict = dict(SOURCE_DEFAULTS)
+
+
+def source_on(key: str) -> bool:
+    return bool(_sources.get(key, SOURCE_DEFAULTS.get(key)))
+
+
+def _store_url(url: Optional[str]) -> bool:
+    host = (urlparse(url or "").hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in STORE_HOSTS)
+
+
+async def _load_sources() -> None:
+    doc = await db.settings.find_one({"key": "sources"}) or {}
+    _sources.update({k: bool(doc[k]) for k in SOURCE_DEFAULTS if k in doc})
+    if not source_on("recipe_content"):
+        # Foto's van winkelrecepten die eerder bij gerechten zijn opgeslagen: weg, dan zoekt de app een vrije foto
+        pat = {"$regex": r"^https://([a-z0-9-]+\.)*(ah\.nl|jumbo\.com|dirk\.nl)/", "$options": "i"}
+        r1 = await db.dishes.update_many({"photo": pat}, {"$unset": {"photo": "", "photo_for": "", "photo_v": ""}})
+        r2 = await db.dishes.update_many({"source.image": pat}, {"$unset": {"source.image": ""}})
+        if r1.modified_count or r2.modified_count:
+            logger.info("Winkelfoto's bij gerechten weggehaald: %d foto's, %d bronfoto's", r1.modified_count, r2.modified_count)
+
+
+def _safe_recipe(r: dict) -> dict:
+    # Alleen feiten en een link: hun teksten en foto's laten we weg (tenzij er toestemming is)
+    if source_on("recipe_content"):
+        return r
+    return {**r, "image": None, "description": None, "steps": [], "tip": None, "alt_text": ""}
+
+
+class SourcesUpdate(BaseModel):
+    recipe_content: Optional[bool] = None
+    image_proxy: Optional[bool] = None
+    full_import: Optional[bool] = None
+
+
+@api_router.get("/admin/sources")
+async def admin_sources(user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_settings")
+    return {k: source_on(k) for k in SOURCE_DEFAULTS}
+
+
+@api_router.put("/admin/sources")
+async def admin_sources_update(data: SourcesUpdate, user: dict = Depends(get_current_user)):
+    await require_perm(user, "manage_settings")
+    ch = {k: v for k, v in data.model_dump().items() if v is not None}
+    await db.settings.update_one({"key": "sources"}, {"$set": {"key": "sources", **ch}}, upsert=True)
+    _sources.update(ch)
+    _recipe_cache.clear()
+    return {k: source_on(k) for k in SOURCE_DEFAULTS}
+
+
 # --- Online recepten van AH (Allerhande), Jumbo en Dirk ---
 RECIPE_PAGE = 24
 RECIPE_STORE_NAMES = {"ah": "Albert Heijn", "jumbo": "Jumbo", "dirk": "Dirk"}
@@ -7438,7 +7507,9 @@ async def _store_recipes(store: str, q: str, filters: dict, page: int, size: int
     hit = _rc_get(key, 3600)
     if hit is not None:
         return hit
-    return _rc_set(key, await _RECIPE_SOURCES[store](q, filters, page, size))
+    res = await _RECIPE_SOURCES[store](q, filters, page, size)
+    res = {**res, "recipes": [_safe_recipe(r) for r in res.get("recipes") or []]}
+    return _rc_set(key, res)
 
 
 _RECIPE_STOP = {"met", "van", "en", "de", "het", "een", "uit", "voor", "op", "in", "of", "zonder", "recept", "lekker", "snelle", "makkelijke"}
@@ -7694,7 +7765,7 @@ async def _recipe_detail(rid: str) -> dict:
                "alt_text": " ".join(dict.fromkeys(_swap_texts(r)))[:2000]}
     else:
         raise HTTPException(status_code=404, detail="Recept niet gevonden")
-    return _rc_set(("detail", rid), out)
+    return _rc_set(("detail", rid), _safe_recipe(out))
 
 
 _FILLER = {"middelgrote", "grote", "kleine", "verse", "vers", "milde", "mild", "ongezouten", "gezouten", "friszoete", "zoete", "rijpe",
@@ -8601,12 +8672,58 @@ async def recipe_detail(id: str, user: dict = Depends(get_current_user)):
     if not user.get("no_personal"):
         asyncio.create_task(_track_recipe(user["user_id"], rec, 1))
     out = await _recipe_products(rec, user)
+    if not out.get("steps") and not source_on("recipe_content"):
+        own = await db.own_steps.find_one({"rid": rec["id"]}, {"_id": 0, "steps": 1})
+        if own:
+            out = {**out, "steps": own["steps"], "steps_own": True}
+        elif os.environ.get("ANTHROPIC_API_KEY"):
+            _own_steps_later(rec)
+            out = {**out, "steps_pending": True}
     # Voorraadkast (Premium): staat wat waarschijnlijk al in huis is nog in je voorraad?
     if has_feature(user, "voorraadkast"):
         names = [i["name"] for i in out["ingredients"] if i.get("pantry") and i.get("name")]
         stock = await _pantry_stock(user, names)
         out = {**out, "ingredients": [{**i, "stock": stock.get(i.get("name"))} if i.get("pantry") else i for i in out["ingredients"]]}
     return out
+
+
+_own_steps_busy: set = set()
+_own_steps_tasks: set = set()
+
+
+async def _make_own_steps(rec: dict) -> None:
+    # Een eigen bereiding, alleen uit de titel en de ingrediënten (feiten): de tekst van de winkel nemen we niet over
+    rid = rec["id"]
+    ings = "\n".join(f"- {t}" for t in ((i.get("text") or i.get("name") or "").strip() for i in rec.get("ingredients") or []) if t)
+    if not ings:
+        return
+    ask = (f"Gerecht: {rec.get('title')}\n"
+           + (f"Voor {rec['servings']} personen\n" if rec.get("servings") else "")
+           + (f"Tijd: ongeveer {rec['time']} minuten\n" if rec.get("time") else "")
+           + f"\nIngrediënten:\n{ings}\n\nSchrijf zelf een goede, eenvoudige bereiding voor dit gerecht met deze ingrediënten. "
+           "Gebruik je eigen woorden en kennis en neem geen tekst over van bestaande recepten. "
+           "Schrijf in eenvoudig Nederlands, kort, als genummerde stappen (1. 2. 3.), maximaal 10 stappen, en verder niets.")
+    try:
+        msg = await _claude("bereiding", max_tokens=1500, output_config={"effort": "low"}, messages=[{"role": "user", "content": ask}])
+        if msg.stop_reason == "refusal":
+            return
+        text = "\n".join(b.text for b in msg.content if b.type == "text")
+        steps = [m.group(1).strip()[:500] for m in re.finditer(r"^\s*\d+[.)]\s+(.+)$", text, re.M)][:12]
+        if steps:
+            await db.own_steps.update_one({"rid": rid}, {"$set": {"rid": rid, "steps": steps, "at": now_utc()}}, upsert=True)
+    except Exception as e:
+        logger.warning("Eigen bereiding %s: %r", rid, e)
+    finally:
+        _own_steps_busy.discard(rid)
+
+
+def _own_steps_later(rec: dict) -> None:
+    if rec["id"] in _own_steps_busy:
+        return
+    _own_steps_busy.add(rec["id"])
+    t = asyncio.create_task(_make_own_steps(rec))
+    _own_steps_tasks.add(t)
+    t.add_done_callback(_own_steps_tasks.discard)
 
 
 async def _import_linked(rec: dict) -> None:
@@ -8702,6 +8819,8 @@ class RecipeFav(BaseModel):
 @api_router.get("/recipes/favorites")
 async def recipe_favorites(user: dict = Depends(get_current_user)):
     favs = list(reversed(user.get("recipe_favorites") or []))
+    if not source_on("recipe_content"):
+        favs = [{**f, "image": None} if _store_url(f.get("image")) else f for f in favs]
     return {"recipes": favs, "total": len(favs), "facets": [], "has_more": False}
 
 
@@ -8722,7 +8841,7 @@ async def _import_extra_terms() -> None:
     # Eenmalig de nieuwe zoektermen bij AH ophalen (de volledige import doet ze daarna vanzelf mee)
     await asyncio.sleep(90)
     key = "extra_terms_" + str(len(EXTRA_TERMS))
-    if await db.meta.find_one({"key": key}):
+    if not source_on("full_import") or await db.meta.find_one({"key": key}):
         return
     try:
         added = await _import_all_ah(await _store_mults(), EXTRA_TERMS)
@@ -9748,6 +9867,8 @@ async def image_proxy(u: str):
     host = (urlparse(u).hostname or "").lower()
     if not u.startswith("https://") or not any(host == h or host.endswith("." + h) for h in _IMG_HOSTS):
         raise HTTPException(status_code=400, detail="Onbekende foto")
+    if not source_on("image_proxy") and host not in ("commons.wikimedia.org", "upload.wikimedia.org", "images.unsplash.com"):
+        raise HTTPException(status_code=404, detail="Foto's van winkels geven we niet door")
     hit = _img_cache.get(u)
     if hit is None:
         try:
@@ -10120,7 +10241,7 @@ async def dirk_search(q: str, user: dict = Depends(get_current_user)):
 
 
 # --- Albert Heijn (public mobile API) ---
-AH_HEADERS = {"User-Agent": "Appie/8.22.3", "Content-Type": "application/json"}
+AH_HEADERS = {"User-Agent": APP_AGENT, "Content-Type": "application/json"}
 
 
 async def _ah_token(client) -> str:
@@ -10164,7 +10285,7 @@ async def _ah_search(term: str) -> list:
 JUMBO_GQL = "https://www.jumbo.com/api/graphql"
 JUMBO_HEADERS = {
     "Content-Type": "application/json",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36",
+    "User-Agent": APP_AGENT,
     "apollographql-client-name": "JUMBO_WEB-search",
     "apollographql-client-version": "master-v1",
     "x-source": "JUMBO_WEB-search",
@@ -10596,6 +10717,8 @@ async def _import_all_dirk(with_others: bool = True) -> None:
 @api_router.post("/admin/products/import-dirk-all")
 async def start_import_all_dirk(only: str = "", user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_products")
+    if not source_on("full_import"):
+        raise HTTPException(status_code=403, detail="Het hele assortiment ophalen staat uit tot er toestemming van de winkels is")
     if not _dirk_import_running:
         if only in ("ah", "jumbo"):
             asyncio.create_task(_import_only(only))
@@ -10948,6 +11071,8 @@ async def _refresh_dirk_prices(mults: dict) -> int:
     gone: set = set()
     async with httpx.AsyncClient(timeout=30, headers=DIRK_HEADERS) as c:
         for i in range(0, len(ids), 25):
+            if i:
+                await asyncio.sleep(1)  # rustig aan, niet alles tegelijk
             try:
                 batch = await _dirk_fetch_products(c, ids[i:i + 25])
             except Exception as e:
@@ -11024,7 +11149,7 @@ async def _refresh_ah_prices(mults: dict) -> int:
                     seen.add(aid)
                     if aid in prods:
                         ops.append(UpdateOne({"product_id": prods[aid]["product_id"]}, {"$set": _apply_refresh(prods[aid], "Albert Heijn", n, mults)}))
-                    elif aid not in known:
+                    elif source_on("full_import") and aid not in known:
                         known.add(aid)
                         n["source_id"] = aid
                         new.append(_new_store_product("ah_id", n, "Albert Heijn", mults))
@@ -11036,7 +11161,7 @@ async def _refresh_ah_prices(mults: dict) -> int:
                     added += len(new)
                 page += 1
             await db.meta.update_one({"key": "price_refresh"}, {"$set": {"ah_cat": ci + 1}}, upsert=True)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.5)
     await db.meta.update_one({"key": "price_refresh"}, {"$set": {"ah_cat": 0}}, upsert=True)
     # Alleen bij een volledige ronde weten we wat er niet meer is
     full = start_cat == 0
@@ -11079,7 +11204,7 @@ async def _refresh_jumbo_prices(mults: dict) -> int:
                 if n["jumbo_id"] in prods:
                     p = prods[n["jumbo_id"]]
                     ops.append(UpdateOne({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, "Jumbo", n, mults)}))
-                elif n["jumbo_id"] not in known:
+                elif source_on("full_import") and n["jumbo_id"] not in known:
                     known.add(n["jumbo_id"])
                     n["source_id"] = n["jumbo_id"]
                     new.append(_new_store_product("jumbo_id", n, "Jumbo", mults))
@@ -13722,6 +13847,10 @@ async def startup():
         await _load_plans()
     except Exception as e:
         logger.warning("Abonnementen laden mislukt: %r", e)
+    try:
+        await _load_sources()
+    except Exception as e:
+        logger.warning("Bronnen laden mislukt: %r", e)
     try:
         await _init_storage()
         logger.info("Object storage initialised")

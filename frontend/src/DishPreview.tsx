@@ -33,6 +33,7 @@ type RecipeDetail = {
   time?: number | null;
   servings?: number | null;
   steps: string[];
+  steps_pending?: boolean;
   ingredients: { text: string; name: string; product?: Product | null; alt_for?: number | null }[];
   alt_swaps?: AltSwap[];
 };
@@ -209,6 +210,7 @@ export function DishPreview({
     enabled: !!rid,
     staleTime: 30 * 60 * 1000,
     retry: 1,
+    refetchInterval: (query) => (query.state.data?.steps_pending ? 5000 : false),
   });
   const title = dish?.name ?? tile?.title ?? rec.data?.title ?? "";
   const image = dish?.image ?? tile?.image ?? rec.data?.image ?? null;
