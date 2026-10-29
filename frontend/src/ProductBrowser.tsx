@@ -78,6 +78,7 @@ export function ProductBrowser({
   pickedIds,
   initialSearch,
   initialStore,
+  initialAisle,
 }: {
   onPick?: (p: Product) => void;
   header?: ReactNode;
@@ -85,6 +86,7 @@ export function ProductBrowser({
   pickedIds?: string[];
   initialSearch?: string; // bijv. het ingrediënt waarvoor je een ander product zoekt
   initialStore?: "Dirk" | "Albert Heijn" | "Jumbo"; // meteen gefilterd op de winkel van het recept
+  initialAisle?: string; // meteen in de afdeling van het product waarvoor je iets anders zoekt
 }) {
   const styles = useStyles();
   const grid = useGrid(150);
@@ -93,7 +95,7 @@ export function ProductBrowser({
   const [search, setSearch] = useState(initialSearch ?? "");
   const [onlyFavorites, setOnlyFavorites] = useState(false);
   const qc = useQueryClient();
-  const [aisle, setAisle] = useState<string>("all");
+  const [aisle, setAisle] = useState<string>(initialAisle || "all");
   const [storeFilter, setStoreFilter] = useState<"all" | "Dirk" | "Albert Heijn" | "Jumbo">(initialStore ?? "all");
   const [storeOpen, setStoreOpen] = useState(false);
   const [filters, setFilters] = useState<ProductFilters>(NO_FILTERS);

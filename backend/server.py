@@ -1077,6 +1077,7 @@ def dish_public(doc: dict) -> dict:
         "needs_vega": bool(_needs_vega(doc)),
         "online": bool(doc.get("online")),
         "image": doc.get("photo") or (doc.get("source") or {}).get("image") or doc.get("image"),
+        "photo_ai": bool(doc.get("photo") and doc.get("photo_ai")),
         "price_pp": doc.get("price_pp"),  # app-gerechten: ongeveer per volwassene per winkel (deel van de verpakking)
         "camp_id": doc.get("camp_id"),  # aangepast voor één activiteit
         "owner_id": doc.get("owner_id"),
@@ -2517,6 +2518,47 @@ async def _dish_photo(name: str) -> Optional[str]:
     return cands[n - 1][2] if isinstance(n, int) and 1 <= n <= len(cands) else None
 
 
+OPENAI_IMAGE_MODEL = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2")
+OPENAI_IMAGE_USD = 0.006  # ongeveer, per foto op lage kwaliteit
+
+
+async def _ai_dish_image(name: str) -> Optional[str]:
+    # Een eigen foto laten maken door OpenAI (Claude maakt geen afbeeldingen). Eén keer per gerechtnaam; daarna hergebruikt.
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        return None
+    nk = _norm_text(name)
+    hit = await db.ai_photos.find_one({"key": nk}, {"_id": 0, "url": 1})
+    if hit:
+        return hit["url"]
+    prompt = (f"Smakelijke, realistische foto van het gerecht \"{name}\", opgediend op een bord op een keukentafel, "
+              "natuurlijk daglicht, iets van boven gefotografeerd. Geen tekst, geen mensen, geen verpakkingen.")
+    async with httpx.AsyncClient(timeout=180) as c:
+        r = await c.post("https://api.openai.com/v1/images/generations", headers={"Authorization": f"Bearer {key}"},
+                         json={"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "size": "1024x1024", "quality": "low", "n": 1, "output_format": "webp"})
+    if r.status_code != 200:
+        raise RuntimeError(f"OpenAI {r.status_code}: {r.text[:200]}")
+    raw = base64.b64decode(r.json()["data"][0]["b64_json"])
+
+    def shrink(b: bytes) -> bytes:
+        # Kleiner opslaan (ongeveer 50 kB): scheelt opslag en laadt sneller
+        import io
+        from PIL import Image as PILImage
+        im = PILImage.open(io.BytesIO(b)).convert("RGB")
+        im.thumbnail((640, 640))
+        out = io.BytesIO()
+        im.save(out, "WEBP", quality=72)
+        return out.getvalue()
+    data = await asyncio.to_thread(shrink, raw)
+    path = f"{STORAGE_APP}/ai-fotos/{hashlib.sha1(nk.encode()).hexdigest()}.webp"
+    await _put_object(path, data, "image/webp")
+    url = f"/api/files/{path}"
+    await db.ai_photos.update_one({"key": nk}, {"$set": {"key": nk, "url": url, "name": name, "at": now_utc()}}, upsert=True)
+    await _ai_log("foto", None, OPENAI_IMAGE_USD * USD_EUR)
+    logger.info("AI-foto gemaakt voor %s", name)
+    return url
+
+
 async def _set_dish_photo(dish: dict) -> None:
     # Eén keer per naam zoeken; bij een nieuwe naam opnieuw
     name = (dish.get("name") or "").strip()
@@ -2526,8 +2568,15 @@ async def _set_dish_photo(dish: dict) -> None:
         url = await _dish_photo(name)
     except Exception as e:
         logger.warning("Foto %s: %r", name, e)
-        return
-    await db.dishes.update_one({"dish_id": dish["dish_id"]}, {"$set": {"photo": url, "photo_for": name, "photo_v": PHOTO_V}})
+        url = None
+    ai = False
+    if not url:
+        try:
+            url = await _ai_dish_image(name)
+            ai = bool(url)
+        except Exception as e:
+            logger.warning("AI-foto %s: %r", name, e)
+    await db.dishes.update_one({"dish_id": dish["dish_id"]}, {"$set": {"photo": url, "photo_for": name, "photo_v": PHOTO_V, "photo_ai": ai}})
     if url:
         logger.info("Foto bij gerecht %s gevonden", name)
 
@@ -3359,7 +3408,7 @@ async def pantry_restock(camp_id: str = "", user: dict = Depends(get_current_use
         on_list = {(e.get("pantry_id") or "") for e in (c or {}).get("general") or []}
     out = []
     async for p in db.pantry.find({"user_id": user["user_id"]}, {"_id": 0}):
-        if p["item_id"] in on_list:
+        if p["item_id"] in on_list or p.get("restock_off"):
             continue
         buy = _pantry_restock_amount(p, rate)
         if buy > 0:
@@ -3441,9 +3490,17 @@ async def add_pantry(data: PantryInput, user: dict = Depends(get_current_user)):
 async def update_pantry(item_id: str, data: PantryInput, user: dict = Depends(get_current_user)):
     await require_feature(user, "voorraadkast")
     clean = _pantry_clean(data)
-    res = await db.pantry.update_one({"item_id": item_id, "user_id": user["user_id"]}, {"$set": clean})
+    res = await db.pantry.update_one({"item_id": item_id, "user_id": user["user_id"]}, {"$set": clean, "$unset": {"restock_off": ""}})
     if not res.matched_count:
         raise HTTPException(status_code=404, detail="Niet gevonden")
+    return {"ok": True}
+
+
+@api_router.post("/pantry/{item_id}/restock-off")
+async def pantry_restock_off(item_id: str, user: dict = Depends(get_current_user)):
+    # "Niet meer tonen" bij Bijna op; vul je het later weer aan, dan telt het gewoon weer mee
+    await require_feature(user, "voorraadkast")
+    await db.pantry.update_one({"item_id": item_id, "user_id": user["user_id"]}, {"$set": {"restock_off": True}})
     return {"ok": True}
 
 
@@ -6938,7 +6995,8 @@ def _promo_public(doc: dict, price: float) -> tuple:
 # beschrijvingen of foto's van hun recepten, geen foto's via onze eigen server, en geen volledige import van hun assortiment.
 # Na toestemming per onderdeel weer aanzetten via Beheer (PUT /api/admin/sources), bijv. {"recipe_content": true}.
 SOURCE_DEFAULTS = {
-    "recipe_content": False,  # bereiding, beschrijving, tip en foto van recepten van de winkel tonen
+    "recipe_content": False,  # bereiding, beschrijving en tip van recepten van de winkel tonen
+    "recipe_images": True,  # foto's van winkelrecepten tonen (gelinkt naar hun site, niet gekopieerd)
     "image_proxy": False,  # foto's van winkels via onze eigen server doorgeven (anders laat de browser ze direct bij de winkel zien)
     "full_import": False,  # het hele assortiment ophalen met zoektermen, en nieuwe producten toevoegen bij de prijsronde
 }
@@ -6958,7 +7016,7 @@ def _store_url(url: Optional[str]) -> bool:
 async def _load_sources() -> None:
     doc = await db.settings.find_one({"key": "sources"}) or {}
     _sources.update({k: bool(doc[k]) for k in SOURCE_DEFAULTS if k in doc})
-    if not source_on("recipe_content"):
+    if not source_on("recipe_images"):
         # Foto's van winkelrecepten die eerder bij gerechten zijn opgeslagen: weg, dan zoekt de app een vrije foto
         pat = {"$regex": r"^https://([a-z0-9-]+\.)*(ah\.nl|jumbo\.com|dirk\.nl)/", "$options": "i"}
         r1 = await db.dishes.update_many({"photo": pat}, {"$unset": {"photo": "", "photo_for": "", "photo_v": ""}})
@@ -6968,14 +7026,17 @@ async def _load_sources() -> None:
 
 
 def _safe_recipe(r: dict) -> dict:
-    # Alleen feiten en een link: hun teksten en foto's laten we weg (tenzij er toestemming is)
+    # Alleen feiten en een link: hun teksten laten we weg (tenzij er toestemming is); foto's alleen als die schakelaar aan staat
+    if not source_on("recipe_images"):
+        r = {**r, "image": None}
     if source_on("recipe_content"):
         return r
-    return {**r, "image": None, "description": None, "steps": [], "tip": None, "alt_text": ""}
+    return {**r, "description": None, "steps": [], "tip": None, "alt_text": ""}
 
 
 class SourcesUpdate(BaseModel):
     recipe_content: Optional[bool] = None
+    recipe_images: Optional[bool] = None
     image_proxy: Optional[bool] = None
     full_import: Optional[bool] = None
 
@@ -8827,7 +8888,7 @@ class RecipeFav(BaseModel):
 @api_router.get("/recipes/favorites")
 async def recipe_favorites(user: dict = Depends(get_current_user)):
     favs = list(reversed(user.get("recipe_favorites") or []))
-    if not source_on("recipe_content"):
+    if not source_on("recipe_images"):
         favs = [{**f, "image": None} if _store_url(f.get("image")) else f for f in favs]
     return {"recipes": favs, "total": len(favs), "facets": [], "has_more": False}
 
@@ -9150,13 +9211,25 @@ async def compare_options(store: str, name: str, product_id: str = "", user: dic
         hits = _best_matches(pool, terms, 12)
         if len(hits) < 6:
             hits += [d for d in _search_products(pool, terms)[:12] if d not in hits]
+        # Eerst wat in dezelfde afdeling staat (barbecuesaus bij de sauzen, niet bij de chips)
+        if base and base.get("aisle"):
+            hits.sort(key=lambda d: d.get("aisle") != base["aisle"])
+        # Wat de AI het beste vindt (onthouden per winkel en naam, en bijgeleerd van wat mensen zelf kiezen) bovenaan
+        if ai_pick and ai_pick in hits:
+            hits.remove(ai_pick)
+            hits.insert(0, ai_pick)
         out = []
         for d in hits[:12]:
             price = resolve_price(d.get("prices") or {}, store, d.get("unavailable") or [])
             if price:
                 out.append({"product_id": d["product_id"], "name": d["name"], "unit": d.get("unit") or "", "image": d.get("image"), "price": round(price, 2)})
         return out
-    return {"options": await asyncio.to_thread(work)}
+    try:
+        ai_pick = (await _ai_pick_products([name], store, docs)).get(name)
+    except Exception as e:
+        logger.info("Vergelijken %s: AI-keuze %r", name, e)
+        ai_pick = None
+    return {"options": await asyncio.to_thread(work), "aisle": (base or {}).get("aisle")}
 
 
 @api_router.post("/camps/{camp_id}/compare-swap")
@@ -9519,20 +9592,21 @@ class ShoppingPdf(BaseModel):
 
 
 def _shopping_pdf(data: ShoppingPdf) -> bytes:
+    # Modern en rustig: merknaam bovenaan, afdelingen als kaartjes, ronde vinkjes, het totaal als groene balk
     import io
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.colors import HexColor, white
     from reportlab.pdfgen import canvas as rl_canvas
     from reportlab.pdfbase.pdfmetrics import stringWidth
 
-    G, AMBER, SOFT, INK, MUTED, LINE = (HexColor("#2E5E38"), HexColor("#D99C3B"), HexColor("#E6F0E8"), HexColor("#1C1B1A"),
-                                        HexColor("#8A8780"), HexColor("#ECEAE6"))
+    G, G2, AMBER, SOFT, CARD, INK, MUTED, LINE = (HexColor("#2E5E38"), HexColor("#4E8A5A"), HexColor("#D99C3B"), HexColor("#E6F0E8"),
+                                                  HexColor("#F7F6F3"), HexColor("#1C1B1A"), HexColor("#8A8780"), HexColor("#E7E4DE"))
     W, H = A4
-    M = 40
+    M = 36
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=A4)
     c.setTitle(data.title + (f" - {data.subtitle}" if data.subtitle else ""))
-    c.setAuthor("Slim Boodschappenlijstje")
+    c.setAuthor("Slimboodschappenlijstje")
 
     def eur(v):
         return "€ " + f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -9546,137 +9620,155 @@ def _shopping_pdf(data: ShoppingPdf) -> bytes:
 
     page = [1]
 
+    def brand(y_top: float, small: bool = False) -> None:
+        # Logo: groen afgerond blokje met een vinkje, en de naam ernaast
+        s_ = 18 if small else 26
+        c.setFillColor(G)
+        c.roundRect(M, y_top - s_, s_, s_, s_ * 0.28, stroke=0, fill=1)
+        c.setStrokeColor(white)
+        c.setLineWidth(2 if small else 2.6)
+        c.setLineCap(1)
+        c.line(M + s_ * 0.26, y_top - s_ * 0.52, M + s_ * 0.44, y_top - s_ * 0.7)
+        c.line(M + s_ * 0.44, y_top - s_ * 0.7, M + s_ * 0.76, y_top - s_ * 0.32)
+        c.setFillColor(G)
+        c.setFont("Helvetica-Bold", 12 if small else 17)
+        c.drawString(M + s_ + 8, y_top - s_ * 0.68, "Slimboodschappenlijstje")
+
     def footer():
-        c.setFont("Helvetica", 8)
+        c.setStrokeColor(LINE)
+        c.setLineWidth(0.6)
+        c.line(M, 36, W - M, 36)
+        c.setFont("Helvetica", 7.5)
         c.setFillColor(MUTED)
-        c.drawString(M, 24, "Slim Boodschappenlijstje · slimboodschappenlijstje.nl · prijzen zijn een schatting")
-        c.drawRightString(W - M, 24, f"Pagina {page[0]}")
+        c.drawString(M, 24, "slimboodschappenlijstje.nl · prijzen zijn een schatting")
+        c.drawRightString(W - M, 24, f"{page[0]}")
 
     def new_page():
         footer()
         c.showPage()
         page[0] += 1
-        return H - M
+        brand(H - M, small=True)
+        return H - M - 34
 
-    # Kop: groene balk met winkelwagentje
-    c.setFillColor(G)
-    c.roundRect(M, H - M - 64, W - 2 * M, 64, 12, stroke=0, fill=1)
-    c.setFillColor(white)
-    c.roundRect(M + 14, H - M - 52, 40, 40, 10, stroke=0, fill=1)
-    c.setStrokeColor(G)
-    c.setLineWidth(2)
-    # eenvoudig wagentje
-    x0, y0 = M + 22, H - M - 26
-    c.line(x0, y0 + 8, x0 + 5, y0 + 8)
-    c.line(x0 + 5, y0 + 8, x0 + 9, y0 - 4)
-    c.line(x0 + 9, y0 - 4, x0 + 22, y0 - 4)
-    c.line(x0 + 22, y0 - 4, x0 + 25, y0 + 5)
-    c.line(x0 + 25, y0 + 5, x0 + 7, y0 + 5)
-    c.setFillColor(G)
-    c.circle(x0 + 11, y0 - 9, 2, stroke=0, fill=1)
-    c.circle(x0 + 20, y0 - 9, 2, stroke=0, fill=1)
-    c.setFillColor(white)
-    c.setFont("Helvetica-Bold", 20)
-    c.drawString(M + 66, H - M - 30, fit(data.title, "Helvetica-Bold", 20, W - 2 * M - 80))
-    c.setFont("Helvetica", 11)
-    c.drawString(M + 66, H - M - 48, fit(data.subtitle, "Helvetica", 11, W - 2 * M - 80))
-    y = H - M - 86
-    # Chips: datum en aantallen
-    chips = [datetime.now(timezone.utc).astimezone().strftime("%d-%m-%Y"), f"{data.count} producten"]
-    if data.done:
-        chips.append(f"{data.done} al afgevinkt")
+    # Kop
+    brand(H - M)
+    c.setFont("Helvetica", 9)
+    c.setFillColor(MUTED)
+    c.drawRightString(W - M, H - M - 17, datetime.now(timezone.utc).astimezone().strftime("%d-%m-%Y"))
+    y = H - M - 62
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 24)
+    c.drawString(M, y, fit(data.title, "Helvetica-Bold", 24, W - 2 * M))
+    y -= 18
+    if data.subtitle:
+        c.setFont("Helvetica", 12)
+        c.setFillColor(MUTED)
+        c.drawString(M, y, fit(data.subtitle, "Helvetica", 12, W - 2 * M))
+        y -= 20
+    # Dun accent: groen naar amber
+    for k in range(40):
+        t = k / 39
+        c.setFillColor(HexColor("#%02X%02X%02X" % tuple(int(a_ + (b_ - a_) * t) for a_, b_ in ((0x2E, 0xD9), (0x5E, 0x9C), (0x38, 0x3B)))))
+        c.rect(M + (W - 2 * M) * k / 40, y, (W - 2 * M) / 40 + 0.5, 2.5, stroke=0, fill=1)
+    y -= 18
+    chips = [f"{data.count} producten"] + ([f"{data.done} afgevinkt"] if data.done else [])
     cx = M
-    c.setFont("Helvetica-Bold", 9)
+    c.setFont("Helvetica-Bold", 8.5)
     for t in chips:
-        w = stringWidth(t, "Helvetica-Bold", 9) + 16
+        w = stringWidth(t, "Helvetica-Bold", 8.5) + 16
         c.setFillColor(SOFT)
-        c.roundRect(cx, y - 4, w, 16, 8, stroke=0, fill=1)
+        c.roundRect(cx, y - 5, w, 16, 8, stroke=0, fill=1)
         c.setFillColor(G)
-        c.drawString(cx + 8, y + 1, t)
+        c.drawString(cx + 8, y, t)
         cx += w + 6
-    y -= 22
+    y -= 26
 
     for b in data.blocks:
         if y < 120:
             y = new_page()
         if b.label:
-            y -= 8
-            c.setFillColor(G)
-            w = stringWidth(b.label, "Helvetica-Bold", 12) + 18
-            c.roundRect(M, y - 5, w, 20, 6, stroke=0, fill=1)
-            c.setFillColor(white)
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(M + 9, y + 1, b.label)
+            c.setFillColor(INK)
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(M, y, b.label)
             if b.total:
                 c.setFillColor(G)
-                c.drawRightString(W - M, y + 1, eur(b.total))
-            c.setStrokeColor(G)
-            c.setLineWidth(1.5)
-            c.line(M, y - 8, W - M, y - 8)
-            y -= 26
+                c.setFont("Helvetica-Bold", 12)
+                c.drawRightString(W - M, y, eur(b.total))
+            y -= 24
         for g in b.groups:
-            if y < 90:
+            if y < 100:
                 y = new_page()
+            # Afdeling als kaartje-kop
+            c.setFillColor(CARD)
+            c.roundRect(M, y - 7, W - 2 * M, 22, 7, stroke=0, fill=1)
             c.setFillColor(AMBER)
-            c.rect(M, y - 3, 3, 14, stroke=0, fill=1)
+            c.circle(M + 11, y + 4, 3, stroke=0, fill=1)
             c.setFillColor(G)
-            c.setFont("Helvetica-Bold", 11)
-            c.drawString(M + 9, y, g.aisle)
-            y -= 18
+            c.setFont("Helvetica-Bold", 10.5)
+            c.drawString(M + 20, y, g.aisle.upper())
+            c.setFont("Helvetica", 8.5)
+            c.setFillColor(MUTED)
+            c.drawRightString(W - M - 10, y, f"{len(g.items)}")
+            y -= 24
             for it in g.items:
-                rh = 26 if it.sub else 18
-                if y - rh < 50:
+                rh = 27 if it.sub else 19
+                if y - rh < 54:
                     y = new_page()
-                # vakje
-                c.setStrokeColor(G)
-                c.setLineWidth(1.2)
-                c.roundRect(M + 2, y - 3, 11, 11, 2, stroke=1, fill=0)
+                # rond vinkje
+                c.setStrokeColor(G2)
+                c.setLineWidth(1.1)
                 if it.done:
-                    c.setLineWidth(1.6)
-                    c.line(M + 4, y + 2, M + 7, y - 1)
-                    c.line(M + 7, y - 1, M + 12, y + 6)
+                    c.setFillColor(G)
+                    c.circle(M + 12, y + 3, 6, stroke=0, fill=1)
+                    c.setStrokeColor(white)
+                    c.setLineWidth(1.5)
+                    c.line(M + 9, y + 3, M + 11.3, y + 0.6)
+                    c.line(M + 11.3, y + 0.6, M + 15.2, y + 5.6)
+                else:
+                    c.circle(M + 12, y + 3, 6, stroke=1, fill=0)
                 name_w = W - 2 * M - 170
                 c.setFillColor(MUTED if it.done else INK)
-                c.setFont("Helvetica-Bold", 10.5)
-                c.drawString(M + 22, y, fit(it.name, "Helvetica-Bold", 10.5, name_w))
+                c.setFont("Helvetica-Bold" if not it.done else "Helvetica", 10.5)
+                c.drawString(M + 26, y, fit(it.name, "Helvetica-Bold", 10.5, name_w))
                 if it.done:
-                    tw = min(stringWidth(it.name, "Helvetica-Bold", 10.5), name_w)
+                    tw = min(stringWidth(it.name, "Helvetica", 10.5), name_w)
                     c.setStrokeColor(MUTED)
-                    c.setLineWidth(0.8)
-                    c.line(M + 22, y + 3.5, M + 22 + tw, y + 3.5)
-                c.setFont("Helvetica-Bold", 10)
-                c.drawRightString(W - M - 70, y, it.qty)
+                    c.setLineWidth(0.7)
+                    c.line(M + 26, y + 3.5, M + 26 + tw, y + 3.5)
+                c.setFillColor(INK)
+                c.setFont("Helvetica-Bold", 9.5)
+                c.drawRightString(W - M - 74, y, it.qty)
                 if it.price:
-                    c.setFont("Helvetica", 10)
-                    c.setFillColor(HexColor("#55524C"))
-                    c.drawRightString(W - M, y, eur(it.price))
-                if it.sub:
-                    c.setFont("Helvetica", 8.5)
+                    c.setFont("Helvetica", 9.5)
                     c.setFillColor(MUTED)
-                    c.drawString(M + 22, y - 11, fit(it.sub, "Helvetica", 8.5, name_w + 60))
+                    c.drawRightString(W - M - 4, y, eur(it.price))
+                if it.sub:
+                    c.setFont("Helvetica", 8)
+                    c.setFillColor(MUTED)
+                    c.drawString(M + 26, y - 11, fit(it.sub, "Helvetica", 8, name_w + 60))
                 c.setStrokeColor(LINE)
-                c.setLineWidth(0.6)
-                c.line(M + 22, y - rh + 10, W - M, y - rh + 10)
+                c.setLineWidth(0.5)
+                c.line(M + 26, y - rh + 11, W - M, y - rh + 11)
                 y -= rh
-            y -= 6
+            y -= 8
         if b.total and not b.label:
-            c.setFont("Helvetica", 10)
+            c.setFont("Helvetica", 9.5)
             c.setFillColor(MUTED)
-            c.drawRightString(W - M - 70, y, "Geschat totaal")
+            c.drawRightString(W - M - 74, y, "Geschat totaal")
             c.setFont("Helvetica-Bold", 12)
             c.setFillColor(G)
-            c.drawRightString(W - M, y, eur(b.total))
-            y -= 18
+            c.drawRightString(W - M - 4, y, eur(b.total))
+            y -= 20
     if data.grand:
         if y < 80:
             y = new_page()
-        y -= 6
-        c.setFillColor(SOFT)
-        c.roundRect(M, y - 12, W - 2 * M, 30, 10, stroke=0, fill=1)
+        y -= 4
         c.setFillColor(G)
+        c.roundRect(M, y - 14, W - 2 * M, 34, 10, stroke=0, fill=1)
+        c.setFillColor(white)
         c.setFont("Helvetica-Bold", 13)
-        c.drawString(M + 14, y - 1, data.grand_label)
-        c.drawRightString(W - M - 14, y - 1, eur(data.grand))
+        c.drawString(M + 16, y - 1, data.grand_label)
+        c.drawRightString(W - M - 16, y - 1, eur(data.grand))
     footer()
     c.save()
     return buf.getvalue()
@@ -11647,12 +11739,39 @@ async def _init_storage(force: bool = False) -> None:
     return None
 
 
+# Staat MEDIA_DIR (het pad van de schijf bij Render, bijv. /var/data) ingesteld, dan gaan nieuwe bestanden daarheen:
+# dat is goedkoper dan de database. Oude bestanden blijven gewoon uit de database komen.
+MEDIA_DIR = (os.environ.get("MEDIA_DIR") or "").rstrip("/")
+_MEDIA_TYPES = {"webp": "image/webp", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif"}
+
+
+def _media_file(path: str) -> Optional[str]:
+    if not MEDIA_DIR:
+        return None
+    full = os.path.normpath(os.path.join(MEDIA_DIR, path))
+    return full if full.startswith(MEDIA_DIR + os.sep) else None  # niet buiten de map
+
+
 async def _put_object(path: str, data: bytes, content_type: str) -> dict:
+    full = _media_file(path)
+    if full:
+        def write():
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "wb") as f:
+                f.write(data)
+        await asyncio.to_thread(write)
+        return {"path": path}
     await fs_bucket.upload_from_stream(path, data, metadata={"content_type": content_type})
     return {"path": path}
 
 
 async def _get_object(path: str):
+    full = _media_file(path)
+    if full and os.path.isfile(full):
+        def read():
+            with open(full, "rb") as f:
+                return f.read()
+        return await asyncio.to_thread(read), _MEDIA_TYPES.get(path.rsplit(".", 1)[-1].lower(), "application/octet-stream")
     cursor = fs_bucket.find({"filename": path}).sort("uploadDate", -1).limit(1)
     docs = await cursor.to_list(1)
     if not docs:
@@ -12867,6 +12986,40 @@ async def today_add(data: TodayAdd, user: dict = Depends(get_current_user)):
     return {"ok": True, "id": c["camp_id"]}
 
 
+class TodayDish(BaseModel):
+    dish_id: str
+    category: str = "avondeten"
+
+
+@api_router.post("/today/dish")
+async def today_dish(data: TodayDish, user: dict = Depends(get_current_user)):
+    # Een gerecht op het snelle lijstje zetten (of er weer af): de ingrediënten komen dan op het lijstje
+    await _dish_for_user(data.dish_id, user)
+    c = await _today_camp(user)
+    cat = data.category if data.category in MEAL_CATEGORIES else "avondeten"
+    cur = list((((c.get("days") or [{}])[0].get("meals") or {}).get(cat)) or [])
+    on = data.dish_id not in cur
+    cur = cur + [data.dish_id] if on else [x for x in cur if x != data.dish_id]
+    await db.camps.update_one({"camp_id": c["camp_id"]}, {"$set": {f"days.0.meals.{cat}": cur}})
+    return {"ok": True, "id": c["camp_id"], "on": on}
+
+
+class TodaySave(BaseModel):
+    name: str = ""
+
+
+@api_router.post("/today/save")
+async def today_save(data: TodaySave, user: dict = Depends(get_current_user)):
+    # Het snelle lijstje bewaren bij je lijstjes; morgen (of meteen) begint er een nieuw snel lijstje
+    c = await _today_camp(user, create=False)
+    meals = ((c or {}).get("days") or [{}])[0].get("meals") or {}
+    if not c or not ((c.get("general") or []) or any(meals.get(cat) for cat in MEAL_CATEGORIES)):
+        raise HTTPException(status_code=400, detail="Je snelle lijstje is nog leeg")
+    name = data.name.strip()[:60] or f"Lijstje van {now_utc().strftime('%d-%m-%Y')}"
+    await db.camps.update_one({"camp_id": c["camp_id"]}, {"$set": {"daily": False, "name": name}})
+    return {"ok": True, "id": c["camp_id"], "name": name}
+
+
 # --- Slimme hulp (Premium): menu uit één zin, restjes koken, recept plakken of fotograferen, lijst typen of inspreken, bespaartips ---
 AI_MONTH_LIMIT = 300  # reserve; het echte aantal per abonnement per maand staat bij Beheer -> Abonnementen
 AI_IMAGE_MAX = 4_500_000  # bytes; groter kan de AI niet lezen
@@ -13368,7 +13521,15 @@ async def ai_savings_tips(camp_id: str, user: dict = Depends(get_current_user)):
     camp = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0, "savings": 1, "name": 1})
     sl = {**sl, "savings": (camp or {}).get("savings") or {}}
     facts = await asyncio.to_thread(_saving_facts, sl)
-    names = [it.get("product") or it.get("name") for b in sl.get("by_store") or [] for it in b.get("flat") or []][:80]
+    by_pid0 = _product_cache.get("by_pid") or {}
+
+    def label(b: dict, it: dict) -> str:
+        # Markeer wat al het huismerk is, zodat de AI dat niet nog eens als besparing voorstelt
+        n = it.get("product") or it.get("name") or ""
+        brand = ((by_pid0.get(it.get("product_id") or "") or {}).get("brand") or "").strip().lower()
+        house = (_HOUSE_BRAND.get(b.get("store")) or "").lower()
+        return f"{n} (huismerk)" if n and house and (brand == house or n.lower().startswith(house)) else n
+    names = [label(b, it) for b in sl.get("by_store") or [] for it in b.get("flat") or []][:80]
     if not names:
         return {"tips": [], "total": 0}
     sig = hashlib.sha1(json.dumps([facts, names], ensure_ascii=False, default=str).encode()).hexdigest()
@@ -13381,7 +13542,8 @@ async def ai_savings_tips(camp_id: str, user: dict = Depends(get_current_user)):
             await _ai_ready(user)
             res = await _ai_json(
                 "Je helpt in een boodschappen-app met besparen. Schrijf voor elk feit hieronder één korte tip in eenvoudig Nederlands (één zin, met het bedrag als dat er is). "
-                "Voeg daarna maximaal 2 eigen slimme tips toe die echt bij dit lijstje passen (bijv. iets dubbel, iets duurs dat je kunt vervangen, invriezen), met fact null.\n\n"
+                "Voeg daarna maximaal 2 eigen slimme tips toe die echt bij dit lijstje passen (bijv. iets dubbel, iets duurs dat je kunt vervangen, invriezen), met fact null. "
+                "Stel nooit het huismerk voor bij een product dat al het huismerk is (staat erbij), en geef geen tips over iets dat al de goedkope keuze is.\n\n"
                 "Feiten (nummer: feit, besparing):\n" + "\n".join(f"{k + 1}: {f['text']} (€ {f['saving']:.2f})" for k, f in enumerate(facts)) +
                 "\n\nHet lijstje:\n" + ", ".join(n for n in names if n),
                 _obj({"tips": {"type": "array", "items": _obj({"text": {"type": "string"}, "fact": {"anyOf": [{"type": "integer"}, {"type": "null"}]}})}}),

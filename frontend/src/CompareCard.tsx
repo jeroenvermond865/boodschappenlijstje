@@ -13,6 +13,7 @@ import { api } from "@/src/api";
 import { euro } from "@/src/search";
 import { useToast } from "@/src/toast";
 import { GOLD, useFeature } from "@/src/premium";
+import { ProductBrowser } from "@/src/ProductBrowser";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 export type CompareItem = NonNullable<CompareStore["items"]>[number];
@@ -348,8 +349,9 @@ function SwapSheet({ campId, store, item, onClose, onChanged }: { campId: string
   const q = new URLSearchParams({ store, name: item.name, ...(item.product_id ? { product_id: item.product_id } : {}) });
   const { data, isLoading } = useQuery({
     queryKey: ["compare-options", store, item.name],
-    queryFn: () => api<{ options: SwapOption[] }>(`/compare/options?${q.toString()}`),
+    queryFn: () => api<{ options: SwapOption[]; aisle?: string | null }>(`/compare/options?${q.toString()}`),
   });
+  const [searching, setSearching] = useState(false); // zelf zoeken, meteen in deze winkel en afdeling
   const pick = useMutation({
     mutationFn: (product_id: string | null) =>
       api(`/camps/${campId}/compare-swap`, { method: "POST", body: { store, name: item.name, product_id } }),
@@ -364,14 +366,26 @@ function SwapSheet({ campId, store, item, onClose, onChanged }: { campId: string
       <Pressable style={styles.backdrop} onPress={onClose}>
         <Pressable style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]} onPress={() => {}}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Text style={[styles.cardTitle, { flex: 1 }]} numberOfLines={2}>
-              {item.name} bij {store}
-            </Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle} numberOfLines={1}>Ander product bij {store}</Text>
+              <Text style={styles.small} numberOfLines={1}>Voor: {item.name}</Text>
+            </View>
             <Pressable onPress={onClose} hitSlop={10}>
               <Icon name="close" size={22} color={colors.muted} />
             </Pressable>
           </View>
-          {item.product ? (
+          {searching ? (
+            <View style={{ height: 460, marginHorizontal: -16 }}>
+              <ProductBrowser
+                bottomPadding={16}
+                initialSearch={item.name}
+                initialStore={store as any}
+                initialAisle={data?.aisle ?? undefined}
+                onPick={(p) => pick.mutate(p.id)}
+              />
+            </View>
+          ) : null}
+          {searching ? null : item.product ? (
             <View style={styles.cmpRow}>
               {item.image ? <Image source={{ uri: item.image }} style={styles.cmpImg} resizeMode="contain" /> : <View style={styles.cmpImg} />}
               <View style={{ flex: 1 }}>
@@ -390,10 +404,16 @@ function SwapSheet({ campId, store, item, onClose, onChanged }: { campId: string
                 </Pressable>
               ) : null}
             </View>
-          ) : (
-            <Text style={styles.small}>Hier is nog niets voor gevonden. Kies hieronder zelf een product.</Text>
-          )}
-          <Text style={[styles.body, { fontFamily: fonts.semibold }]}>Kies een ander product</Text>
+          ) : null}
+          {searching ? null : (
+          <>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+            <Text style={[styles.body, { fontFamily: fonts.semibold }]}>Voorstellen</Text>
+            <Pressable onPress={() => setSearching(true)} hitSlop={8} testID="compare-swap-search" style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+              <Icon name="magnify" size={18} color={colors.brandPrimary} />
+              <Text style={styles.link}>Zelf zoeken</Text>
+            </Pressable>
+          </View>
           <ScrollView style={{ maxHeight: 360 }}>
             {isLoading ? <ActivityIndicator color={colors.brandPrimary} style={{ marginVertical: 16 }} /> : null}
             {!isLoading && !options.length ? <Text style={styles.small}>Geen andere producten gevonden.</Text> : null}
@@ -408,6 +428,8 @@ function SwapSheet({ campId, store, item, onClose, onChanged }: { campId: string
               </Pressable>
             ))}
           </ScrollView>
+          </>
+          )}
           {item.chosen ? (
             <Pressable disabled={pick.isPending} onPress={() => pick.mutate(null)} style={{ paddingVertical: 8 }}>
               <Text style={styles.link}>Terug naar de keuze van de app</Text>

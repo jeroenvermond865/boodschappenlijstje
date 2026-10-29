@@ -41,7 +41,10 @@ export default function DishScreen() {
         <>
           <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}>
             {image ? (
-              <Image source={{ uri: image }} style={styles.hero} resizeMode="cover" />
+              <View>
+                <Image source={{ uri: image }} style={styles.hero} resizeMode="cover" />
+                {(d as any).photo_ai ? <Text style={styles.aiTag}>AI-afbeelding</Text> : null}
+              </View>
             ) : (
               <View style={[styles.hero, styles.heroEmpty]}>
                 <Icon name="silverware-fork-knife" size={40} color={colors.brandPrimary} />
@@ -90,6 +93,7 @@ const useStyles = makeStyles((colors) => ({
   headerTitle: { flex: 1, textAlign: "center", fontSize: 17, fontFamily: fonts.bold, color: colors.onSurface },
   hero: { width: "100%", height: 220, backgroundColor: colors.surfaceSecondary },
   heroEmpty: { alignItems: "center", justifyContent: "center" },
+  aiTag: { position: "absolute", right: 10, bottom: 10, fontSize: 11, fontFamily: fonts.semibold, color: "#fff", backgroundColor: "rgba(0,0,0,0.45)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, overflow: "hidden" },
   title: { fontSize: 24, fontFamily: fonts.bold, color: colors.onSurface },
   section: { fontSize: 16, fontFamily: fonts.bold, color: colors.onSurface },
   line: { fontSize: 15, lineHeight: 21, fontFamily: fonts.regular, color: colors.onSurface },

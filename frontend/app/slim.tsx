@@ -540,7 +540,7 @@ function ItemsTab() {
 type Tip = { kind: string; text: string; saving: number | null; from_id: string | null; to: Prod | null };
 
 // 5. Slimme bespaartips
-function TipsTab({ campId: initial }: { campId?: string }) {
+export function TipsTab({ campId: initial }: { campId?: string }) {
   const styles = useStyles();
   const { colors } = useTheme();
   const T = useTerms();

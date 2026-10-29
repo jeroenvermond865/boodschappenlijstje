@@ -13,7 +13,9 @@ import { api } from "@/src/api";
 import { euro } from "@/src/search";
 import { useToast } from "@/src/toast";
 import { useAuth } from "@/src/auth";
-import { ExtraAddModal } from "@/app/camp/[id]";
+import { DishPickerModal, ExtraAddModal } from "@/app/camp/[id]";
+import { ShopSwapSheet } from "@/src/ShopSwap";
+import type { Dish } from "@/app/(tabs)/dishes";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Often = { name: string; unit: string; aisle: string; store?: string | null; product_id?: string | null; n: number; image?: string | null; price?: number | null; promo?: string; promo_price?: number | null; on_list?: boolean };
@@ -64,7 +66,35 @@ export function TodayPicks({ stores }: { stores: string[] }) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const { data } = useToday();
+  const router = useRouter();
   const [adding, setAdding] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [dishOpen, setDishOpen] = useState(false);
+  const listId = data?.list?.id;
+  const dishes = useQuery({ queryKey: ["dishes"], queryFn: () => api<{ dishes: Dish[] }>("/dishes"), enabled: dishOpen });
+  const camp = useQuery({
+    queryKey: ["camp", listId],
+    queryFn: () => api<{ days: { meals: Record<string, string[]> }[] }>(`/camps/${listId}`),
+    enabled: !!listId && dishOpen,
+  });
+  const toggleDish = useMutation({
+    mutationFn: (dish_id: string) => api<{ id: string; on: boolean }>("/today/dish", { method: "POST", body: { dish_id, category: "avondeten" } }),
+    onSuccess: (r) => {
+      toast.show(r.on ? "Gerecht op je lijstje gezet" : "Gerecht van je lijstje gehaald", "success");
+      ["today", "camp", "shopping"].forEach((k) => qc.invalidateQueries({ queryKey: k === "today" ? [k] : [k, r.id] }));
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
+  });
+  const save = useMutation({
+    mutationFn: () => api<{ id: string; name: string }>("/today/save", { method: "POST", body: {} }),
+    onSuccess: (r) => {
+      toast.show(`Bewaard bij je lijstjes als "${r.name}"`, "success");
+      qc.invalidateQueries({ queryKey: ["today"] });
+      qc.invalidateQueries({ queryKey: ["camps"] });
+      router.replace(`/camp/${r.id}`);
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
+  });
   const add = useMutation({
     mutationFn: (o: { name: string; unit: string; aisle: string; qty?: number; product_id?: string | null; store?: string | null }) =>
       api<{ id: string; already?: boolean }>("/today/add", { method: "POST", body: { ...o, qty: o.qty ?? 1 } }),
@@ -80,10 +110,20 @@ export function TodayPicks({ stores }: { stores: string[] }) {
 
   return (
     <View style={styles.card} testID="today-picks">
-      <Pressable testID="today-add" onPress={() => setAdding(true)} style={({ pressed }) => [styles.btn, pressed && { opacity: 0.85 }]}>
-        <Icon name="plus" size={18} color={colors.onBrandPrimary} />
-        <Text style={styles.btnText}>Product toevoegen</Text>
-      </Pressable>
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        <Pressable testID="today-add" onPress={() => setAdding(true)} style={({ pressed }) => [styles.btn, { flex: 1 }, pressed && { opacity: 0.85 }]}>
+          <Icon name="plus" size={18} color={colors.onBrandPrimary} />
+          <Text style={styles.btnText}>Product</Text>
+        </Pressable>
+        <Pressable testID="today-scan" onPress={() => setScanning(true)} style={({ pressed }) => [styles.btn2, pressed && { opacity: 0.85 }]}>
+          <Icon name="barcode-scan" size={18} color={colors.brandPrimary} />
+          <Text style={styles.btn2Text}>Scan</Text>
+        </Pressable>
+        <Pressable testID="today-dish" onPress={() => setDishOpen(true)} style={({ pressed }) => [styles.btn2, pressed && { opacity: 0.85 }]}>
+          <Icon name="silverware-fork-knife" size={18} color={colors.brandPrimary} />
+          <Text style={styles.btn2Text}>Gerecht</Text>
+        </Pressable>
+      </View>
 
       {deals.length ? (
         <Animated.View entering={FadeIn} style={{ gap: 6 }}>
@@ -123,6 +163,35 @@ export function TodayPicks({ stores }: { stores: string[] }) {
         <Text style={styles.small}>Vink in de winkel af wat je koopt. Dan onthoudt de app wat je vaak haalt, en zet je het hier met één tik op je lijstje.</Text>
       )}
 
+      {data?.list?.items ? (
+        <Pressable testID="today-save" onPress={() => save.mutate()} disabled={save.isPending} style={styles.saveLink}>
+          <Icon name="content-save-outline" size={16} color={colors.brandPrimary} />
+          <Text style={styles.saveText}>Bewaar bij mijn lijstjes</Text>
+        </Pressable>
+      ) : null}
+
+      <ShopSwapSheet
+        item={scanning ? { name: "" } : null}
+        store={user?.store ?? "Albert Heijn"}
+        title="Product toevoegen"
+        onClose={() => setScanning(false)}
+        onPick={(p) => {
+          add.mutate({ name: p.name, unit: (p as any).unit ?? "stuks", aisle: (p as any).aisle ?? "Overig", product_id: p.id, store: (p as any).source ?? null });
+        }}
+      />
+      <DishPickerModal
+        visible={dishOpen}
+        category="avondeten"
+        dishes={dishes.data?.dishes ?? []}
+        selectedIds={camp.data?.days?.[0]?.meals?.avondeten ?? []}
+        onToggle={(id) => toggleDish.mutate(id)}
+        onClose={() => setDishOpen(false)}
+        onCreate={() => {
+          setDishOpen(false);
+          router.push({ pathname: "/dish/edit", params: { category: "avondeten" } });
+        }}
+        onPackage={() => setDishOpen(false)}
+      />
       <ExtraAddModal
         visible={adding}
         stores={stores}
@@ -146,6 +215,10 @@ const useStyles = makeStyles((colors) => ({
   sub: { fontSize: 13, fontFamily: fonts.semibold, color: colors.onSurfaceSecondary, marginTop: 2 },
   btn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.brandPrimary, borderRadius: 14, paddingVertical: 12 },
   btnText: { fontSize: 15, fontFamily: fonts.semibold, color: colors.onBrandPrimary },
+  btn2: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: colors.surface, borderRadius: 14, paddingVertical: 12, paddingHorizontal: 12 },
+  btn2Text: { fontSize: 14, fontFamily: fonts.semibold, color: colors.brandPrimary },
+  saveLink: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start" },
+  saveText: { fontSize: 14, fontFamily: fonts.semibold, color: colors.brandPrimary },
   deal: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: 12, padding: 8 },
   img: { width: 34, height: 34, borderRadius: 8, backgroundColor: "#fff" },
   name: { fontSize: 14, fontFamily: fonts.semibold, color: colors.onSurface },

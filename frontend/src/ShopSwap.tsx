@@ -24,11 +24,13 @@ export function ShopSwapSheet({
   store,
   onClose,
   onPick,
+  title,
 }: {
   item: { name: string; product?: string; product_id?: string } | null;
   store: string;
   onClose: () => void;
   onPick: (p: Product) => Promise<void> | void;
+  title?: string; // anders "Wisselen: ..."
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -49,7 +51,7 @@ export function ShopSwapSheet({
       api<{ groups: { store: string; same_store: boolean; products: AltProduct[] }[] }>(
         `/alternatives?name=${encodeURIComponent(item!.name)}&product_id=${encodeURIComponent(item!.product_id ?? "")}`,
       ),
-    enabled: open,
+    enabled: open && !!item?.name, // zonder naam (bijv. alleen scannen) geen voorstellen
     staleTime: 10 * 60 * 1000,
   });
   const search = useQuery({
@@ -149,7 +151,7 @@ export function ShopSwapSheet({
       <View style={styles.backdrop}>
         <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
           <View style={styles.head}>
-            <Text style={styles.title} numberOfLines={1}>Wisselen: {item?.product ?? item?.name}</Text>
+            <Text style={styles.title} numberOfLines={1}>{title ?? `Wisselen: ${item?.product ?? item?.name}`}</Text>
             <Pressable onPress={close} hitSlop={8}>
               <Icon name="close" size={22} color={colors.onSurface} />
             </Pressable>

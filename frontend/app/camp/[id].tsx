@@ -788,12 +788,18 @@ export function ExtraAddModal({
   defaultStore,
   onClose,
   onAdd,
+  title,
+  initialSearch,
+  initialAisle,
 }: {
   visible: boolean;
   stores: string[];
   defaultStore?: string;
   onClose: () => void;
   onAdd: (ex: Extra) => void;
+  title?: string;
+  initialSearch?: string;
+  initialAisle?: string;
 }) {
   const styles = useStyles();
   const T = useTerms();
@@ -826,7 +832,7 @@ export function ExtraAddModal({
         <View style={[styles.sheet, sel ? null : { height: "92%" }, { paddingBottom: insets.bottom + 12 }]}>
           <View style={styles.sheetHandle} />
           <View style={styles.sheetHeader}>
-            <Text style={styles.sheetTitle}>{sel ? "Aantal & winkel" : "Kies een product"}</Text>
+            <Text style={styles.sheetTitle}>{sel ? "Aantal & winkel" : title ?? "Kies een product"}</Text>
             <Pressable testID="extra-close" onPress={onClose} hitSlop={8}>
               <Icon name="close" size={22} color={colors.onSurface} />
             </Pressable>
@@ -857,7 +863,7 @@ export function ExtraAddModal({
             </View>
           ) : (
             <View style={{ flex: 1, marginHorizontal: -16 }}>
-              <ProductBrowser onPick={setSel} bottomPadding={16} />
+              <ProductBrowser onPick={setSel} bottomPadding={16} initialSearch={initialSearch} initialAisle={initialAisle} />
             </View>
           )}
         </View>
@@ -1157,7 +1163,7 @@ const COURSE_FOR: Record<MealCategory, string[]> = {
   snacks: ["borrel", "dessert"],
 };
 
-function DishPickerModal({
+export function DishPickerModal({
   visible,
   category,
   dishes,

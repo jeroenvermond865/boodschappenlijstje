@@ -7,6 +7,7 @@ import Modal from "@/src/components/Modal";
 import { useHideOnScroll } from "@/src/hideOnScroll";
 import { RestockCard } from "@/src/RestockCard";
 import { TodayPicks, useToday } from "@/src/TodayCard";
+import { TipsTab } from "@/app/slim";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -161,6 +162,7 @@ export default function ShoppingScreen() {
   });
   // Het snelle lijstje (Vandaag op Home): hier voeg je zelf producten toe
   const todayQ = useToday();
+  const [tipsOpen, setTipsOpen] = useState(false); // bespaartips als popup boven het lijstje
   const quick = !!id && todayQ.data?.list?.id === String(id);
 
   // Waar is deze lijst het goedkoopst? Wordt op de achtergrond uitgerekend, dus even later nog eens vragen
@@ -194,14 +196,16 @@ export default function ShoppingScreen() {
   const totalBlocks: { store: string; label: string; grouped: Grouped[]; total?: number }[] = useMemo(() => {
     if (!data) return [];
     const out: { store: string; label: string; grouped: Grouped[]; total?: number }[] = [];
-    (data.general ?? []).forEach((b) =>
-      out.push({ store: `alg:${b.store}`, label: multi ? `Algemeen · ${b.store}` : "Algemeen", grouped: b.grouped, total: b.total }),
-    );
+    // Bij het snelle lijstje staat alles al bij de winkel; een apart "Algemeen" zou alles dubbel tonen
+    if (!quick)
+      (data.general ?? []).forEach((b) =>
+        out.push({ store: `alg:${b.store}`, label: multi ? `Algemeen · ${b.store}` : "Algemeen", grouped: b.grouped, total: b.total }),
+      );
     (data.by_store ?? []).forEach((b) => out.push({ store: b.store, label: b.store, grouped: b.grouped, total: b.total }));
     // Looproute: afdelingen in de volgorde van de winkel (ook bij delen en printen)
     return onRoute ? out.map((b) => ({ ...b, grouped: route.sort(b.store, b.grouped) })) : out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, multi, onRoute, route.version]);
+  }, [data, multi, onRoute, route.version, quick]);
   // "Algemeen" staat ook al in de winkeltotalen; het totaal is de som van de winkels
   const grandTotal = (data?.by_store ?? []).reduce((n, b) => n + (b.total ?? 0), 0);
   const promoSaving = (data?.by_store ?? []).reduce((n, b) => n + (b.saving ?? 0), 0);
@@ -443,6 +447,7 @@ export default function ShoppingScreen() {
       </View>
 
       <View style={{ flex: 1 }}>
+      {quick ? null : (
       <Animated.View {...hide.blockProps} style={[styles.segmentWrap, { backgroundColor: colors.surface }, hide.blockProps.style]}>
         <View style={styles.segment}>
           <Pressable testID="tab-total" onPress={() => setTab("total")} style={[styles.segBtn, tab === "total" && styles.segBtnActive]}>
@@ -453,6 +458,7 @@ export default function ShoppingScreen() {
           </Pressable>
         </View>
       </Animated.View>
+      )}
 
       {isLoading || !loaded ? (
         <View style={{ paddingTop: hide.padTop }}>
@@ -547,7 +553,7 @@ export default function ShoppingScreen() {
             </Pressable>
           ) : null}
           {premium ? (
-            <Pressable style={styles.pantryLink} onPress={() => router.push({ pathname: "/slim", params: { tab: "tips", camp: id } })} testID="shopping-ai-tips">
+            <Pressable style={styles.pantryLink} onPress={() => setTipsOpen(true)} testID="shopping-ai-tips">
               <Icon name="piggy-bank-outline" size={16} color={colors.brandPrimary} />
               <Text style={styles.pantryLinkText}>Slimme bespaartips voor deze lijst</Text>
             </Pressable>
@@ -751,6 +757,22 @@ export default function ShoppingScreen() {
         </Pressable>
       </Modal>
       <Confetti fire={party} />
+      <Modal visible={tipsOpen} transparent animationType="fade" onRequestClose={() => setTipsOpen(false)}>
+        <Pressable style={styles.tipsBackdrop} onPress={() => setTipsOpen(false)}>
+          <Pressable style={[styles.tipsSheet, { paddingBottom: insets.bottom + 12 }]} onPress={() => {}}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Icon name="piggy-bank-outline" size={20} color={colors.brandPrimary} />
+              <Text style={styles.tipsTitle}>Slimme bespaartips</Text>
+              <Pressable onPress={() => setTipsOpen(false)} hitSlop={10} testID="tips-close">
+                <Icon name="close" size={22} color={colors.onSurface} />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={{ gap: 12, paddingBottom: 8 }}>
+              {tipsOpen && id ? <TipsTab campId={String(id)} /> : null}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -943,6 +965,9 @@ function ItemRow({ item, checked, onToggle, last, by, store }: { item: Item; che
 }
 
 const useStyles = makeStyles((colors) => ({
+  tipsBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
+  tipsSheet: { backgroundColor: colors.surface, borderRadius: 20, width: "94%", maxWidth: 600, alignSelf: "center", maxHeight: "88%", padding: 16, gap: 12 },
+  tipsTitle: { flex: 1, fontSize: 18, fontFamily: fonts.bold, color: colors.onSurface },
   itemWas: { fontSize: 12, fontFamily: fonts.semibold, color: colors.success, marginTop: 1 },
   itemImg: { width: 44, height: 44, borderRadius: 8, backgroundColor: "#fff" },
   itemProduct: { fontSize: 12, fontFamily: fonts.semibold, color: colors.brandPrimary, flexShrink: 1 },

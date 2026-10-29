@@ -22,6 +22,7 @@ export function ProductPopup({
   swapLabel = "Wisselen",
   onAdd,
   addLabel = "Op je lijst",
+  extra,
 }: {
   productId: string | null;
   onClose: () => void;
@@ -29,6 +30,7 @@ export function ProductPopup({
   swapLabel?: string;
   onAdd?: () => void;
   addLabel?: string;
+  extra?: { label: string; icon: string; onPress: () => void; danger?: boolean }[]; // extra knopjes, bijv. bij Bijna op
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -91,6 +93,16 @@ export function ProductPopup({
                   <Text style={[styles.btnText, { color: colors.onSurface }]}>Alles over dit product</Text>
                 </Pressable>
               </View>
+              {extra?.length ? (
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                  {extra.map((x) => (
+                    <Pressable key={x.label} onPress={x.onPress} style={[styles.btn, { flex: 0, backgroundColor: colors.surfaceSecondary, paddingVertical: 9 }]}>
+                      <Icon name={x.icon as any} size={16} color={x.danger ? colors.error : colors.onSurface} />
+                      <Text style={[styles.btnText, { color: x.danger ? colors.error : colors.onSurface }]}>{x.label}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
               {(others.data?.stores ?? []).some((o) => o.product) ? (
                 <View style={styles.card}>
                   <Text style={styles.cardTitle}>Bij andere winkels</Text>

@@ -131,9 +131,10 @@ export default function AppSettingsScreen() {
   );
 }
 
-type Sources = { recipe_content: boolean; image_proxy: boolean; full_import: boolean };
+type Sources = { recipe_content: boolean; recipe_images: boolean; image_proxy: boolean; full_import: boolean };
 const SOURCE_ROWS: { key: keyof Sources; title: string; sub: string }[] = [
-  { key: "recipe_content", title: "Recepten van de winkel volledig tonen", sub: "Hun bereiding, beschrijving, tips en foto's. Uit: alleen titel, ingrediënten en een link; de bereiding schrijft de app zelf." },
+  { key: "recipe_content", title: "Teksten van winkelrecepten tonen", sub: "Hun bereiding, beschrijving en tips. Uit: alleen titel, ingrediënten en een link; de bereiding schrijft de app zelf." },
+  { key: "recipe_images", title: "Foto's van winkelrecepten tonen", sub: "Gelinkt naar hun site, niet gekopieerd. Uit: geen foto, of een vrije of AI-foto bij je gerechten." },
   { key: "image_proxy", title: "Winkelfoto's via onze server", sub: "Uit: de browser laat productfoto's direct bij de winkel zien." },
   { key: "full_import", title: "Hele assortiment ophalen", sub: "Alle producten via zoektermen, en nieuwe producten bij de dagelijkse prijsronde. Uit: alleen wat er al is en wat gebruikers zoeken." },
 ];

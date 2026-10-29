@@ -255,7 +255,21 @@ def test_recept_van_winkel_zonder_tekst_en_foto():
                         "steps": ["Kook de pasta"], "tip": "Met kaas", "alt_text": "Liever vlees?", "ingredients": [{"text": "200 g pasta"}],
                         "url": "https://www.ah.nl/allerhande/recept/R-R1"})
     assert r["title"] == "Pasta pesto" and r["ingredients"] and r["url"].startswith("https://www.ah.nl")
-    assert r["image"] is None and r["description"] is None and r["steps"] == [] and r["tip"] is None and r["alt_text"] == ""
+    assert r["description"] is None and r["steps"] == [] and r["tip"] is None and r["alt_text"] == ""
+    assert r["image"]  # foto's (gelinkt) staan voorlopig aan
+    S._sources["recipe_images"] = False
+    try:
+        assert S._safe_recipe({"image": "https://static.ah.nl/x.jpg"})["image"] is None
+    finally:
+        S._sources.update(S.SOURCE_DEFAULTS)
+
+
+def test_bestanden_op_de_schijf_als_media_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(S, "MEDIA_DIR", str(tmp_path))
+    run(S._put_object("scoutkook/ai-fotos/a.webp", b"abc", "image/webp"))
+    assert (tmp_path / "scoutkook/ai-fotos/a.webp").read_bytes() == b"abc"
+    assert run(S._get_object("scoutkook/ai-fotos/a.webp")) == (b"abc", "image/webp")
+    assert S._media_file("../geheim") is None  # nooit buiten de map
 
 
 def test_bronnen_weer_aanzetten_na_toestemming(monkeypatch):
