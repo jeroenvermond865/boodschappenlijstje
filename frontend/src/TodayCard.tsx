@@ -13,9 +13,9 @@ import { api } from "@/src/api";
 import { euro } from "@/src/search";
 import { useToast } from "@/src/toast";
 import { useAuth } from "@/src/auth";
-import { DishPickerModal, ExtraAddModal } from "@/app/camp/[id]";
+import { ExtraAddModal } from "@/app/camp/[id]";
 import { ShopSwapSheet } from "@/src/ShopSwap";
-import type { Dish } from "@/app/(tabs)/dishes";
+import { QuickDishSheet } from "@/src/QuickDishSheet";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
 type Often = { name: string; unit: string; aisle: string; store?: string | null; product_id?: string | null; n: number; image?: string | null; price?: number | null; promo?: string; promo_price?: number | null; on_list?: boolean };
@@ -71,20 +71,6 @@ export function TodayPicks({ stores }: { stores: string[] }) {
   const [scanning, setScanning] = useState(false);
   const [dishOpen, setDishOpen] = useState(false);
   const listId = data?.list?.id;
-  const dishes = useQuery({ queryKey: ["dishes"], queryFn: () => api<{ dishes: Dish[] }>("/dishes"), enabled: dishOpen });
-  const camp = useQuery({
-    queryKey: ["camp", listId],
-    queryFn: () => api<{ days: { meals: Record<string, string[]> }[] }>(`/camps/${listId}`),
-    enabled: !!listId && dishOpen,
-  });
-  const toggleDish = useMutation({
-    mutationFn: (dish_id: string) => api<{ id: string; on: boolean }>("/today/dish", { method: "POST", body: { dish_id, category: "avondeten" } }),
-    onSuccess: (r) => {
-      toast.show(r.on ? "Gerecht op je lijstje gezet" : "Gerecht van je lijstje gehaald", "success");
-      ["today", "camp", "shopping"].forEach((k) => qc.invalidateQueries({ queryKey: k === "today" ? [k] : [k, r.id] }));
-    },
-    onError: (e: any) => toast.show(e?.message ?? "Mislukt", "error"),
-  });
   const save = useMutation({
     mutationFn: () => api<{ id: string; name: string }>("/today/save", { method: "POST", body: {} }),
     onSuccess: (r) => {
@@ -163,7 +149,7 @@ export function TodayPicks({ stores }: { stores: string[] }) {
         <Text style={styles.small}>Vink in de winkel af wat je koopt. Dan onthoudt de app wat je vaak haalt, en zet je het hier met één tik op je lijstje.</Text>
       )}
 
-      {data?.list?.items ? (
+      {data?.list ? (
         <Pressable testID="today-save" onPress={() => save.mutate()} disabled={save.isPending} style={styles.saveLink}>
           <Icon name="content-save-outline" size={16} color={colors.brandPrimary} />
           <Text style={styles.saveText}>Bewaar bij mijn lijstjes</Text>
@@ -179,19 +165,7 @@ export function TodayPicks({ stores }: { stores: string[] }) {
           add.mutate({ name: p.name, unit: (p as any).unit ?? "stuks", aisle: (p as any).aisle ?? "Overig", product_id: p.id, store: (p as any).source ?? null });
         }}
       />
-      <DishPickerModal
-        visible={dishOpen}
-        category="avondeten"
-        dishes={dishes.data?.dishes ?? []}
-        selectedIds={camp.data?.days?.[0]?.meals?.avondeten ?? []}
-        onToggle={(id) => toggleDish.mutate(id)}
-        onClose={() => setDishOpen(false)}
-        onCreate={() => {
-          setDishOpen(false);
-          router.push({ pathname: "/dish/edit", params: { category: "avondeten" } });
-        }}
-        onPackage={() => setDishOpen(false)}
-      />
+      <QuickDishSheet visible={dishOpen} listId={listId} onClose={() => setDishOpen(false)} />
       <ExtraAddModal
         visible={adding}
         stores={stores}

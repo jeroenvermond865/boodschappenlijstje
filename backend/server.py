@@ -3408,7 +3408,7 @@ async def pantry_restock(camp_id: str = "", user: dict = Depends(get_current_use
         on_list = {(e.get("pantry_id") or "") for e in (c or {}).get("general") or []}
     out = []
     async for p in db.pantry.find({"user_id": user["user_id"]}, {"_id": 0}):
-        if p["item_id"] in on_list or p.get("restock_off"):
+        if p["item_id"] in on_list or _restock_hidden(p):
             continue
         buy = _pantry_restock_amount(p, rate)
         if buy > 0:
@@ -3500,8 +3500,19 @@ async def update_pantry(item_id: str, data: PantryInput, user: dict = Depends(ge
 async def pantry_restock_off(item_id: str, user: dict = Depends(get_current_user)):
     # "Niet meer tonen" bij Bijna op; vul je het later weer aan, dan telt het gewoon weer mee
     await require_feature(user, "voorraadkast")
-    await db.pantry.update_one({"item_id": item_id, "user_id": user["user_id"]}, {"$set": {"restock_off": True}})
+    await db.pantry.update_one({"item_id": item_id, "user_id": user["user_id"]}, {"$set": {"restock_off": True, "restock_off_at": now_utc()}})
     return {"ok": True}
+
+
+def _restock_hidden(p: dict) -> bool:
+    # Verborgen tot het product daarna weer is bijgewerkt (aangevuld, afgevinkt in de winkel, zelf aangepast)
+    if not p.get("restock_off"):
+        return False
+    off, upd = p.get("restock_off_at"), p.get("updated_at")
+    try:
+        return not (off and upd and ensure_aware(upd) > ensure_aware(off))
+    except Exception:
+        return True
 
 
 @api_router.delete("/pantry/{item_id}")
@@ -5367,6 +5378,70 @@ async def pack_plans(body: PackPlanInput, user: dict = Depends(get_current_user)
     return {"plans": await asyncio.to_thread(run)}
 
 
+# Soortnamen: wie "penne" zoekt, vindt ook de actie "Alle pasta" (en andersom)
+OFFER_KINDS = {
+    "pasta": ["penne", "fusilli", "spaghetti", "macaroni", "tagliatelle", "farfalle", "rigatoni", "lasagne", "orzo", "tortellini", "ravioli", "conchiglie", "linguine", "gnocchi"],
+    "kaas": ["gouda", "brie", "mozzarella", "cheddar", "geitenkaas", "feta", "parmezaan", "plakken kaas", "geraspte kaas"],
+    "vlees": ["gehakt", "kipfilet", "kippendijen", "speklapjes", "slavink", "hamburger", "worst", "biefstuk", "shoarma", "schnitzel"],
+    "fruit": ["appel", "peer", "banaan", "sinaasappel", "mandarijn", "druiven", "aardbei", "blauwe bes", "kiwi", "mango", "ananas"],
+    "groente": ["tomaat", "komkommer", "paprika", "broccoli", "bloemkool", "courgette", "spinazie", "sla", "wortel", "ui", "prei", "champignon"],
+    "frisdrank": ["cola", "sinas", "cassis", "ice tea", "7up", "fanta", "sprite", "tonic", "limonade"],
+    "bier": ["pils", "speciaalbier", "radler", "alcoholvrij bier", "witbier", "ipa"],
+    "koffie": ["bonen", "capsules", "pads", "filterkoffie", "oploskoffie", "espresso"],
+    "chips": ["paprikachips", "naturel chips", "tortillachips", "nootjes", "zoutjes"],
+    "brood": ["volkorenbrood", "witbrood", "bruinbrood", "bolletjes", "stokbrood", "croissant", "pistolet"],
+    "yoghurt": ["kwark", "vla", "skyr", "griekse yoghurt", "toetje"],
+}
+
+
+def _offer_words(it: dict, docs: list) -> str:
+    # Waarop je een actie kunt vinden: de titel, de producten die erbij horen, en soortnamen die erbij passen
+    text = " ".join([it.get("title") or "", it.get("label") or ""] + [d.get("name") or "" for d in docs[:40]]).lower()
+    extra = []
+    for kind, members in OFFER_KINDS.items():
+        # Hele woorden (met meervoud): "ui" niet in "fruit", "sla" niet in "slagroom"
+        if any(re.search(r"\b" + re.escape(w) + r"(en|s|'s)?\b", text) for w in [kind] + members):
+            extra += [kind] + members
+    return " ".join([text] + extra)[:4000]
+
+
+@api_router.get("/offers/search")
+async def offers_search(q: str, store: str = "", user: dict = Depends(get_current_user)):
+    # Acties die bij een zoekwoord passen, als "cluster" (één actie voor meerdere producten), voor bovenaan bij Producten
+    term = _norm_text(q)
+    if len(term) < 2:
+        return {"offers": []}
+    out = []
+    for st in ([store] if store in COMPARE_STORES else COMPARE_STORES):
+        for it in await _offer_index(st, user):
+            if re.search(r"\b" + re.escape(term), it["_words"]):
+                out.append({k: v for k, v in it.items() if k != "_words"})
+    # Eerst acties met het woord in de titel, daarna die het via een product of soortnaam vonden
+    out.sort(key=lambda o: term not in _norm_text(o["title"]))
+    return {"offers": out[:8]}
+
+
+_offer_cache: Dict[str, tuple] = {}
+
+
+async def _offer_index(store: str, user: dict) -> list:
+    # De acties van deze week per winkel, met hun zoekwoorden; 10 minuten onthouden (zoeken gebeurt bij elke letter)
+    hit = _offer_cache.get(store)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    try:
+        per = (await get_folders(store, user)).get("periods") or []
+    except Exception as e:
+        logger.info("Acties zoeken %s: %r", store, e)
+        return []
+    cur = next((p for p in per if p["key"] == "current"), per[0] if per else None)
+    rows = [{"id": it["id"], "store": store, "title": it["title"], "label": it.get("label"), "count": it.get("count") or 0,
+             "image": it.get("image"), "period": it.get("period"), "_words": _norm_text(it.get("words") or it.get("title") or "")}
+            for it in (cur or {}).get("items") or []]
+    _offer_cache[store] = (time.time(), rows)
+    return rows
+
+
 @api_router.get("/folders")
 async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_current_user)):
     f = await _folders_fresh()
@@ -5390,7 +5465,7 @@ async def get_folders(store: str = "Albert Heijn", user: dict = Depends(get_curr
             cat = it.get("category") or (docs[0].get("aisle") if docs else None) or "Overig"
             items.append({**{k: v for k, v in it.items() if k not in ("ids", "prices")}, "category": cat, "price": price, "regular": regular, "deal": deal,
                           "image": ((first or {}).get("image") if store == "Dirk" else None) or it.get("image") or (first or {}).get("image"),
-                          "product_ids": [d["product_id"] for d in docs], "count": len(docs) or len(it["ids"]),
+                          "product_ids": [d["product_id"] for d in docs], "count": len(docs) or len(it["ids"]), "words": _offer_words(it, docs),
                           "period": f"{_nice_day(it['start'])} t/m {_nice_day(it['end'])}" if it["start"] and it["end"] else None})
         if not items:
             continue

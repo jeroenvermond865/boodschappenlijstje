@@ -34,6 +34,7 @@ type FolderItem = {
   product_ids: string[];
   count: number;
   category: string;
+  words?: string; // productnamen en soortnamen om op te zoeken
 };
 
 type FolderPeriod = {
@@ -110,7 +111,8 @@ export default function FoldersScreen() {
       enabled: searching && allStores,
     })),
   });
-  const matches = (it: FolderItem) => matchScore(dq, it.title, it.label, it.category, it.quantity) >= 0;
+  // Ook op de producten in de actie en soortnamen (penne vindt "Alle pasta")
+  const matches = (it: FolderItem) => matchScore(dq, it.title, it.label, it.category, it.quantity) >= 0 || (it.words ?? "").includes(dq);
   // Per categorie, kaarten naast elkaar (op een breed scherm meer per rij)
   const { cols } = useGrid(160);
   const sections = useMemo(() => {

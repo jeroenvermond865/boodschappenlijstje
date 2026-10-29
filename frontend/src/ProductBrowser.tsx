@@ -6,7 +6,7 @@ import { useHideOnScroll } from "@/src/hideOnScroll";
 import { useRouter } from "expo-router";
 import type { ReactNode } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, Icon } from "@/src/components/ui";
 import SearchSuggestions from "@/src/SearchSuggestions";
@@ -124,7 +124,23 @@ export function ProductBrowser({
     placeholderData: (prev) => prev,
   });
 
-  const filtered = useMemo(() => (data?.pages ?? []).flatMap((pg) => pg.products), [data]);
+  // Bij zoeken: aanbiedingen eerst, maar alleen tussen de best passende resultaten (zo blijft het logisch)
+  const filtered = useMemo(() => {
+    const all = (data?.pages ?? []).flatMap((pg) => pg.products);
+    if (!debouncedSearch.trim()) return all;
+    const top = all.slice(0, 30);
+    return [...top.filter((p) => p.promo), ...top.filter((p) => !p.promo), ...all.slice(30)];
+  }, [data, debouncedSearch]);
+  // Acties die bij het zoekwoord passen, als cluster bovenaan (één actie kan voor veel producten gelden)
+  const offers = useQuery({
+    queryKey: ["offers-search", debouncedSearch.trim().toLowerCase(), storeFilter],
+    queryFn: () =>
+      api<{ offers: { id: string; store: string; title: string; label?: string | null; count: number; image?: string | null }[] }>(
+        `/offers/search?q=${encodeURIComponent(debouncedSearch.trim())}&store=${encodeURIComponent(storeFilter === "all" ? "" : storeFilter)}`,
+      ),
+    enabled: !onPick && debouncedSearch.trim().length >= 2,
+    staleTime: 10 * 60 * 1000,
+  });
   const aisleCounts = data?.pages[0]?.aisle_counts ?? {};
   const aisleImages: Record<string, string> = data?.pages[0]?.aisle_images ?? {};
   const browsing = !debouncedSearch.trim() && !onlyFavorites && !filters.brand.length && !filters.offer && !filters.bio;
@@ -362,6 +378,31 @@ export function ProductBrowser({
           initialNumToRender={15}
           windowSize={7}
           ListFooterComponent={isFetchingNextPage ? <ActivityIndicator color={colors.brandPrimary} style={{ marginTop: 8 }} /> : null}
+          ListHeaderComponent={
+            offers.data?.offers.length ? (
+              <View style={{ gap: 6, marginBottom: 4 }}>
+                <Text style={styles.offerHead}>In de aanbieding</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                  {offers.data.offers.map((o) => (
+                    <Pressable
+                      key={`${o.store}-${o.id}`}
+                      testID="offer-cluster"
+                      onPress={() => router.push({ pathname: "/folders", params: { store: o.store, promo: o.id } })}
+                      style={({ pressed }) => [styles.offerCard, pressed && { opacity: 0.85 }]}
+                    >
+                      {o.image ? <Image source={{ uri: o.image }} style={styles.offerImg} resizeMode="contain" /> : null}
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.offerStore}>{o.store}</Text>
+                        <Text style={styles.offerTitle} numberOfLines={2}>{o.title}</Text>
+                        {o.label ? <Text style={styles.offerLabel} numberOfLines={1}>{o.label}</Text> : null}
+                        {o.count > 1 ? <Text style={styles.offerCount}>Geldt voor {o.count} producten ›</Text> : null}
+                      </View>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            ) : null
+          }
           contentContainerStyle={{ padding: 16, paddingTop: 8 + hide.padTop, paddingBottom: bottomPadding, gap: 10 }}
           renderItem={({ item }) => (
             <Pressable
@@ -571,6 +612,13 @@ function FiltersSheet({
 }
 
 const useStyles = makeStyles((colors) => ({
+  offerHead: { fontSize: 13, fontFamily: fonts.semibold, color: colors.onSurfaceSecondary },
+  offerCard: { width: 230, flexDirection: "row", gap: 10, alignItems: "center", padding: 10, borderRadius: 14, borderWidth: 1, borderColor: colors.brandSecondary, backgroundColor: colors.surface },
+  offerImg: { width: 46, height: 46, borderRadius: 8, backgroundColor: "#fff" },
+  offerStore: { fontSize: 11, fontFamily: fonts.bold, color: colors.brandPrimary },
+  offerTitle: { fontSize: 13, fontFamily: fonts.semibold, color: colors.onSurface },
+  offerLabel: { fontSize: 12, fontFamily: fonts.semibold, color: colors.brandSecondary },
+  offerCount: { fontSize: 11, fontFamily: fonts.medium, color: colors.muted },
   crumbs: { flexDirection: "row", alignItems: "center", gap: 4, flexWrap: "wrap", minHeight: 34 },
   crumb: { fontSize: 14, fontFamily: fonts.medium, color: colors.brandPrimary },
   crumbActive: { color: colors.onSurface, fontFamily: fonts.bold },

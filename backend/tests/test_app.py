@@ -223,6 +223,110 @@ def test_mail_naar_info_krijgt_bcc_naar_beheer(monkeypatch):
     assert verstuurd == [("Info@slimboodschappenlijstje.nl", "beheer@slimboodschappenlijstje.nl"), ("klant@example.com", None)]
 
 
+# --- Snel lijstje ---
+def test_snel_lijstje_gerecht_en_bewaren():
+    async def t():
+        await S.db.dishes.insert_one({"dish_id": "d1", "owner_id": "u1", "name": "Pasta", "is_standard": False})
+        with pytest.raises(HTTPException):
+            await S.today_save(S.TodaySave(), U1)  # leeg: niets te bewaren
+        r = await S.today_dish(S.TodayDish(dish_id="d1"), U1)
+        c = await S.db.camps.find_one({"camp_id": r["id"]})
+        assert r["on"] and c["days"][0]["meals"]["avondeten"] == ["d1"]
+        off = await S.today_dish(S.TodayDish(dish_id="d1"), U1)  # nog een keer: eraf
+        assert not off["on"]
+        await S.today_add(S.TodayAdd(name="Melk"), U1)
+        await S.today_add(S.TodayAdd(name="melk"), U1)  # niet dubbel
+        c = await S.db.camps.find_one({"camp_id": r["id"]})
+        assert len(c["general"]) == 1
+        saved = await S.today_save(S.TodaySave(name="Zaterdag"), U1)
+        c = await S.db.camps.find_one({"camp_id": saved["id"]})
+        assert c["daily"] is False and c["name"] == "Zaterdag"
+        nxt = await S._today_camp(U1)
+        return nxt["camp_id"] != saved["id"]
+    assert run(t())
+
+
+def test_bijna_op_niet_meer_tonen(monkeypatch):
+    async def mag(user, key):
+        return None
+    monkeypatch.setattr(S, "require_feature", mag)
+    monkeypatch.setattr(S, "has_feature", lambda user, key: True)
+
+    async def t():
+        await S.db.pantry.insert_one({"item_id": "p1", "user_id": "u1", "name": "Melk", "qty": 0, "unit": "stuks", "restock_off": True})
+        r = await S.pantry_restock("", U1)
+        return r["items"]
+    assert run(t()) == []
+    now = S.now_utc()
+    assert S._restock_hidden({"restock_off": True, "restock_off_at": now, "updated_at": now - S.timedelta(days=1)})
+    assert not S._restock_hidden({"restock_off": True, "restock_off_at": now, "updated_at": now + S.timedelta(minutes=5)})
+
+
+# --- AI-foto bij een gerecht ---
+def test_ai_foto_wordt_gemaakt_verkleind_en_hergebruikt(monkeypatch, tmp_path):
+    import base64 as b64
+    from PIL import Image as PILImage
+    buf = io.BytesIO()
+    PILImage.new("RGB", (1024, 1024), (180, 90, 40)).save(buf, "WEBP")
+    calls = []
+
+    class Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"data": [{"b64_json": b64.b64encode(buf.getvalue()).decode()}]}
+
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, **k):
+            calls.append(k["json"]["prompt"])
+            return Resp()
+    monkeypatch.setattr(S.httpx, "AsyncClient", Client)
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setattr(S, "MEDIA_DIR", str(tmp_path))
+    url = run(S._ai_dish_image("Spaghetti bolognese"))
+    assert url.startswith("/api/files/") and len(calls) == 1 and "Spaghetti bolognese" in calls[0]
+    data, kind = run(S._get_object(url[len("/api/files/"):]))
+    assert kind == "image/webp" and PILImage.open(io.BytesIO(data)).size[0] <= 640
+    assert run(S._ai_dish_image("spaghetti Bolognese")) == url and len(calls) == 1  # zelfde naam: niet opnieuw betalen
+
+
+def test_geen_ai_foto_zonder_sleutel(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert run(S._ai_dish_image("Pannenkoeken")) is None
+
+
+# --- Aanbiedingen zoeken ---
+def test_actie_vinden_op_soortnaam():
+    w = S._offer_words({"title": "Alle pasta", "label": "2 voor 2,00"}, [])
+    assert "penne" in w and "fusilli" in w
+    w2 = S._offer_words({"title": "Dirk Penne rigate 500 g", "label": "1+1"}, [])
+    assert "pasta" in w2
+    w3 = S._offer_words({"title": "Slagroom spuitbus", "label": ""}, [])
+    assert "groente" not in w3  # "sla" hoort niet bij slagroom
+    w4 = S._offer_words({"title": "Uien 1 kg", "label": ""}, [])
+    assert "groente" in w4
+
+
+def test_acties_zoeken_als_cluster(monkeypatch):
+    async def index(store, user):
+        return [{"id": f"{store}-1", "store": store, "title": "Alle pasta", "label": "2 voor 2,00", "count": 14, "image": None, "period": None,
+                 "_words": S._norm_text(S._offer_words({"title": "Alle pasta"}, []))}] if store == "Dirk" else []
+    monkeypatch.setattr(S, "_offer_index", index)
+    r = run(S.offers_search("penne", "", U1))
+    assert [o["id"] for o in r["offers"]] == ["Dirk-1"] and r["offers"][0]["count"] == 14 and "_words" not in r["offers"][0]
+    assert run(S.offers_search("p", "", U1)) == {"offers": []}
+
+
 # --- Slimme hulp: grens per maand ---
 def test_slimme_hulp_telt_per_maand(monkeypatch):
     async def mag(user, key):
