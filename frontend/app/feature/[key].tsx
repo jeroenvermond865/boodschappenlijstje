@@ -1,7 +1,6 @@
-// Eén extra functie: heb je hem, dan ga je er meteen heen. Zo niet, dan een slotje, wat hij doet,
-// een voorbeeld van hoe het eruitziet en een knop om het abonnement te nemen.
-// Slim splitsen, looproute en weekmenu horen bij een lijstje: die openen in je eerstvolgende lijstje.
-// Heb je nog geen lijstje, dan zie je het voorbeeld en de vraag om eerst een lijstje te maken.
+// Eén extra functie: wat hij doet, altijd met een bewegend voorbeeld. Heb je hem, dan onderaan "Bekijk in mijn app"
+// (slim splitsen, looproute en weekmenu in je eerstvolgende lijstje). Kan dat nog niet, dan geen knop maar
+// "Je moet eerst een lijstje aanmaken". Heb je hem niet, dan een slotje en een knop om het abonnement te nemen.
 import { useEffect, useRef } from "react";
 import { ActivityIndicator, Animated, Easing, Pressable, ScrollView, Text, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
@@ -62,25 +61,11 @@ export default function FeatureScreen() {
   const camps = useQuery({ queryKey: ["camps"], queryFn: () => api<{ camps: CampLite[] }>("/camps"), enabled: !!inList && has });
   const next = camps.data ? nextList(camps.data.camps) : null;
 
-  // Heb je hem al? Dan meteen naar de functie zelf (bij een lijstje-functie: je eerstvolgende lijstje)
-  useEffect(() => {
-    if (!f || !has) return;
-    if (inList) {
-      if (next) router.replace(inList(next.id) as any);
-    } else if (f.to) router.replace(f.to as any);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [f?.key, has, next?.id]);
-
   if (!f) return null;
   const demo = DEMO[f.key];
+  // Waar "Bekijk in mijn app" heen gaat; null = kan (nog) niet
+  const target = !has ? null : inList ? (next ? inList(next.id) : null) : f.to ?? null;
   const noList = has && !!inList && camps.isSuccess && !next;
-  if (has && (!inList || camps.isLoading || next)) {
-    return (
-      <View style={[styles.root, { alignItems: "center", justifyContent: "center" }]}>
-        <ActivityIndicator color={colors.brandPrimary} />
-      </View>
-    );
-  }
   return (
     <View style={styles.root}>
       <View style={[styles.header, { paddingTop: insets.top + 6 }]}>
@@ -91,93 +76,53 @@ export default function FeatureScreen() {
         <View style={styles.headerBtn} />
       </View>
       <ScrollView contentContainerStyle={{ padding: 16, gap: 16, paddingBottom: insets.bottom + 24, width: "100%", maxWidth: 640, alignSelf: "center" }}>
-        {noList ? (
-          <View style={[styles.lock, { backgroundColor: c.bg, borderColor: c.border }]} testID="feature-no-list">
-            <View style={[styles.lockIcon, { backgroundColor: c.icon }]}>
-              <Icon name="clipboard-plus-outline" size={22} color="#FFFFFF" />
-            </View>
-            <View style={{ flex: 1, gap: 2 }}>
-              <Text style={[styles.lockTitle, { color: c.text }]}>Maak eerst een lijstje aan</Text>
-              <Text style={[styles.text, { color: c.text }]}>{f.title} werkt in je lijstje. Hieronder zie je hoe het eruitziet.</Text>
-            </View>
-          </View>
-        ) : (
-        <View style={[styles.lock, { backgroundColor: c.bg, borderColor: c.border }]} testID="feature-lock">
+        <View style={[styles.lock, { backgroundColor: c.bg, borderColor: c.border }]} testID={has ? "feature-info" : "feature-lock"}>
           <View style={[styles.lockIcon, { backgroundColor: c.icon }]}>
-            <Icon name="lock-outline" size={22} color="#FFFFFF" />
+            <Icon name={has ? f.icon : "lock-outline"} size={22} color="#FFFFFF" />
           </View>
           <View style={{ flex: 1, gap: 2 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <Icon name={planIcon(plan)} size={16} color={c.icon} />
-              <Text style={[styles.lockTitle, { color: c.text }]}>{f.title} is een {PLAN_NAME[plan]}-functie</Text>
+              <Text style={[styles.lockTitle, { color: c.text }]}>{has ? `${f.title} · ${PLAN_NAME[plan]}` : `${f.title} is een ${PLAN_NAME[plan]}-functie`}</Text>
             </View>
             <Text style={[styles.text, { color: c.text }]}>{f.text}</Text>
           </View>
         </View>
-        )}
 
-        <Text style={styles.section}>Zo ziet het eruit</Text>
+        {/* Altijd een bewegend voorbeeld: zo zie je in een paar tellen wat het doet */}
+        <Text style={styles.section}>Zo werkt het</Text>
         {demo ? <TutorialDemo kind={demo} /> : <Example k={f.key} accent={c.icon} />}
-        {f.where ? <Text style={styles.muted}>Je vindt het straks: {f.where}</Text> : null}
+        {f.where ? <Text style={styles.muted}>In de app: {f.where}</Text> : null}
 
-        {noList ? (
-          <Button label="Lijstje maken" icon="plus" onPress={() => router.push("/camp/new")} testID="feature-new-list" />
-        ) : (
+        {!has ? (
           <Button label={`Probeer ${PLAN_NAME[plan]}`} icon={planIcon(plan)} onPress={() => router.push("/premium")} testID="feature-get" />
-        )}
+        ) : target ? (
+          <Button label="Bekijk in mijn app" icon="arrow-right" onPress={() => router.push(target as any)} testID="feature-open" />
+        ) : noList ? (
+          <View style={styles.note} testID="feature-no-list">
+            <Icon name="information-outline" size={18} color={colors.muted} />
+            <Text style={[styles.muted, { flex: 1 }]}>Je moet eerst een lijstje aanmaken. Daarna zie je {f.title.toLowerCase()} in je lijstje.</Text>
+          </View>
+        ) : inList && camps.isLoading ? (
+          <ActivityIndicator color={colors.brandPrimary} />
+        ) : f.key === "geen_advertenties" ? (
+          <View style={styles.note}>
+            <Icon name="check-circle-outline" size={18} color={colors.success} />
+            <Text style={[styles.muted, { flex: 1 }]}>Dit staat bij jou vanzelf aan, je hoeft niets te doen.</Text>
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );
 }
 
-// Stilstaand voorbeeld, voor functies zonder bewegend voorbeeld
+// Bewegende voorbeelden voor functies die er in "Zo werkt de app" geen hebben
 function Example({ k, accent }: { k: FeatureKey; accent: string }) {
-  const styles = useStyles();
-  const { colors } = useTheme();
   if (k === "prijsgeschiedenis") return <HistoryDemo accent={accent} />;
-  if (k === "prijsalarm") {
-    return (
-      <View style={styles.card}>
-        {[
-          { n: "Koffiebonen 1 kg", t: "Nu € 8,99 bij Jumbo (was € 12,49)", on: true },
-          { n: "Wasmiddel", t: "Onder jouw prijs van € 6,00", on: true },
-          { n: "Olijfolie 1 L", t: "Wacht op een aanbieding", on: false },
-        ].map((x) => (
-          <View key={x.n} style={styles.row}>
-            <Icon name={x.on ? "bell-ring" : "bell-outline"} size={20} color={x.on ? accent : colors.muted} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>{x.n}</Text>
-              <Text style={[styles.small, x.on && { color: colors.success }]}>{x.t}</Text>
-            </View>
-          </View>
-        ))}
-      </View>
-    );
-  }
-  if (k === "extra_besparen") {
-    return (
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Je bespaaroverzicht deze maand</Text>
-        {[
-          ["Aanbiedingen", "€ 6,40"],
-          ["Al in je voorraadkast", "€ 4,15"],
-          ["Slim splitsen", "€ 7,80"],
-          ["Acties op je boodschappendag", "€ 2,35"],
-        ].map(([a, b]) => (
-          <View key={a} style={styles.row}>
-            <Text style={[styles.text, { flex: 1 }]}>{a}</Text>
-            <Text style={[styles.cardTitle, { color: accent }]}>{b}</Text>
-          </View>
-        ))}
-      </View>
-    );
-  }
+  if (k === "prijsalarm") return <AlarmDemo accent={accent} />;
+  if (k === "extra_besparen") return <SavingsDemo accent={accent} />;
   if (k === "looproute") return <RouteDemo accent={accent} />;
-  return (
-    <View style={styles.card}>
-      <Text style={styles.text}>Geen advertenties in de app, ook als die er later komen.</Text>
-    </View>
-  );
+  return <NoAdsDemo accent={accent} />;
 }
 
 // Steeds opnieuw van 0 naar 1 (met een korte pauze), voor de bewegende voorbeelden
@@ -284,7 +229,102 @@ function RouteDemo({ accent }: { accent: string }) {
   );
 }
 
+// Prijsalarm: de meldingen komen één voor één binnen
+const ALARMS = [
+  { n: "Koffiebonen 1 kg", t: "Nu € 8,99 bij Jumbo (was € 12,49)" },
+  { n: "Wasmiddel", t: "Onder jouw prijs van € 6,00" },
+  { n: "Olijfolie 1 L", t: "In de aanbieding bij AH: 2e halve prijs" },
+];
+function AlarmDemo({ accent }: { accent: string }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const t = useLoop(2400);
+  return (
+    <View style={styles.card} testID="demo-alarm">
+      <Text style={styles.cardTitle}>Je prijsalarmen</Text>
+      {ALARMS.map((x, i) => {
+        const v = t.interpolate({ inputRange: [i / 3, (i + 0.7) / 3], outputRange: [0, 1], extrapolate: "clamp" });
+        return (
+          <Animated.View key={x.n} style={[styles.row, { opacity: v, transform: [{ translateY: v.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) }] }]}>
+            <Icon name="bell-ring" size={20} color={accent} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle}>{x.n}</Text>
+              <Text style={[styles.small, { color: colors.success }]}>{x.t}</Text>
+            </View>
+          </Animated.View>
+        );
+      })}
+    </View>
+  );
+}
+
+// Extra besparen: de bedragen komen erbij en het totaal verschijnt
+const SAVES = [
+  { a: "Aanbiedingen", v: 6.4 },
+  { a: "Al in je voorraadkast", v: 4.15 },
+  { a: "Slim splitsen", v: 7.8 },
+  { a: "Acties op je boodschappendag", v: 2.35 },
+];
+function SavingsDemo({ accent }: { accent: string }) {
+  const styles = useStyles();
+  const t = useLoop(2600);
+  const total = SAVES.reduce((n, x) => n + x.v, 0);
+  return (
+    <View style={styles.card} testID="demo-savings">
+      <Text style={styles.cardTitle}>Je bespaaroverzicht deze maand</Text>
+      {SAVES.map((x, i) => {
+        const v = t.interpolate({ inputRange: [i / 5, (i + 1) / 5], outputRange: [0, 1], extrapolate: "clamp" });
+        return (
+          <Animated.View key={x.a} style={[styles.row, { opacity: v }]}>
+            <Text style={[styles.text, { flex: 1 }]}>{x.a}</Text>
+            <Text style={[styles.cardTitle, { color: accent }]}>€ {x.v.toFixed(2).replace(".", ",")}</Text>
+          </Animated.View>
+        );
+      })}
+      <View style={{ height: 8, borderRadius: 4, backgroundColor: "rgba(0,0,0,0.08)", overflow: "hidden" }}>
+        <Animated.View style={{ height: 8, backgroundColor: accent, width: t.interpolate({ inputRange: [0, 0.8], outputRange: ["0%", "100%"], extrapolate: "clamp" }) }} />
+      </View>
+      <Animated.View style={[styles.row, { opacity: t.interpolate({ inputRange: [0.8, 1], outputRange: [0, 1], extrapolate: "clamp" }) }]}>
+        <Text style={[styles.cardTitle, { flex: 1 }]}>Samen bespaard</Text>
+        <Text style={[styles.section, { color: accent }]}>€ {total.toFixed(2).replace(".", ",")}</Text>
+      </Animated.View>
+    </View>
+  );
+}
+
+// Geen advertenties: een advertentieblok verdwijnt en de inhoud schuift netjes op
+function NoAdsDemo({ accent }: { accent: string }) {
+  const styles = useStyles();
+  const t = useLoop(1600);
+  return (
+    <View style={styles.card} testID="demo-noads">
+      <Text style={styles.cardTitle}>Je lijstje</Text>
+      <View style={styles.row}>
+        <Icon name="checkbox-blank-circle-outline" size={20} color={accent} />
+        <Text style={styles.text}>Bananen</Text>
+      </View>
+      <Animated.View
+        style={{
+          overflow: "hidden",
+          height: t.interpolate({ inputRange: [0.3, 0.8], outputRange: [44, 0], extrapolate: "clamp" }),
+          opacity: t.interpolate({ inputRange: [0, 0.5], outputRange: [1, 0], extrapolate: "clamp" }),
+        }}
+      >
+        <View style={styles.ad}>
+          <Text style={styles.small}>Advertentie</Text>
+        </View>
+      </Animated.View>
+      <View style={styles.row}>
+        <Icon name="checkbox-blank-circle-outline" size={20} color={accent} />
+        <Text style={styles.text}>Melk</Text>
+      </View>
+    </View>
+  );
+}
+
 const useStyles = makeStyles((colors) => ({
+  note: { flexDirection: "row", alignItems: "center", gap: 8, padding: 12, borderRadius: 12, backgroundColor: colors.surfaceSecondary },
+  ad: { height: 40, borderRadius: 10, borderWidth: 1, borderStyle: "dashed", borderColor: colors.border, alignItems: "center", justifyContent: "center" },
   root: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.divider },
   headerBtn: { width: 44, height: 40, alignItems: "center", justifyContent: "center" },

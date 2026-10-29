@@ -5,6 +5,16 @@ export type Release = { id: string; version?: string; date: string; title: strin
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-29-v115",
+    version: "1.1.5",
+    date: "29 oktober 2026",
+    title: "Bij elke functie een bewegend voorbeeld",
+    changes: [
+      { kind: "beter", text: "Tik je bij Abonnementen op een functie, dan zie je altijd eerst een kort bewegend voorbeeld van wat hij doet. Nu ook bij Prijsalarm, Extra besparen en Geen advertenties." },
+      { kind: "beter", text: "Heb je de functie, dan staat onderaan Bekijk in mijn app. Kan dat nog niet, bijvoorbeeld omdat je nog geen lijstje hebt, dan staat er wat je eerst moet aanmaken." },
+    ],
+  },
+  {
     id: "2026-10-29-v114",
     version: "1.1.4",
     date: "29 oktober 2026",
