@@ -205,6 +205,24 @@ def test_backup_gelukt_zet_teller_terug(monkeypatch):
     assert st["ok"] and doc["fails"] == 0 and doc["ok_at"]
 
 
+def test_mail_naar_info_krijgt_bcc_naar_beheer(monkeypatch):
+    verstuurd = []
+
+    async def nep_sender():
+        return {"email": "afzender@gmail.com", "refresh_token": "x"}
+
+    async def nep_gmail(sender, to, subject, html, attachments=None, bcc=None):
+        verstuurd.append((to, bcc))
+        return "id"
+    monkeypatch.setattr(S, "gmail_sender", nep_sender)
+    monkeypatch.setattr(S, "_send_gmail", nep_gmail)
+    monkeypatch.setattr(S, "INFO_EMAIL", "info@slimboodschappenlijstje.nl")
+    monkeypatch.setattr(S, "ADMIN_EMAIL", "beheer@slimboodschappenlijstje.nl")
+    run(S.send_email("Info@slimboodschappenlijstje.nl", "Herroeping", "<p>x</p>", allow_unsubscribe=False))
+    run(S.send_email("klant@example.com", "Hallo", "<p>x</p>", allow_unsubscribe=False))
+    assert verstuurd == [("Info@slimboodschappenlijstje.nl", "beheer@slimboodschappenlijstje.nl"), ("klant@example.com", None)]
+
+
 # --- Foutmelding ---
 def test_foutmelding_pas_na_veel_fouten_en_niet_te_vaak():
     uitkomst = [S._note_error("GET /api/x: 500") for _ in range(S.ALERT_MIN * 2)]

@@ -339,10 +339,13 @@ async def gmail_sender() -> Optional[dict]:
     return await db.settings.find_one({"key": "gmail_sender"})
 
 
-async def _send_gmail(sender: dict, to: str, subject: str, html: str, attachments: Optional[list] = None) -> Optional[str]:
+async def _send_gmail(sender: dict, to: str, subject: str, html: str, attachments: Optional[list] = None,
+                      bcc: Optional[str] = None) -> Optional[str]:
     msg = EmailMessage()
     msg["From"] = formataddr((EMAIL_FROM_NAME, sender["email"]))
     msg["To"] = to
+    if bcc:
+        msg["Bcc"] = bcc  # Gmail haalt deze regel zelf weg voor het versturen
     msg["Subject"] = subject
     if INFO_EMAIL and INFO_EMAIL.lower() != sender["email"].lower():
         msg["Reply-To"] = INFO_EMAIL
@@ -393,9 +396,11 @@ async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool =
             f'Geen e-mails meer ontvangen? <a href="{escape(link)}" style="color:#999">Afmelden</a>.</p>'
         )
     _assert_safe_email(subject, html)
+    # Alles wat de app naar info@ stuurt, krijgt beheer@ als bcc mee
+    bcc = ADMIN_EMAIL if INFO_EMAIL and ADMIN_EMAIL and to.lower() == INFO_EMAIL.lower() != ADMIN_EMAIL.lower() else None
     if sender:
         try:
-            return await _send_gmail(sender, to, subject, html, attachments)
+            return await _send_gmail(sender, to, subject, html, attachments, bcc)
         except Exception as e:
             logger.error("Email send error: %s", e)
             if raise_errors:
@@ -409,6 +414,7 @@ async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool =
                     headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
                     json={"from": f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>", "to": [to], "subject": subject, "html": html,
                           **({"reply_to": INFO_EMAIL} if INFO_EMAIL else {}),
+                          **({"bcc": [bcc]} if bcc else {}),
                           **({"attachments": [{"filename": n, "content": base64.b64encode(d).decode()} for n, d, _ in attachments]} if attachments else {})},
                 )
             else:
