@@ -232,6 +232,9 @@ def public_user(doc: dict) -> dict:
         "premium_org": doc.get("premium_org") if doc.get("premium") else None,
         "premium_until": doc.get("premium_until").isoformat() if doc.get("premium") and doc.get("premium_until") else None,
         "plan": user_plan(doc),
+        "trial": bool(doc.get("premium") and doc.get("trial")),  # 14 dagen Premium gratis na aanmelden
+        "trial_ended": bool(doc.get("trial_ended_at")) and not doc.get("trial_ended_seen") and not doc.get("premium"),
+        "premium_household": doc.get("premium_household"),  # Premium via een Ultra-huisgenoot (naam)
         "features": user_features(doc),
         # Betaald abonnement via Mollie: "active", of "cancelled" (opgezegd, loopt nog tot premium_until)
         "subscription": (("cancelled" if (doc.get("billing") or {}).get("cancelled") else "active")
@@ -448,11 +451,42 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         raise HTTPException(status_code=401, detail="Gebruiker niet gevonden")
     if user.get("premium") and user.get("premium_until") and ensure_aware(user["premium_until"]) < now_utc():
         user = await _premium_expired(user)
+    if not user.get("premium"):
+        via = await _household_premium(user)
+        if via:
+            user = {**user, "premium": True, "premium_household": via}  # alleen voor dit verzoek, niet opgeslagen
     seen = user.get("last_seen_at")
     if not seen or ensure_aware(seen) < now_utc() - timedelta(hours=12):
         await _mark_seen(user["user_id"])
     await _mark_active(user)
     return user
+
+
+_household_cache: Dict[str, tuple] = {}
+
+
+async def _household_premium(user: dict) -> Optional[str]:
+    # Ultra is het gezinsabonnement: wie een lijstje deelt met een Ultra-gebruiker, krijgt Premium. 5 minuten onthouden.
+    uid = user["user_id"]
+    hit = _household_cache.get(uid)
+    if hit and time.time() - hit[0] < 300:
+        return hit[1]
+    via = None
+    try:
+        others = set()
+        async for c in db.camps.find({**camp_access_filter(uid), "deleted_at": None}, {"_id": 0, "owner_id": 1, "member_ids": 1}).limit(200):
+            others.update([c.get("owner_id")] + list(c.get("member_ids") or []))
+        others.discard(uid)
+        others.discard(None)
+        if others:
+            u = await db.users.find_one({"user_id": {"$in": list(others)}, "premium": True, "plan": "ultra", "deleted_at": None}, {"_id": 0, "name": 1})
+            via = (u or {}).get("name") or ("je huisgenoot" if u else None)
+    except Exception as e:
+        logger.info("Huishouden %s: %r", uid, e)
+    if len(_household_cache) > 20000:
+        _household_cache.clear()
+    _household_cache[uid] = (time.time(), via)
+    return via
 
 
 async def _mark_seen(user_id: str) -> None:
@@ -606,6 +640,7 @@ async def register(data: RegisterInput, request: Request):
         "created_at": now_utc(),
         "terms_version": TERMS_VERSION,
         "terms_accepted_at": now_utc(),
+        **_trial_fields(),
     }
     if not is_admin and await signup_approval_on():
         doc["approval"] = "pending"
@@ -875,6 +910,7 @@ async def auth_session(data: SessionInput, request: Request):
             "auth_provider": "google",
             "role": "beheerder" if email in ADMIN_SEED_EMAILS else await default_role(),
             "created_at": now_utc(),
+            **_trial_fields(),
         }
         if email not in ADMIN_SEED_EMAILS and await signup_approval_on():
             user["approval"] = "pending"
@@ -2988,6 +3024,8 @@ async def shopping_list(camp_id: str, user: dict = Depends(get_current_user), _f
         "by_store": by_store,
         "general": general,
         "per_day": per_day,
+        # Wat de Premium-functies bij dit lijstje schelen (zonder Premium: wat het had opgeleverd)
+        "premium_value": round(float(sv.get("pantry") or 0) + float(sv.get("promo_day") or 0) + float(sv.get("split") or 0) + float(sv.get("split_can") or 0), 2),
         "stores": stores,
         "multi_store": len(stores) > 1,
         "has_pantry": has_pantry,
@@ -3596,6 +3634,7 @@ async def savings_overview(user: dict = Depends(get_current_user)):
                                 {"_id": 0, "camp_id": 1, "name": 1, "start_date": 1, "created_at": 1, "savings": 1, "checked": 1, "deleted_at": 1}).to_list(1000)
     keys = ("promo", "smart", "pantry", "promo_day", "split", "split_can", "total")
     months: Dict[str, dict] = {}
+    premium_bought = 0.0  # al echt bespaard met de Premium-functies (wat je afvinkte)
     for c in camps:
         sv = dict(c.get("savings") or {})
         if not sv.get("total"):
@@ -3607,6 +3646,7 @@ async def savings_overview(user: dict = Depends(get_current_user)):
         f = min(1.0, got[3] / float(sv["total"])) if sv.get("total") else 0.0
         b_std = got[0] + float(sv.get("smart") or 0) * f
         b_prem = got[2] + got[1] + float(sv.get("promo_day") or 0) * f
+        premium_bought += b_prem
         deleted = c.get("deleted_at") is not None
         if deleted:
             if not checked or b_std + b_prem <= 0 and got[3] <= 0:
@@ -3643,7 +3683,14 @@ async def savings_overview(user: dict = Depends(get_current_user)):
         r["bought"] = round(r.get("bought", 0.0), 2)
         r["pending"] = round(r.get("pending", 0.0), 2)
     tot = {k: round(sum(r[k] for r in out), 2) for k in keys + ("standard", "premium", "saving", "bought", "pending")}
-    return {"months": out, "is_premium": is_premium, **tot}
+    return {"months": out, "is_premium": is_premium, **tot, "premium_bought": round(premium_bought, 2)}
+
+
+@api_router.post("/auth/trial-seen")
+async def trial_seen(user: dict = Depends(get_current_user)):
+    # De melding "je proefperiode is voorbij" niet nog eens tonen
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"trial_ended_seen": True}})
+    return {"ok": True}
 
 
 @api_router.get("/camps/{camp_id}/budget")
@@ -3973,12 +4020,24 @@ async def _ref_code(user: dict) -> str:
     raise HTTPException(status_code=500, detail="Kon geen code maken, probeer het nog eens")
 
 
+TRIAL_DAYS = 14
+
+
+def _trial_fields() -> dict:
+    # Nieuwe gebruikers: 14 dagen Premium gratis, daarna vanzelf terug naar Standaard (er wordt niets afgeschreven)
+    return {"premium": True, "trial": True, "premium_until": now_utc() + timedelta(days=TRIAL_DAYS), "trial_started_at": now_utc()}
+
+
 async def _premium_expired(user: dict) -> dict:
     # Verdiende maand voorbij: nog tegoed? Dan de volgende maand, anders weer gewoon account
+    if user.get("trial") and not user.get("premium_bank", 0):
+        upd = {"premium": False, "trial": False, "trial_ended_at": now_utc()}
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": upd, "$unset": {"premium_until": ""}})
+        return {**user, **upd, "premium_until": None}
     if user.get("premium_bank", 0) > 0:
         until = ensure_aware(user["premium_until"]) + timedelta(days=30)
-        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"premium_until": until}, "$inc": {"premium_bank": -1}})
-        return {**user, "premium_until": until, "premium_bank": user["premium_bank"] - 1}
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"premium_until": until, "trial": False}, "$inc": {"premium_bank": -1}})
+        return {**user, "premium_until": until, "premium_bank": user["premium_bank"] - 1, "trial": False}
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"premium": False}, "$unset": {"premium_until": ""}})
     return {**user, "premium": False, "premium_until": None}
 
@@ -12619,8 +12678,8 @@ PLAN_FEATURES = {
 }
 PLAN_DEFAULTS = {
     "features": {k: v[1] for k, v in PLAN_FEATURES.items()},
-    "ai_limit": {"standaard": 0, "premium": 100, "ultra": 300},  # AI-vragen aan de slimme hulp per persoon per maand
-    "price": {"premium": 2.99, "ultra": 4.99},  # euro per maand, wat de app laat zien
+    "ai_limit": {"standaard": 3, "premium": 100, "ultra": 300},  # AI-vragen aan de slimme hulp per persoon per maand (Standaard: om te proeven)
+    "price": {"premium": 2.99, "ultra": 4.99, "premium_year": 24.99, "ultra_year": 44.99},  # euro, wat de app laat zien
 }
 _plans_conf: dict = {}
 
@@ -12668,7 +12727,8 @@ async def _load_plans() -> None:
 @api_router.get("/plans")
 async def get_plans(user: dict = Depends(get_current_user)):
     p = _plans()
-    return {"levels": [{"key": k, "label": PLAN_LABELS[k], "price": p["price"].get(k), "ai_limit": p["ai_limit"].get(k, 0)} for k in PLAN_LEVELS],
+    return {"levels": [{"key": k, "label": PLAN_LABELS[k], "price": p["price"].get(k), "price_year": p["price"].get(f"{k}_year"),
+                        "ai_limit": p["ai_limit"].get(k, 0)} for k in PLAN_LEVELS],
             "features": [{"key": k, "title": t, "plan": p["features"][k]} for k, (t, _) in PLAN_FEATURES.items()],
             "mine": user_plan(user)}
 
@@ -12688,7 +12748,7 @@ async def admin_set_plans(data: PlansInput, user: dict = Depends(get_current_use
     if data.ai_limit is not None:
         upd["ai_month"] = {k: max(0, min(5000, int(v))) for k, v in data.ai_limit.items() if k in PLAN_LEVELS}
     if data.price is not None:
-        upd["price"] = {k: round(max(0.0, min(100.0, float(v))), 2) for k, v in data.price.items() if k in ("premium", "ultra")}
+        upd["price"] = {k: round(max(0.0, min(500.0, float(v))), 2) for k, v in data.price.items() if k in ("premium", "ultra", "premium_year", "ultra_year")}
     if upd:
         await db.settings.update_one({"key": "plans"}, {"$set": upd}, upsert=True)
     await _load_plans()
@@ -13100,9 +13160,15 @@ AI_MONTH_LIMIT = 300  # reserve; het echte aantal per abonnement per maand staat
 AI_IMAGE_MAX = 4_500_000  # bytes; groter kan de AI niet lezen
 
 
+async def _require_slim(user: dict) -> None:
+    # De slimme hulp: met Premium, of met de paar gratis vragen per maand van Standaard
+    if not has_feature(user, "slimme_hulp") and int(_plans()["ai_limit"].get(user_plan(user), 0)) <= 0:
+        await require_feature(user, "slimme_hulp")
+
+
 async def _ai_ready(user: dict) -> None:
-    # Premium, een AI-sleutel, en niet eindeloos veel vragen per maand (elke vraag kost geld)
-    await require_feature(user, "slimme_hulp")
+    # Premium (of de paar gratis vragen van Standaard), een AI-sleutel, en niet eindeloos veel vragen per maand (elke vraag kost geld)
+    await _require_slim(user)
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=503, detail="De slimme hulp is nog niet beschikbaar. Probeer het later nog eens.")
     day = now_utc().date().isoformat()
@@ -13114,6 +13180,8 @@ async def _ai_ready(user: dict) -> None:
     limit = int(_plans()["ai_limit"].get(user_plan(user), AI_MONTH_LIMIT))
     if used > limit:
         more = " Met Ultra kun je meer vragen." if user_plan(user) == "premium" and _plans()["ai_limit"].get("ultra", 0) > limit else ""
+        if user_plan(user) == "standaard":
+            raise HTTPException(status_code=403, detail=f"Je {limit} gratis vragen van deze maand zijn op. Met Premium kun je de slimme hulp 100 keer per maand gebruiken.")
         raise HTTPException(status_code=429, detail=f"Je hebt deze maand al {limit} keer iets aan de slimme hulp gevraagd. Volgende maand kan het weer.{more}")
 
 
@@ -13433,7 +13501,7 @@ class AiDishSave(BaseModel):
 
 @api_router.post("/ai/dish")
 async def ai_dish_save(data: AiDishSave, user: dict = Depends(get_current_user)):
-    await require_feature(user, "slimme_hulp")
+    await _require_slim(user)
     if data.category not in MEAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="Ongeldige categorie")
     camp = None
@@ -13513,7 +13581,7 @@ class AiItemsAdd(BaseModel):
 
 @api_router.post("/ai/items/add")
 async def ai_items_add(data: AiItemsAdd, user: dict = Depends(get_current_user)):
-    await require_feature(user, "slimme_hulp")
+    await _require_slim(user)
     camp = await db.camps.find_one({"camp_id": data.camp_id, **camp_access_filter(user["user_id"])}, {"_id": 0})
     if not camp:
         raise HTTPException(status_code=404, detail="Lijstje niet gevonden")
@@ -13591,7 +13659,7 @@ def _saving_facts(sl: dict) -> list:
 
 @api_router.get("/ai/savings-tips")
 async def ai_savings_tips(camp_id: str, user: dict = Depends(get_current_user)):
-    await require_feature(user, "slimme_hulp")
+    await _require_slim(user)
     sl = await shopping_list(camp_id, user)
     camp = await db.camps.find_one({"camp_id": camp_id}, {"_id": 0, "savings": 1, "name": 1})
     sl = {**sl, "savings": (camp or {}).get("savings") or {}}
@@ -13675,8 +13743,8 @@ async def _mollie(method: str, path: str, body: Optional[dict] = None) -> dict:
     return r.json()
 
 
-def _amount(plan: str) -> dict:
-    price = _plans()["price"].get(plan)
+def _amount(plan: str, period: str = "month") -> dict:
+    price = _plans()["price"].get(f"{plan}_year" if period == "year" else plan)
     if not price:
         raise HTTPException(status_code=400, detail="Voor dit abonnement is nog geen prijs ingesteld")
     return {"currency": "EUR", "value": f"{float(price):.2f}"}
@@ -13690,6 +13758,7 @@ def _billing_public(user: dict) -> dict:
         "active": bool(b.get("subscription_id")) and not b.get("cancelled"),
         "cancelled": bool(b.get("cancelled")),
         "paid_until": ensure_aware(user["premium_until"]).isoformat() if b.get("subscription_id") and user.get("premium_until") else None,
+        "period": b.get("period") or "month",
         "test": _mollie_key().startswith("test_"),
     }
 
@@ -13701,13 +13770,16 @@ async def billing_status(user: dict = Depends(get_current_user)):
 
 class BillingStart(BaseModel):
     plan: str
+    period: str = "month"  # of "year": jaarabonnement met korting
 
 
 @api_router.post("/billing/start")
 async def billing_start(data: BillingStart, user: dict = Depends(get_current_user)):
     if data.plan not in ("premium", "ultra"):
         raise HTTPException(status_code=400, detail="Onbekend abonnement")
-    if user.get("premium") and not (user.get("billing") or {}).get("subscription_id"):
+    period = "year" if data.period == "year" else "month"
+    # Proefperiode of Premium via een Ultra-huisgenoot: dan mag je gewoon zelf een abonnement nemen
+    if user.get("premium") and not (user.get("billing") or {}).get("subscription_id") and not user.get("trial") and not user.get("premium_household"):
         raise HTTPException(status_code=400, detail="Je hebt Premium al via een vereniging, de beheerder of verdiend met delen")
     limit(f"billing:{user['user_id']}", 10, 3600)
     b = user.get("billing") or {}
@@ -13718,31 +13790,31 @@ async def billing_start(data: BillingStart, user: dict = Depends(get_current_use
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"billing.customer_id": cid}})
     base = _billing_base()
     pay = await _mollie("POST", f"/customers/{cid}/payments", {
-        "amount": _amount(data.plan),
-        "description": f"Slim Boodschappenlijstje {PLAN_LABELS[data.plan]} (eerste maand)",
+        "amount": _amount(data.plan, period),
+        "description": f"Slim Boodschappenlijstje {PLAN_LABELS[data.plan]} ({'eerste jaar' if period == 'year' else 'eerste maand'})",
         "sequenceType": "first",
         "redirectUrl": f"{base}/premium?betaald=1",
         "webhookUrl": f"{base}/api/billing/webhook",
-        "metadata": {"user_id": user["user_id"], "plan": data.plan},
+        "metadata": {"user_id": user["user_id"], "plan": data.plan, "period": period},
     })
-    await db.payments.insert_one({"payment_id": pay["id"], "user_id": user["user_id"], "plan": data.plan, "kind": "first",
+    await db.payments.insert_one({"payment_id": pay["id"], "user_id": user["user_id"], "plan": data.plan, "period": period, "kind": "first",
                                   "status": pay.get("status"), "amount": pay["amount"]["value"], "created_at": now_utc()})
     return {"checkout_url": pay["_links"]["checkout"]["href"]}
 
 
-async def _billing_paid(user: dict, plan: str, first: bool) -> None:
-    until = now_utc() + timedelta(days=31 + BILLING_GRACE_DAYS)
+async def _billing_paid(user: dict, plan: str, first: bool, period: str = "month") -> None:
+    until = now_utc() + timedelta(days=(366 if period == "year" else 31) + BILLING_GRACE_DAYS)
     if first:
         # Nieuw (of overgestapt): eerst Premium aan zoals de beheerder dat ook doet (welkom, mail, beloning voor wie deelde)
         if not user.get("premium"):
             await _set_premium(user, True, "mollie")
-    upd = {"premium": True, "premium_until": until, "billing.plan": plan, "billing.last_paid_at": now_utc()}
+    upd = {"premium": True, "premium_until": until, "billing.plan": plan, "billing.period": period, "billing.last_paid_at": now_utc(), "trial": False}
     if plan == "ultra":
         upd["plan"] = plan
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": upd, **({"$unset": {"plan": ""}} if plan != "ultra" else {})})
 
 
-async def _billing_subscribe(user: dict, plan: str) -> None:
+async def _billing_subscribe(user: dict, plan: str, period: str = "month") -> None:
     b = user.get("billing") or {}
     cid = b["customer_id"]
     if b.get("subscription_id") and not b.get("cancelled"):
@@ -13751,12 +13823,12 @@ async def _billing_subscribe(user: dict, plan: str) -> None:
             await _mollie("DELETE", f"/customers/{cid}/subscriptions/{b['subscription_id']}")
         except HTTPException:
             pass
-    start = (now_utc() + timedelta(days=31)).date().isoformat()
+    start = (now_utc() + timedelta(days=366 if period == "year" else 31)).date().isoformat()
     sub = await _mollie("POST", f"/customers/{cid}/subscriptions", {
-        "amount": _amount(plan), "interval": "1 month", "startDate": start,
-        "description": f"Slim Boodschappenlijstje {PLAN_LABELS[plan]}",
+        "amount": _amount(plan, period), "interval": "12 months" if period == "year" else "1 month", "startDate": start,
+        "description": f"Slim Boodschappenlijstje {PLAN_LABELS[plan]}{' (jaar)' if period == 'year' else ''}",
         "webhookUrl": f"{_billing_base()}/api/billing/webhook",
-        "metadata": {"user_id": user["user_id"], "plan": plan},
+        "metadata": {"user_id": user["user_id"], "plan": plan, "period": period},
     })
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"billing.subscription_id": sub["id"], "billing.plan": plan, "billing.cancelled": False}})
 
@@ -13782,9 +13854,10 @@ async def billing_webhook(request: Request):
         return {"ok": True}
     plan = meta.get("plan") if meta.get("plan") in ("premium", "ultra") else (user.get("billing") or {}).get("plan", "premium")
     first = pay.get("sequenceType") == "first"
-    await _billing_paid(user, plan, first)
+    period = "year" if (meta.get("period") or (user.get("billing") or {}).get("period")) == "year" else "month"
+    await _billing_paid(user, plan, first, period)
     if first:
-        await _billing_subscribe(await db.users.find_one({"user_id": user["user_id"]}), plan)
+        await _billing_subscribe(await db.users.find_one({"user_id": user["user_id"]}), plan, period)
     await db.payments.update_one({"payment_id": pid}, {"$set": {"handled": True}})
     return {"ok": True}
 

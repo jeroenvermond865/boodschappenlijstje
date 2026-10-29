@@ -12,7 +12,7 @@ import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
 import { useSwipePages } from "@/src/useSwipePages";
-import { GOLD, PremiumLock, useFeature } from "@/src/premium";
+import { GOLD, PremiumLock, useFeature, usePlans } from "@/src/premium";
 import { euro } from "@/src/search";
 import { useTerms } from "@/src/settings";
 import { useToast } from "@/src/toast";
@@ -37,7 +37,11 @@ export default function SlimScreen() {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const premium = useFeature("slimme_hulp");
+  // Standaard mag een paar vragen per maand gratis proberen (in te stellen bij Beheer -> Abonnementen)
+  const freeLimit = usePlans().data?.levels.find((l) => l.key === "standaard")?.ai_limit ?? 0;
+  const allowed = premium || freeLimit > 0;
   const params = useLocalSearchParams<{ tab?: Tab; camp?: string }>();
   const [tab, setTab] = useState<Tab>(TABS.some((t) => t.key === params.tab) ? (params.tab as Tab) : "menu");
   // Opzij vegen naar het volgende of vorige onderdeel
@@ -62,8 +66,16 @@ export default function SlimScreen() {
             </Pressable>
           ))}
         </ScrollView>
+        {!premium && freeLimit > 0 ? (
+          <Pressable onPress={() => router.push("/premium")} style={styles.freeNote} testID="slim-free-note">
+            <Icon name="star-circle" size={18} color={GOLD.icon} />
+            <Text style={styles.freeNoteText}>
+              Je kunt de slimme hulp {freeLimit} keer per maand gratis gebruiken. Met Premium 100 keer. <Text style={{ fontFamily: fonts.bold }}>Probeer Premium ›</Text>
+            </Text>
+          </Pressable>
+        ) : null}
         <Animated.View style={[{ gap: 14 }, swipe.style]} {...swipe.panHandlers}>
-        {!premium ? (
+        {!allowed ? (
           <PremiumLock feature="slimme_hulp" title="De slimme hulp" text="Laat de app een menu maken uit één zin, koken met wat je nog hebt, recepten overnemen en besparen." />
         ) : tab === "menu" ? (
           <MenuTab />
@@ -622,6 +634,8 @@ export function TipsTab({ campId: initial }: { campId?: string }) {
 }
 
 const useStyles = makeStyles((colors) => ({
+  freeNote: { flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: GOLD.border, backgroundColor: GOLD.bg, borderRadius: 12, padding: 10 },
+  freeNoteText: { flex: 1, fontSize: 13, fontFamily: fonts.medium, color: GOLD.text },
   root: { flex: 1, backgroundColor: colors.surface },
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 10, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.divider },
   headerBtn: { width: 44, height: 40, alignItems: "center", justifyContent: "center" },

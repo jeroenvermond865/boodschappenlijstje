@@ -10,7 +10,7 @@ import { Icon } from "@/src/components/ui";
 import { niceDate } from "@/src/DateField";
 import { api } from "@/src/api";
 import { cachedApi } from "@/src/offline";
-import { AdSlot, GOLD, PLAN_NAME, useFeature, usePlanOf } from "@/src/premium";
+import { AdSlot, GOLD, PLAN_NAME, TrialNotice, useFeature, usePlanOf } from "@/src/premium";
 import { TodayCard } from "@/src/TodayCard";
 import { useTerms } from "@/src/settings";
 import { usesNativeTabs } from "@/src/navigation";
@@ -135,6 +135,7 @@ export default function HomeScreen() {
 
       {/* Snel lijstje (klein knopje) en wat bijna op is: bovenaan, maar niet groot */}
       <View style={[styles.pad, { gap: 8 }]}>
+        <TrialNotice />
         <TodayCard />
         {data?.camp ? <RestockCard campId={data.camp.id} compact /> : null}
       </View>
@@ -207,18 +208,15 @@ export default function HomeScreen() {
           <Icon name="piggy-bank-outline" size={22} color={premium ? GOLD.icon : colors.brandPrimary} />
           <Text style={premium ? styles.premTileText : [styles.premTileText, { color: colors.onSurface }]}>Bespaaroverzicht</Text>
         </Pressable>
-        {hasPantry ? (
-          <Pressable testID="home-pantry" onPress={() => router.push("/pantry")} style={styles.premTile}>
-            <Icon name="fridge-outline" size={22} color={GOLD.icon} />
-            <Text style={styles.premTileText}>Voorraadkast</Text>
-          </Pressable>
-        ) : null}
-        {hasAlerts ? (
-          <Pressable testID="home-alerts" onPress={() => router.push("/alerts")} style={styles.premTile}>
-            <Icon name="bell-ring-outline" size={22} color={GOLD.icon} />
-            <Text style={styles.premTileText}>Prijsalarmen</Text>
-          </Pressable>
-        ) : null}
+        {/* Ook zonder Premium zichtbaar, met een slotje: daar zie je wat het doet en kun je het proberen */}
+        <Pressable testID="home-pantry" onPress={() => router.push("/pantry")} style={styles.premTile}>
+          <Icon name={hasPantry ? "fridge-outline" : "lock-outline"} size={22} color={GOLD.icon} />
+          <Text style={styles.premTileText}>Voorraadkast</Text>
+        </Pressable>
+        <Pressable testID="home-alerts" onPress={() => router.push("/alerts")} style={styles.premTile}>
+          <Icon name={hasAlerts ? "bell-ring-outline" : "lock-outline"} size={22} color={GOLD.icon} />
+          <Text style={styles.premTileText}>Prijsalarmen</Text>
+        </Pressable>
       </View>
 
       {/* Slimme hulp (Premium): menu uit één zin, restjes, recept overnemen, lijst inspreken, bespaartips */}

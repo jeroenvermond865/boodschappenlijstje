@@ -131,7 +131,11 @@ export default function AccountScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.premiumTitle}>{user.plan === "ultra" ? "Ultra" : "Premium"}</Text>
               <Text style={styles.premiumText}>
-                {user.premium_org
+                {(user as any).trial
+                  ? "Je probeert het 14 dagen gratis. "
+                  : (user as any).premium_household
+                  ? `Via ${(user as any).premium_household} (Ultra, voor het hele huishouden). `
+                  : user.premium_org
                   ? `Via ${user.premium_org}. `
                   : user.subscription === "active"
                     ? "Je betaalt per maand. "

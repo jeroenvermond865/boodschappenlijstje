@@ -1,6 +1,7 @@
 import { Pressable, Text, View } from "react-native";
+import Modal from "@/src/components/Modal";
 import { useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
@@ -59,7 +60,7 @@ export function useFeature(key: FeatureKey) {
 }
 
 export type Plans = {
-  levels: { key: PlanKey; label: string; price?: number | null; ai_limit: number }[];
+  levels: { key: PlanKey; label: string; price?: number | null; price_year?: number | null; ai_limit: number }[];
   features: { key: FeatureKey; title: string; plan: PlanKey }[];
   mine: PlanKey;
 };
@@ -109,10 +110,78 @@ export function PremiumLock({ title, text, plural, feature }: { title: string; t
         <Text style={[styles.lockTitle, { color: c.text }]}>{title} {plural ? `zijn ${name}-functies` : `is een ${name}-functie`}</Text>
         {text ? <Text style={[styles.lockText, { color: c.text }]}>{text}</Text> : null}
         <Pressable onPress={() => router.push("/premium")} hitSlop={8} testID="premium-lock-more">
-          <Text style={[styles.lockLink, { color: c.icon }]}>Bekijk wat het kost en wat je krijgt</Text>
+          <Text style={[styles.lockLink, { color: c.icon }]}>Probeer {name} ›</Text>
         </Pressable>
       </View>
     </View>
+  );
+}
+
+const eur = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
+
+// Wat Premium je oplevert, bij een lijstje: met Premium "dit scheelt je", zonder Premium "dit had je extra bespaard"
+export function PremiumValue({ value }: { value?: number | null }) {
+  const styles = useStyles();
+  const router = useRouter();
+  const has = useFeature("extra_besparen");
+  if (!value || value < 0.5) return null;
+  return (
+    <Pressable onPress={() => router.push(has ? "/savings" : "/premium")} style={[styles.value, { backgroundColor: GOLD.bg, borderColor: GOLD.border }]} testID="premium-value">
+      <Icon name="piggy-bank-outline" size={18} color={GOLD.icon} />
+      <Text style={[styles.valueText, { color: GOLD.text }]}>
+        {has ? `Premium scheelt je bij dit lijstje ${eur(value)}` : `Met Premium had je hier ${eur(value)} extra bespaard`}
+        {has ? "" : <Text style={{ fontFamily: fonts.bold }}> · Probeer Premium ›</Text>}
+      </Text>
+    </Pressable>
+  );
+}
+
+// Op Home: hoe lang je proef nog loopt, en als hij voorbij is één keer wat Premium je in die tijd opleverde
+export function TrialNotice() {
+  const styles = useStyles();
+  const router = useRouter();
+  const { user, refresh } = useAuth() as any;
+  const ended = !!user?.trial_ended;
+  const saved = useQuery({ queryKey: ["savings"], queryFn: () => api<{ premium_bought?: number; premium?: number }>("/savings"), enabled: ended });
+  const seen = useMutation({ mutationFn: () => api("/auth/trial-seen", { method: "POST", body: {} }), onSettled: () => refresh?.() });
+  if (user?.trial && user?.premium_until) {
+    const days = Math.max(1, Math.ceil((new Date(user.premium_until).getTime() - Date.now()) / 86400000));
+    return (
+      <Pressable onPress={() => router.push("/premium")} style={[styles.value, { backgroundColor: GOLD.bg, borderColor: GOLD.border }]} testID="trial-banner">
+        <Icon name="star-circle" size={18} color={GOLD.icon} />
+        <Text style={[styles.valueText, { color: GOLD.text }]}>
+          Je probeert Premium gratis: nog {days} {days === 1 ? "dag" : "dagen"} <Text style={{ fontFamily: fonts.bold }}>›</Text>
+        </Text>
+      </Pressable>
+    );
+  }
+  if (!ended) return null;
+  const amount = saved.data?.premium_bought || saved.data?.premium || 0;
+  const close = (go?: boolean) => {
+    seen.mutate();
+    if (go) router.push("/premium");
+  };
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={() => close()}>
+      <View style={styles.backdrop}>
+        <View style={styles.sheet}>
+          <Icon name="star-circle" size={40} color={GOLD.icon} />
+          <Text style={styles.sheetTitle}>Je proefperiode is voorbij</Text>
+          <Text style={styles.sheetText}>
+            {amount >= 0.5
+              ? `In de afgelopen 14 dagen bespaarde je ${eur(amount)} extra met Premium.`
+              : "Je hebt 14 dagen alles van Premium kunnen proberen."}{" "}
+            Je gaat nu verder met Standaard: alles wat je maakte, blijft gewoon staan.
+          </Text>
+          <Pressable onPress={() => close(true)} style={[styles.sheetBtn, { backgroundColor: GOLD.icon }]} testID="trial-ended-premium">
+            <Text style={styles.sheetBtnText}>Bekijk Premium</Text>
+          </Pressable>
+          <Pressable onPress={() => close()} hitSlop={8} testID="trial-ended-later">
+            <Text style={[styles.lockLink, { color: GOLD.icon, textDecorationLine: "none" }]}>Nu niet</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -123,4 +192,12 @@ const useStyles = makeStyles((colors) => ({
   ad: { minHeight: 60, borderRadius: 12, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
   adText: { fontSize: 11, fontFamily: fonts.regular, color: colors.muted },
   lockLink: { fontSize: 13, fontFamily: fonts.semibold, color: GOLD.icon, marginTop: 4, textDecorationLine: "underline" },
+  value: { flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderRadius: 12, paddingVertical: 9, paddingHorizontal: 12 },
+  valueText: { flex: 1, fontSize: 13, fontFamily: fonts.semibold },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center" },
+  sheet: { backgroundColor: colors.surface, borderRadius: 20, width: "90%", maxWidth: 440, alignSelf: "center", padding: 22, gap: 12, alignItems: "center" },
+  sheetTitle: { fontSize: 20, fontFamily: fonts.bold, color: colors.onSurface, textAlign: "center" },
+  sheetText: { fontSize: 15, lineHeight: 21, fontFamily: fonts.regular, color: colors.onSurface, textAlign: "center" },
+  sheetBtn: { alignSelf: "stretch", alignItems: "center", borderRadius: 14, paddingVertical: 13 },
+  sheetBtnText: { fontSize: 15, fontFamily: fonts.semibold, color: "#FFFFFF" },
 }));

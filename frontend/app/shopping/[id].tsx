@@ -26,7 +26,7 @@ import { sliceInfo } from "@/src/slices";
 import { AISLE_ICONS, formatQty } from "@/src/constants";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
-import { useFeature } from "@/src/premium";
+import { PremiumValue, useFeature } from "@/src/premium";
 import { RouteSheet, useRoute } from "@/src/route";
 import { CompareCard, type CompareStore } from "@/src/CompareCard";
 import { storage } from "@/src/utils/storage";
@@ -38,7 +38,7 @@ type StoreBlock = { store: string; grouped: Grouped[]; flat: Item[]; total?: num
 
 const euro = (n: number) => `€ ${n.toFixed(2).replace(".", ",")}`;
 type PerDay = { index: number; adults: number; children: number; by_store: StoreBlock[] };
-type ShoppingData = { by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean; shop_day?: string | null; promo_then?: number; shop_store?: string | null; split_stores?: string[] };
+type ShoppingData = { premium_value?: number; by_store: StoreBlock[]; general: StoreBlock[]; per_day: PerDay[]; stores: string[]; multi_store: boolean; has_pantry?: boolean; shop_day?: string | null; promo_then?: number; shop_store?: string | null; split_stores?: string[] };
 
 const key = (store: string, i: Item) => `${store}|${i.name.toLowerCase()}|${i.unit}`;
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -483,6 +483,7 @@ export default function ShoppingScreen() {
           contentContainerStyle={{ padding: 16, paddingTop: 16 + hide.padTop, paddingBottom: insets.bottom + 32, gap: 16 }}
         >
           {quick ? <TodayPicks stores={data?.stores ?? []} /> : null}
+          <PremiumValue value={data?.premium_value} />
           {id ? <RestockCard campId={String(id)} /> : null}
           {data?.offline_at ? (
             <View style={styles.multiBanner}>
@@ -552,12 +553,11 @@ export default function ShoppingScreen() {
               <Text style={styles.pantryLinkText}>Al iets in huis? Zet het in je voorraadkast</Text>
             </Pressable>
           ) : null}
-          {premium ? (
-            <Pressable style={styles.pantryLink} onPress={() => setTipsOpen(true)} testID="shopping-ai-tips">
-              <Icon name="piggy-bank-outline" size={16} color={colors.brandPrimary} />
-              <Text style={styles.pantryLinkText}>Slimme bespaartips voor deze lijst</Text>
-            </Pressable>
-          ) : null}
+          {/* Bespaartips: met Premium, en voor Standaard een paar gratis vragen per maand */}
+          <Pressable style={styles.pantryLink} onPress={() => setTipsOpen(true)} testID="shopping-ai-tips">
+            <Icon name="piggy-bank-outline" size={16} color={colors.brandPrimary} />
+            <Text style={styles.pantryLinkText}>Slimme bespaartips voor deze lijst</Text>
+          </Pressable>
           {data?.has_pantry && covered.length ? (
             <Pressable style={styles.multiBanner} onPress={() => setPantryPick(new Set(covered.map((x) => key(x.store, x.item))))} testID="pantry-check">
               <Icon name="fridge-outline" size={18} color={colors.onBrandTertiary} />

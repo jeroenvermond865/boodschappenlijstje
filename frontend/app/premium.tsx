@@ -41,7 +41,8 @@ export default function PremiumScreen() {
   const [paying, setPaying] = useState<PlanKey | null>(null);
   const [stopAsk, setStopAsk] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const canBuy = !!bill?.enabled && (!user?.premium || !!bill.plan);
+  // Ook tijdens de proef of met Premium via een Ultra-huisgenoot mag je zelf een abonnement nemen
+  const canBuy = !!bill?.enabled && (!user?.premium || !!bill.plan || !!(user as any).trial || !!(user as any).premium_household);
 
   // Terug van iDEAL: de betaling komt via Mollie binnen, haal je account een paar keer opnieuw op
   useEffect(() => {
@@ -58,10 +59,12 @@ export default function PremiumScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [betaald]);
 
+  // Per maand of per jaar (met korting)
+  const [period, setPeriod] = useState<"month" | "year">("month");
   const buy = async (plan: PlanKey) => {
     setPaying(plan);
     try {
-      const r = await api<{ checkout_url: string }>("/billing/start", { method: "POST", body: { plan } });
+      const r = await api<{ checkout_url: string }>("/billing/start", { method: "POST", body: { plan, period } });
       if (Platform.OS === "web" && typeof window !== "undefined") window.location.href = r.checkout_url;
       else await Linking.openURL(r.checkout_url);
     } catch (e: any) {
@@ -116,13 +119,28 @@ export default function PremiumScreen() {
           <Icon name="star" size={34} color={GOLD.icon} />
           <Text style={styles.heroTitle}>{user?.premium ? `Je hebt ${PLAN_NAME[mine]}` : "Wat kost het en wat krijg je?"}</Text>
           <Text style={styles.heroText}>
-            {user?.premium
-              ? user.premium_org
-                ? `Via ${user.premium_org}. Bedankt dat jullie de app gebruiken!`
-                : "Bedankt voor je steun! Je hebt alle extra functies."
-              : "Extra functies om nog slimmer boodschappen te doen."}
+            {(user as any)?.trial
+              ? "Je probeert Premium nu 14 dagen gratis. Daarna ga je vanzelf verder met Standaard, er wordt niets afgeschreven."
+              : (user as any)?.premium_household
+                ? `Via ${(user as any).premium_household}, die Ultra heeft voor het hele huishouden.`
+                : user?.premium
+                  ? user.premium_org
+                    ? `Via ${user.premium_org}. Bedankt dat jullie de app gebruiken!`
+                    : "Bedankt voor je steun! Je hebt alle extra functies."
+                  : "Extra functies om nog slimmer boodschappen te doen."}
           </Text>
         </View>
+
+        {/* Per maand of per jaar: een jaar is voordeliger */}
+        {levels.some((l) => l.price_year) ? (
+          <View style={styles.periodRow}>
+            {(["month", "year"] as const).map((p) => (
+              <Pressable key={p} onPress={() => setPeriod(p)} style={[styles.periodBtn, period === p && styles.periodOn]} testID={`period-${p}`}>
+                <Text style={[styles.periodText, period === p && { color: "#FFFFFF" }]}>{p === "month" ? "Per maand" : "Per jaar (voordeliger)"}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
 
         {/* Wat kost het en wat krijg je: de drie abonnementen naast elkaar */}
         <View style={styles.plans}>
@@ -137,8 +155,24 @@ export default function PremiumScreen() {
                   {mine === l.key ? <Text style={styles.planNow}>Jouw abonnement</Text> : null}
                 </View>
                 <Text style={[styles.planPrice, c && { color: c.text }]}>
-                  {l.key === "standaard" ? "Gratis" : l.price ? `€ ${l.price.toFixed(2).replace(".", ",")} per maand` : "Prijs volgt"}
+                  {l.key === "standaard"
+                    ? "Gratis"
+                    : period === "year" && l.price_year
+                      ? `€ ${l.price_year.toFixed(2).replace(".", ",")} per jaar`
+                      : l.price
+                        ? `€ ${l.price.toFixed(2).replace(".", ",")} per maand`
+                        : "Prijs volgt"}
                 </Text>
+                {period === "year" && l.price_year && l.price && l.price * 12 > l.price_year ? (
+                  <Text style={[styles.planLine, c && { color: c.text }]}>
+                    Je bespaart € {(l.price * 12 - l.price_year).toFixed(2).replace(".", ",")} per jaar ({Math.round((1 - l.price_year / (l.price * 12)) * 100)}% korting)
+                  </Text>
+                ) : null}
+                {l.key === "ultra" ? (
+                  <Text style={[styles.planLine, { fontFamily: fonts.bold }, c && { color: c.text }]}>
+                    Voor het hele huishouden: iedereen met wie je een lijstje deelt, krijgt Premium
+                  </Text>
+                ) : null}
                 <Text style={styles.featureText}>
                   {l.key === "standaard"
                     ? "Lijstjes, gerechten, aanbiedingen, prijzen vergelijken, delen, Vandaag en Wat je vaak koopt."
@@ -264,6 +298,10 @@ export default function PremiumScreen() {
 }
 
 const useStyles = makeStyles((colors) => ({
+  periodRow: { flexDirection: "row", gap: 6, alignSelf: "center", backgroundColor: colors.surfaceSecondary, borderRadius: 999, padding: 4 },
+  periodBtn: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999 },
+  periodOn: { backgroundColor: colors.brandPrimary },
+  periodText: { fontSize: 13, fontFamily: fonts.semibold, color: colors.onSurface },
   root: { flex: 1, backgroundColor: colors.surface },
   header: {
     flexDirection: "row",

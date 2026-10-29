@@ -745,3 +745,50 @@ def test_nep_melding_zonder_echte_betaling_doet_niets(monkeypatch):
     monkeypatch.setattr(S, "_mollie", nep)
     run(S.billing_webhook(_webhook("geen-id")))
     assert nep.calls == []
+
+
+# --- Betalen: proef, huishouden, jaar, gratis vragen ---
+def test_proef_van_14_dagen_en_daarna_standaard():
+    f = S._trial_fields()
+    assert f["premium"] and f["trial"] and 13 <= (f["premium_until"] - S.now_utc()).days <= 14
+
+    async def t():
+        u = {"user_id": "u9", "premium": True, "trial": True, "premium_until": S.now_utc() - S.timedelta(minutes=1)}
+        await S.db.users.insert_one(dict(u))
+        after = await S._premium_expired(u)
+        doc = await S.db.users.find_one({"user_id": "u9"})
+        return after, doc
+    after, doc = run(t())
+    assert not after["premium"] and not doc["premium"] and doc["trial"] is False and doc.get("trial_ended_at")
+    assert S.public_user({**doc, "email": "a@b.nl"})["trial_ended"] is True
+
+
+def test_ultra_geldt_voor_het_hele_huishouden():
+    S._household_cache.clear()
+
+    async def t():
+        await S.db.users.insert_many([{"user_id": "ultra", "name": "Sanne", "premium": True, "plan": "ultra", "deleted_at": None},
+                                      {"user_id": "gast", "name": "Gast", "deleted_at": None},
+                                      {"user_id": "los", "name": "Los", "deleted_at": None}])
+        await S.db.camps.insert_one({"camp_id": "c1", "owner_id": "ultra", "member_ids": ["gast"], "deleted_at": None})
+        return await S._household_premium({"user_id": "gast"}), await S._household_premium({"user_id": "los"})
+    via, none = run(t())
+    assert via == "Sanne" and none is None
+    assert S.user_plan({"premium": True, "premium_household": "Sanne"}) == "premium"  # Premium, geen Ultra
+
+
+def test_jaarprijs_en_gratis_vragen_voor_standaard(monkeypatch):
+    S._plans_conf.clear()
+    assert S._amount("premium", "year") == {"currency": "EUR", "value": "24.99"}
+    assert S._amount("ultra") == {"currency": "EUR", "value": "4.99"}
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    u = {"user_id": "s1", "role": "standaard"}
+
+    async def t():
+        for _ in range(3):
+            await S._ai_ready(u)  # drie gratis vragen
+        with pytest.raises(HTTPException) as e:
+            await S._ai_ready(u)
+        return e.value
+    err = run(t())
+    assert err.status_code == 403 and "gratis" in err.detail
