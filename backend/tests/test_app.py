@@ -1095,3 +1095,40 @@ def test_al_in_huis_alleen_voorraad():
     assert S._ing_pantry(rec, {"name": "zout"})
     assert S._ing_pantry(rec, {"name": "olijfolie"})
     assert not S._ing_pantry(rec, {"name": "kipfilet"})
+
+
+# --- Menu automatisch invullen (fout van 29-10: de eetvoorkeuren werden overschreven door de receptenlijst) ---
+def test_auto_menu_met_recepten_erbij(monkeypatch):
+    async def ok(*a, **k):
+        return None
+
+    async def recepten(cat, prefer, avoid, n, store=""):
+        return [{"id": "rec1"}]
+
+    async def neem(rid, cat, user, **k):
+        d = {"dish_id": "d_rec", "name": "Broodje kaas", "category": cat, "ingredients": [{"name": "brood", "qty_adult": 1}],
+             "deleted_at": None, "camp_id": None, "owner_id": "u1", "source": {"recipe_id": rid, "store": "ah"}}
+        await S.db.dishes.insert_one(dict(d))
+        return d
+
+    async def lijst_user(user, camp):
+        return user
+    monkeypatch.setattr(S, "require_feature", ok)
+    monkeypatch.setattr(S, "_menu_recipes", recepten)
+    monkeypatch.setattr(S, "_recipe_to_dish", neem)
+    monkeypatch.setattr(S, "_list_user", lijst_user)
+
+    async def t():
+        await S.db.camps.insert_one({"camp_id": "c1", "name": "Week", "owner_id": "u1", "deleted_at": None,
+                                     "days": [{"index": 0, "adults": 2, "children": 0, "meals": {}, "extras": []}]})
+        return await S.auto_menu("c1", S.AutoMenuInput(categories=["ontbijt", "lunch"], diet="vega"), dict(U1))
+    r = run(t())
+    assert r["camp"]["days"][0]
+
+
+def test_vega_per_maaltijd():
+    day = {"adults": 4, "children": 0, "meal_people": {"lunch": {"adults": 2, "children": 0, "vega_adults": 2}}}
+    assert S._diet_counts(day, {"vega_adults": 1}, "lunch")["vega"] == (2, 0)
+    assert S._diet_counts(day, {"vega_adults": 1}, "avondeten")["vega"] == (1, 0)
+    days = S._build_days([S.DayInput(adults=4, meal_people={"lunch": {"adults": 2, "vega_adults": 1}})])
+    assert days[0]["meal_people"]["lunch"] == {"adults": 2, "children": 0, "vega_adults": 1}

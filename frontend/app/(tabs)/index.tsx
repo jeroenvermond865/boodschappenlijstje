@@ -10,7 +10,7 @@ import { Icon } from "@/src/components/ui";
 import { niceDate } from "@/src/DateField";
 import { api } from "@/src/api";
 import { cachedApi } from "@/src/offline";
-import { AdSlot, GOLD, PLAN_NAME, TrialNotice, useFeature, usePlanOf } from "@/src/premium";
+import { AdSlot, PLAN_NAME, TrialNotice, planAccent, useFeature, usePlanOf } from "@/src/premium";
 import { TodayCard } from "@/src/TodayCard";
 import { useTerms } from "@/src/settings";
 import { usesNativeTabs } from "@/src/navigation";
@@ -102,6 +102,12 @@ export default function HomeScreen() {
   const hasAlerts = useFeature("prijsalarm");
   const hasSlim = useFeature("slimme_hulp");
   const slimPlan = usePlanOf("slimme_hulp");
+  // Elke tegel in de kleur van het abonnement waar die functie bij hoort (Beheer > Abonnementen bepaalt dat)
+  const accSave = planAccent(usePlanOf("extra_besparen"));
+  const accPantry = planAccent(usePlanOf("voorraadkast"));
+  const accAlerts = planAccent(usePlanOf("prijsalarm"));
+  const accSlim = planAccent(slimPlan);
+  const tile = (c: typeof accSave) => [styles.premTile, { backgroundColor: c.bg, borderColor: c.border }];
   const today = new Date().toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
   const actions = [
     { icon: "clipboard-plus-outline", label: `${T.nieuw[0].toUpperCase()}${T.nieuw.slice(1)} ${T.one}`, onPress: () => router.push("/camp/new") },
@@ -204,32 +210,32 @@ export default function HomeScreen() {
 
       {/* Besparing (voor iedereen), voorraad en prijsalarm (Premium) */}
       <View style={[styles.pad, styles.actions]}>
-        <Pressable testID="home-savings" onPress={() => router.push("/savings")} style={premium ? styles.premTile : [styles.premTile, styles.stdTile]}>
-          <Icon name="piggy-bank-outline" size={22} color={premium ? GOLD.icon : colors.brandPrimary} />
-          <Text style={premium ? styles.premTileText : [styles.premTileText, { color: colors.onSurface }]}>Bespaaroverzicht</Text>
+        <Pressable testID="home-savings" onPress={() => router.push("/savings")} style={premium ? tile(accSave) : [styles.premTile, styles.stdTile]}>
+          <Icon name="piggy-bank-outline" size={22} color={premium ? accSave.icon : colors.brandPrimary} />
+          <Text style={premium ? [styles.premTileText, { color: accSave.text }] : [styles.premTileText, { color: colors.onSurface }]}>Bespaaroverzicht</Text>
         </Pressable>
         {/* Ook zonder Premium zichtbaar, met een slotje: daar zie je wat het doet en kun je het proberen */}
-        <Pressable testID="home-pantry" onPress={() => router.push("/pantry")} style={styles.premTile}>
-          <Icon name={hasPantry ? "fridge-outline" : "lock-outline"} size={22} color={GOLD.icon} />
-          <Text style={styles.premTileText}>Voorraadkast</Text>
+        <Pressable testID="home-pantry" onPress={() => router.push("/pantry")} style={tile(accPantry)}>
+          <Icon name={hasPantry ? "fridge-outline" : "lock-outline"} size={22} color={accPantry.icon} />
+          <Text style={[styles.premTileText, { color: accPantry.text }]}>Voorraadkast</Text>
         </Pressable>
-        <Pressable testID="home-alerts" onPress={() => router.push("/alerts")} style={styles.premTile}>
-          <Icon name={hasAlerts ? "bell-ring-outline" : "lock-outline"} size={22} color={GOLD.icon} />
-          <Text style={styles.premTileText}>Prijsalarmen</Text>
+        <Pressable testID="home-alerts" onPress={() => router.push("/alerts")} style={tile(accAlerts)}>
+          <Icon name={hasAlerts ? "bell-ring-outline" : "lock-outline"} size={22} color={accAlerts.icon} />
+          <Text style={[styles.premTileText, { color: accAlerts.text }]}>Prijsalarmen</Text>
         </Pressable>
       </View>
 
       {/* Slimme hulp (Premium): menu uit één zin, restjes, recept overnemen, lijst inspreken, bespaartips */}
       <View style={styles.pad}>
-        <Pressable testID="home-slim" onPress={() => router.push("/slim")} style={styles.slim}>
-          <Icon name="auto-fix" size={26} color={GOLD.icon} />
+        <Pressable testID="home-slim" onPress={() => router.push("/slim")} style={[styles.slim, { backgroundColor: accSlim.bg, borderColor: accSlim.border }]}>
+          <Icon name="auto-fix" size={26} color={accSlim.icon} />
           <View style={{ flex: 1 }}>
-            <Text style={[styles.premTileText, { fontSize: 15, textAlign: "left", fontFamily: fonts.bold }]}>Slimme hulp{hasSlim ? "" : ` (${PLAN_NAME[slimPlan]})`}</Text>
-            <Text style={[styles.premTileText, { textAlign: "left", fontFamily: fonts.regular }]}>
+            <Text style={[styles.premTileText, { fontSize: 15, textAlign: "left", fontFamily: fonts.bold, color: accSlim.text }]}>Slimme hulp{hasSlim ? "" : ` (${PLAN_NAME[slimPlan]})`}</Text>
+            <Text style={[styles.premTileText, { textAlign: "left", fontFamily: fonts.regular, color: accSlim.text }]}>
               Menu uit één zin, koken met restjes, recept of foto overnemen, je lijst inspreken en bespaartips
             </Text>
           </View>
-          <Icon name="chevron-right" size={22} color={GOLD.icon} />
+          <Icon name="chevron-right" size={22} color={accSlim.icon} />
         </Pressable>
       </View>
 
@@ -465,9 +471,9 @@ const useStyles = makeStyles((colors) => ({
   emptyCamp: { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.brandTertiary },
   actions: { flexDirection: "row", gap: 10 },
   stdTile: { backgroundColor: colors.surface, borderColor: colors.border },
-  premTile: { flex: 1, alignItems: "center", gap: 6, paddingVertical: 12, borderRadius: 14, backgroundColor: GOLD.bg, borderWidth: 1, borderColor: GOLD.border },
-  slim: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 16, backgroundColor: GOLD.bg, borderWidth: 1, borderColor: GOLD.border },
-  premTileText: { fontSize: 12, fontFamily: fonts.semibold, color: GOLD.text, textAlign: "center" },
+  premTile: { flex: 1, alignItems: "center", gap: 6, paddingVertical: 12, borderRadius: 14, backgroundColor: planAccent("premium").bg, borderWidth: 1, borderColor: planAccent("premium").border },
+  slim: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 16, backgroundColor: planAccent("premium").bg, borderWidth: 1, borderColor: planAccent("premium").border },
+  premTileText: { fontSize: 12, fontFamily: fonts.semibold, color: planAccent("premium").text, textAlign: "center" },
   action: { flex: 1, alignItems: "center", gap: 6, paddingVertical: 12, paddingHorizontal: 4, borderRadius: 16, borderWidth: 1, borderColor: colors.border },
   actionIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
   actionText: { fontSize: 12, fontFamily: fonts.medium, color: colors.onSurface, textAlign: "center" },

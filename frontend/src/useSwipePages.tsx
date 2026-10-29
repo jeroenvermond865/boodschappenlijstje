@@ -1,10 +1,11 @@
 // Opzij vegen naar de vorige of volgende pagina (bijv. de dagen van een lijstje).
-// De inhoud schuift met de vinger mee; laat je ver genoeg los, dan schuift hij weg en komt de volgende
-// van de andere kant binnen. Omhoog en omlaag scrollen blijft gewoon werken.
+// De inhoud schuift een stukje met de vinger mee en vervaagt (geen leeg vlak ernaast); laat je ver genoeg los,
+// dan glijdt hij weg en komt de volgende van de andere kant zacht binnen. Omhoog en omlaag scrollen blijft gewoon werken.
 import { useRef } from "react";
 import { Animated, Easing, PanResponder, Platform, useWindowDimensions } from "react-native";
 
 const native = Platform.OS !== "web";
+const SHIFT = 0.28; // hoe ver (deel van de breedte) de pagina wegglijdt bij wisselen
 
 export function useSwipePages(can: (dir: 1 | -1) => boolean, go: (dir: 1 | -1) => void, opts?: { yield?: boolean; enabled?: (e: any) => boolean }) {
   // can: is er een volgende/vorige pagina? Zo niet, dan veert de inhoud terug. go: wissel echt van pagina
@@ -22,8 +23,8 @@ export function useSwipePages(can: (dir: 1 | -1) => boolean, go: (dir: 1 | -1) =
   const slideIn = (dir: 1 | -1) => {
     // De nieuwe pagina komt van de kant waar je naartoe veegt, rustig uitlopend
     x.stopAnimation();
-    x.setValue(dir * w.current * 0.3);
-    Animated.timing(x, { toValue: 0, duration: 260, easing: Easing.out(Easing.cubic), useNativeDriver: native }).start();
+    x.setValue(dir * w.current * SHIFT);
+    Animated.timing(x, { toValue: 0, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: native }).start();
   };
 
   // Waar de vinger was toen het vegen begon: anders springt de inhoud bij de eerste beweging een stuk opzij
@@ -45,7 +46,8 @@ export function useSwipePages(can: (dir: 1 | -1) => boolean, go: (dir: 1 | -1) =
         // Strak met de vinger mee; kan het die kant niet op, dan voelt het stug (rubberband)
         const dx = g.dx - start.current;
         const ok = cb.current.can(dx < 0 ? 1 : -1);
-        if (ok) x.setValue(Math.max(-w.current, Math.min(w.current, dx * 0.9)));
+        // Een kwart van de vinger, met een zachte rem: je ziet hem bewegen en vervagen, niet een leeg stuk ernaast
+        if (ok) x.setValue((Math.sign(dx) * w.current * SHIFT * 0.8 * Math.abs(dx)) / (Math.abs(dx) + w.current * 0.35));
         else x.setValue((Math.sign(dx) * w.current * 0.08 * Math.abs(dx)) / (Math.abs(dx) + w.current * 0.3));
       },
       onPanResponderTerminationRequest: () => false,
@@ -54,11 +56,9 @@ export function useSwipePages(can: (dir: 1 | -1) => boolean, go: (dir: 1 | -1) =
         const far = Math.abs(dx) > Math.min(80, w.current * 0.2) || (Math.abs(g.vx) > 0.35 && Math.abs(dx) > 24);
         const dir: 1 | -1 = dx < 0 ? 1 : -1; // naar links vegen = volgende
         if (far && cb.current.can(dir)) {
-          // Doorlopen in het tempo van de vinger, dan wisselen en de nieuwe pagina laten binnenschuiven
-          const rest = w.current * 0.6 - Math.abs(dx * 0.9);
-          const speed = Math.max(0.8, Math.abs(g.vx)); // pixels per ms
-          const duration = Math.max(80, Math.min(180, rest / speed));
-          Animated.timing(x, { toValue: -dir * w.current * 0.6, duration, easing: Easing.out(Easing.quad), useNativeDriver: native }).start(() => {
+          // Wegglijden en helemaal vervagen, dan wisselen en de nieuwe pagina van de andere kant laten binnenkomen
+          const duration = Math.abs(g.vx) > 1 ? 90 : 140;
+          Animated.timing(x, { toValue: -dir * w.current * SHIFT, duration, easing: Easing.in(Easing.quad), useNativeDriver: native }).start(() => {
             cb.current.go(dir);
             // Eén beeld wachten, zodat de nieuwe pagina al getekend is voordat hij gaat schuiven
             requestAnimationFrame(() => slideIn(dir));
@@ -75,7 +75,8 @@ export function useSwipePages(can: (dir: 1 | -1) => boolean, go: (dir: 1 | -1) =
     panHandlers: pan.panHandlers,
     style: {
       transform: [{ translateX: x }],
-      opacity: x.interpolate({ inputRange: [-500, 0, 500], outputRange: [0.55, 1, 0.55], extrapolate: "clamp" }),
+      // Helemaal weg aan het eind van de beweging, zodat het wisselen een zachte overgang is
+      opacity: x.interpolate({ inputRange: [-w.current * SHIFT, 0, w.current * SHIFT], outputRange: [0, 1, 0], extrapolate: "clamp" }),
     },
     // Ook bij tikken op een dag even laten schuiven
     slideIn,

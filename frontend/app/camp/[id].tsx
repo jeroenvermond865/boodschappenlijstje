@@ -41,8 +41,9 @@ type Day = {
   extras?: Extra[];
   leftovers?: Partial<Record<MealCategory, number>>; // restje van deze dag (één keer koken voor twee dagen)
   meal_names?: Partial<Record<MealCategory, string>>;
-  meal_people?: Partial<Record<MealCategory, { adults: number; children: number }>>; // anders dan de dag
+  meal_people?: Partial<Record<MealCategory, MealPeople>>; // anders dan de dag
 };
+type MealPeople = { adults: number; children: number; vega_adults?: number; vega_children?: number };
 type Camp = {
   id: string;
   name: string;
@@ -539,10 +540,17 @@ export default function CampDetailScreen() {
                   {(() => {
                     const mp = day.meal_people?.[cat];
                     const n = mp ? mp.adults + mp.children : day.adults + day.children;
+                    const veg = mp ? (mp.vega_adults ?? vegaA) + (mp.vega_children ?? vegaC) : vegaA + vegaC;
                     return (
                       <Pressable testID={`meal-people-${cat}`} onPress={() => setMealPeople(cat)} hitSlop={6} style={[styles.mealPeople, mp && styles.mealPeopleOn]}>
                         <Icon name="account" size={13} color={mp ? colors.onBrandPrimary : colors.muted} />
                         <Text style={[styles.counterSub, mp && { color: colors.onBrandPrimary, fontFamily: fonts.semibold }]}>{n}</Text>
+                        {veg > 0 ? (
+                          <>
+                            <Icon name="leaf" size={12} color={mp ? colors.onBrandPrimary : colors.success} />
+                            <Text style={[styles.counterSub, { color: mp ? colors.onBrandPrimary : colors.success }]}>{veg}</Text>
+                          </>
+                        ) : null}
                       </Pressable>
                     );
                   })()}
@@ -697,10 +705,12 @@ export default function CampDetailScreen() {
         <Pressable style={styles.mpBackdrop} onPress={() => setMealPeople(null)}>
           <Pressable style={styles.mpCard} onPress={() => {}}>
             {mealPeople ? (() => {
-              const mp = day?.meal_people?.[mealPeople] ?? { adults: day?.adults ?? 0, children: day?.children ?? 0 };
-              const setMp = (v: { adults: number; children: number } | null) => {
+              const mp: MealPeople = day?.meal_people?.[mealPeople] ?? { adults: day?.adults ?? 0, children: day?.children ?? 0 };
+              const mva = mp.vega_adults ?? vegaA;
+              const mvc = mp.vega_children ?? vegaC;
+              const setMp = (v: MealPeople | null) => {
                 const { [mealPeople]: _old, ...rest } = day?.meal_people ?? {};
-                const same = v && v.adults === day?.adults && v.children === day?.children;
+                const same = v && v.adults === day?.adults && v.children === day?.children && (v.vega_adults ?? vegaA) === vegaA && (v.vega_children ?? vegaC) === vegaC;
                 patchDay({ meal_people: v && !same ? { ...rest, [mealPeople]: v } : rest });
               };
               return (
@@ -714,6 +724,20 @@ export default function CampDetailScreen() {
                   <View style={styles.counterRow}>
                     <Text style={styles.counterLabelSmall}>Kinderen</Text>
                     <Stepper value={mp.children} onChange={(v) => setMp({ ...mp, children: v })} min={0} max={500} testID="meal-children" />
+                  </View>
+                  <View style={styles.counterRow}>
+                    <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 4 }}>
+                      <Icon name="leaf" size={14} color={colors.success} />
+                      <Text style={styles.counterLabelSmall}>Vega volwassenen</Text>
+                    </View>
+                    <Stepper value={mva} onChange={(v) => setMp({ ...mp, vega_adults: Math.min(v, mp.adults) })} min={0} max={500} testID="meal-vega-adults" />
+                  </View>
+                  <View style={styles.counterRow}>
+                    <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 4 }}>
+                      <Icon name="leaf" size={14} color={colors.success} />
+                      <Text style={styles.counterLabelSmall}>Vega kinderen</Text>
+                    </View>
+                    <Stepper value={mvc} onChange={(v) => setMp({ ...mp, vega_children: Math.min(v, mp.children) })} min={0} max={500} testID="meal-vega-children" />
                   </View>
                   <View style={{ flexDirection: "row", gap: 8 }}>
                     {day?.meal_people?.[mealPeople] ? (

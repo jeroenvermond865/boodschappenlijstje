@@ -5,6 +5,18 @@ export type Release = { id: string; version?: string; date: string; title: strin
 
 export const CHANGELOG: Release[] = [
   {
+    id: "2026-10-29-v112",
+    version: "1.1.2",
+    date: "29 oktober 2026",
+    title: "Menu automatisch invullen werkt weer, kleuren per abonnement en een mooiere veegovergang",
+    changes: [
+      { kind: "opgelost", text: "Menu automatisch invullen gaf soms de melding dat er iets misging. Dat is opgelost." },
+      { kind: "beter", text: "Elke functie heeft overal de kleur van het abonnement waar hij bij hoort, zoals de Slimme hulp in paars. Verandert de beheerder het abonnement van een functie, dan verandert de kleur vanzelf mee." },
+      { kind: "beter", text: "Bij het poppetje van een maaltijd kun je nu ook kiezen hoeveel mensen er vega eten." },
+      { kind: "beter", text: "Vegen naar de volgende pagina: geen leeg vlak meer. De pagina glijdt een stukje mee en vervaagt, en de nieuwe komt zacht binnen." },
+    ],
+  },
+  {
     id: "2026-10-29-v111",
     version: "1.1.1",
     date: "29 oktober 2026",

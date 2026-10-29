@@ -1922,7 +1922,8 @@ def _build_days(day_inputs) -> list:
             "extras": [e.model_dump() for e in d.extras],
             "leftovers": {c: v for c, v in (d.leftovers or {}).items() if c in MEAL_CATEGORIES and 0 <= v < idx},
             "meal_names": {c: v[:80] for c, v in (d.meal_names or {}).items() if c in MEAL_CATEGORIES and v},
-            "meal_people": {c: {"adults": max(0, min(int(v.get("adults") or 0), 500)), "children": max(0, min(int(v.get("children") or 0), 500))}
+            "meal_people": {c: {k: max(0, min(int(v.get(k) or 0), 500)) for k in ("adults", "children", "vega_adults", "vega_children")
+                                if k in ("adults", "children") or k in v}
                             for c, v in (d.meal_people or {}).items() if c in MEAL_CATEGORIES and isinstance(v, dict)},
         })
     return days
@@ -2184,7 +2185,8 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
                 logger.warning("Menu aanvullen met recepten: %r", e)
         random.shuffle(found)
         have_rec = {(d.get("source") or {}).get("recipe_id") for d in dishes}
-        picks = [r for r in found if r["id"] not in have_rec][: need + 3]
+        # Eigen naam: "picks" zijn de eetvoorkeuren (vega, vis), die zijn verderop nog nodig
+        rec_picks = [r for r in found if r["id"] not in have_rec][: need + 3]
 
         async def take(r, cat=cat):
             try:
@@ -2194,7 +2196,7 @@ async def auto_menu(camp_id: str, data: AutoMenuInput, user: dict = Depends(get_
                 return None
         # Eén voor één en met een grens: elk recept koppelen aan producten kost geheugen en tijd (anders loopt de server vol)
         got = 0
-        for r in picks:
+        for r in rec_picks:
             if got >= need or added_online + got >= MENU_ONLINE_MAX or time.time() - t_start > MENU_ONLINE_SECONDS:
                 break
             d = await take(r)
@@ -2862,8 +2864,9 @@ def _diet_counts(day: dict, camp: dict, cat: Optional[str] = None) -> dict:
     mp = (day.get("meal_people") or {}).get(cat) if cat else None
     adults = mp.get("adults", 0) if mp else day.get("adults", 0)
     children = mp.get("children", 0) if mp else day.get("children", 0)
-    va = min(camp.get("vega_adults", 0) or 0, adults)
-    vc = min(camp.get("vega_children", 0) or 0, children)
+    # Vega: bij die maaltijd zelf gekozen, anders wat voor het hele lijstje geldt
+    va = min((mp or {}).get("vega_adults", camp.get("vega_adults", 0)) or 0, adults)
+    vc = min((mp or {}).get("vega_children", camp.get("vega_children", 0)) or 0, children)
     return {"all": (adults, children), "vega": (va, vc), "meat": (adults - va, children - vc)}
 
 

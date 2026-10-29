@@ -134,14 +134,15 @@ export function PremiumValue({ value, has: listHas }: { value?: number | null; h
   const styles = useStyles();
   const router = useRouter();
   const own = useFeature("extra_besparen");
+  const acc = useFeatureAccent("extra_besparen");
   const has = listHas ?? own;
   if (!value || value < 0.5) return null;
   return (
-    <Pressable onPress={() => router.push(has ? "/savings" : "/premium")} style={[styles.value, { backgroundColor: GOLD.bg, borderColor: GOLD.border }]} testID="premium-value">
-      <Icon name="piggy-bank-outline" size={18} color={GOLD.icon} />
-      <Text style={[styles.valueText, { color: GOLD.text }]}>
-        {has ? `Premium scheelt je bij dit lijstje ${eur(value)}` : `Met Premium had je hier ${eur(value)} extra bespaard`}
-        {has ? "" : <Text style={{ fontFamily: fonts.bold }}> · Probeer Premium ›</Text>}
+    <Pressable onPress={() => router.push(has ? "/savings" : "/premium")} style={[styles.value, { backgroundColor: acc.c.bg, borderColor: acc.c.border }]} testID="premium-value">
+      <Icon name="piggy-bank-outline" size={18} color={acc.c.icon} />
+      <Text style={[styles.valueText, { color: acc.c.text }]}>
+        {has ? `${acc.name} scheelt je bij dit lijstje ${eur(value)}` : `Met ${acc.name} had je hier ${eur(value)} extra bespaard`}
+        {has ? "" : <Text style={{ fontFamily: fonts.bold }}> · Probeer {acc.name} ›</Text>}
       </Text>
     </Pressable>
   );

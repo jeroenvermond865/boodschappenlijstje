@@ -7,7 +7,7 @@ import { CountUp } from "@/src/components/motion";
 import { EmptyState, Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
-import { GOLD } from "@/src/premium";
+import { GOLD, useFeatureAccent } from "@/src/premium";
 import { euro } from "@/src/search";
 import { fonts, makeStyles, useTheme } from "@/src/theme";
 
@@ -27,12 +27,13 @@ export default function SavingsScreen() {
     queryFn: () => api<Savings>("/savings"),
   });
   const premium = !!data?.is_premium;
+  const acc = useFeatureAccent("extra_besparen"); // goud of paars, net als het abonnement van "Extra besparen"
   const max = Math.max(0.01, ...(data?.months ?? []).map((m) => (m.bought ?? 0) + (m.pending ?? 0)));
 
   const Line = ({ label, value, gold, strong }: { label: string; value: number; gold?: boolean; strong?: boolean }) => (
     <View style={styles.line}>
-      <Text style={[styles.lineLabel, strong && styles.strong, gold && { color: GOLD.text }]}>{label}</Text>
-      <Text style={[styles.lineValue, strong && styles.strong, gold && { color: GOLD.text }]}>{euro(value)}</Text>
+      <Text style={[styles.lineLabel, strong && styles.strong, gold && { color: acc.c.text }]}>{label}</Text>
+      <Text style={[styles.lineValue, strong && styles.strong, gold && { color: acc.c.text }]}>{euro(value)}</Text>
     </View>
   );
 
@@ -75,18 +76,18 @@ export default function SavingsScreen() {
               <Line label="Samen" value={data!.standard} strong />
             </View>
 
-            <View style={[styles.card, styles.gold]}>
+            <View style={[styles.card, styles.gold, { backgroundColor: acc.c.bg, borderColor: acc.c.border }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                <Icon name="star" size={16} color={GOLD.icon} />
-                <Text style={[styles.cardTitle, { color: GOLD.text }]}>{premium ? "Extra met Premium" : "Extra met Premium had je kunnen besparen"}</Text>
+                <Icon name={acc.icon} size={16} color={acc.c.icon} />
+                <Text style={[styles.cardTitle, { color: acc.c.text }]}>{premium ? `Extra met ${acc.name}` : `Extra met ${acc.name} had je kunnen besparen`}</Text>
               </View>
               <Line label="Al in je voorraadkast" value={data!.pantry} gold />
               <Line label="Slim splitsen over winkels" value={(data!.split ?? 0) + (data!.split_can ?? 0)} gold />
               {(data!.split_can ?? 0) > 0 ? (
-                <Text style={[styles.heroSub, { textAlign: "left", color: GOLD.text }]}>
+                <Text style={[styles.heroSub, { textAlign: "left", color: acc.c.text }]}>
                   {premium
                     ? `Waarvan ${euro(data!.split_can ?? 0)} nog niet gesplitst: kies "Gesplitst halen" bij je lijst. Wat je daarna afvinkt telt bij al bespaard.`
-                    : `Je lijst bij meerdere winkels halen scheelt nu ${euro(data!.split_can ?? 0)}. Met Premium splitst de app dat voor je.`}
+                    : `Je lijst bij meerdere winkels halen scheelt nu ${euro(data!.split_can ?? 0)}. Met ${acc.name} splitst de app dat voor je.`}
                 </Text>
               ) : null}
               <Line label="Acties op je boodschappendag" value={data!.promo_day} gold />
@@ -94,8 +95,8 @@ export default function SavingsScreen() {
               {premium ? (
                 <Line label="Totaal bespaard" value={data!.saving} gold strong />
               ) : (
-                <Pressable onPress={() => router.push("/premium")} style={styles.goldBtn}>
-                  <Text style={styles.goldBtnText}>Meer over Premium</Text>
+                <Pressable onPress={() => router.push("/premium")} style={[styles.goldBtn, { backgroundColor: acc.c.icon }]}>
+                  <Text style={styles.goldBtnText}>Meer over {acc.name}</Text>
                 </Pressable>
               )}
             </View>
@@ -124,7 +125,7 @@ export default function SavingsScreen() {
                     <Text style={styles.listMeta}>
                       {euro(l.bought ?? 0)} bespaard
                       {(l.pending ?? 0) > 0 ? ` · nog ${euro(l.pending ?? 0)}` : ""}
-                      {!premium && l.premium > 0 ? ` · +${euro(l.premium)} met Premium` : ""}
+                      {!premium && l.premium > 0 ? ` · +${euro(l.premium)} met ${acc.name}` : ""}
                     </Text>
                   </Pressable>
                 ))}

@@ -41,7 +41,9 @@ export default function SlimScreen() {
   const router = useRouter();
   const premium = useFeature("slimme_hulp");
   // Standaard mag een paar vragen per maand gratis proberen (in te stellen bij Beheer -> Abonnementen)
-  const freeLimit = usePlans().data?.levels.find((l) => l.key === "standaard")?.ai_limit ?? 0;
+  const plansData = usePlans().data;
+  const freeLimit = plansData?.levels.find((l) => l.key === "standaard")?.ai_limit ?? 0;
+  const planLimit = plansData?.levels.find((l) => l.key === fa.plan)?.ai_limit ?? 0;
   const allowed = premium || freeLimit > 0;
   const params = useLocalSearchParams<{ tab?: Tab; camp?: string }>();
   const [tab, setTab] = useState<Tab>(TABS.some((t) => t.key === params.tab) ? (params.tab as Tab) : "menu");
@@ -63,15 +65,16 @@ export default function SlimScreen() {
           {TABS.map((t) => (
             <Pressable key={t.key} onPress={() => setTab(t.key)} style={[styles.tab, { backgroundColor: fa.c.bg, borderColor: fa.c.border }, tab === t.key && { backgroundColor: fa.c.icon, borderColor: fa.c.icon }]} testID={`slim-tab-${t.key}`}>
               <Icon name={t.icon} size={16} color={tab === t.key ? "#FFFFFF" : fa.c.icon} />
-              <Text style={[styles.tabText, tab === t.key && { color: "#FFFFFF" }]}>{t.label}</Text>
+              <Text style={[styles.tabText, { color: fa.c.text }, tab === t.key && { color: "#FFFFFF" }]}>{t.label}</Text>
             </Pressable>
           ))}
         </ScrollView>
         {!premium && freeLimit > 0 ? (
-          <Pressable onPress={() => router.push("/premium")} style={styles.freeNote} testID="slim-free-note">
-            <Icon name="star-circle" size={18} color={GOLD.icon} />
-            <Text style={styles.freeNoteText}>
-              Je kunt de slimme hulp {freeLimit} keer per maand gratis gebruiken. Met Premium 100 keer. <Text style={{ fontFamily: fonts.bold }}>Probeer Premium ›</Text>
+          <Pressable onPress={() => router.push("/premium")} style={[styles.freeNote, { backgroundColor: fa.c.bg, borderColor: fa.c.border }]} testID="slim-free-note">
+            <Icon name={fa.icon} size={18} color={fa.c.icon} />
+            <Text style={[styles.freeNoteText, { color: fa.c.text }]}>
+              Je kunt de slimme hulp {freeLimit} keer per maand gratis gebruiken.
+              {planLimit ? ` Met ${fa.name} ${planLimit} keer.` : ""} <Text style={{ fontFamily: fonts.bold }}>Probeer {fa.name} ›</Text>
             </Text>
           </Pressable>
         ) : null}
@@ -97,12 +100,13 @@ export default function SlimScreen() {
 
 function Intro({ icon, title, text }: { icon: string; title: string; text: string }) {
   const styles = useStyles();
+  const { c } = useFeatureAccent("slimme_hulp"); // kleur van het abonnement waar de slimme hulp bij hoort
   return (
-    <View style={styles.intro}>
-      <Icon name={icon} size={26} color={GOLD.icon} />
+    <View style={[styles.intro, { backgroundColor: c.bg, borderColor: c.border }]}>
+      <Icon name={icon} size={26} color={c.icon} />
       <View style={{ flex: 1, gap: 2 }}>
-        <Text style={styles.introTitle}>{title}</Text>
-        <Text style={styles.introText}>{text}</Text>
+        <Text style={[styles.introTitle, { color: c.text }]}>{title}</Text>
+        <Text style={[styles.introText, { color: c.text }]}>{text}</Text>
       </View>
     </View>
   );
@@ -554,6 +558,7 @@ type Tip = { kind: string; text: string; saving: number | null; from_id: string 
 
 // 5. Slimme bespaartips
 export function TipsTab({ campId: initial }: { campId?: string }) {
+  const tipColor = useFeatureAccent("slimme_hulp").c.icon;
   const styles = useStyles();
   const { colors } = useTheme();
   const T = useTerms();
@@ -603,7 +608,7 @@ export function TipsTab({ campId: initial }: { campId?: string }) {
                   <Icon
                     name={t.kind === "groter" ? "package-variant-closed" : t.kind === "huismerk" ? "swap-horizontal" : t.kind === "actie" ? "tag-outline" : t.kind === "splitsen" ? "call-split" : "lightbulb-on-outline"}
                     size={22}
-                    color={GOLD.icon}
+                    color={tipColor}
                   />
                   <Text style={[styles.body, { flex: 1 }]}>{t.text}</Text>
                   {t.saving ? <Text style={styles.saving}>{euro(t.saving)}</Text> : null}
