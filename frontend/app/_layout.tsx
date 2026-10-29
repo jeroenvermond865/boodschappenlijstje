@@ -18,6 +18,7 @@ import { PullToRefresh } from "@/src/PullToRefresh";
 import { WhatsNew } from "@/src/WhatsNew";
 import { useTheme } from "@/src/theme";
 import { APP_MAX_WIDTH } from "@/src/layout";
+import { SwipeNav } from "@/src/SwipeNav";
 
 LogBox.ignoreAllLogs(true);
 
@@ -54,6 +55,7 @@ function Gate() {
     <View style={Platform.OS === "web" ? { flex: 1, backgroundColor: colors.surfaceSecondary } : { flex: 1 }}>
     <View style={Platform.OS === "web" ? { flex: 1, width: "100%", maxWidth: APP_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.surface } : { flex: 1 }}>
     <PremiumWelcome />
+    <SwipeNav>
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
       <Stack.Screen name="login" />
       <Stack.Screen name="welcome" />
@@ -88,6 +90,7 @@ function Gate() {
       <Stack.Screen name="budget/[id]" />
       <Stack.Screen name="admin/settings" />
     </Stack>
+    </SwipeNav>
     <UpdateNotices />
     <WhatsNew />
     <PullToRefresh />

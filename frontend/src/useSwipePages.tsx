@@ -4,8 +4,12 @@
 import { useRef } from "react";
 import { Animated, Easing, PanResponder, useWindowDimensions } from "react-native";
 
-export function useSwipePages(can: (dir: 1 | -1) => boolean, go: (dir: 1 | -1) => void) {
+export function useSwipePages(can: (dir: 1 | -1) => boolean, go: (dir: 1 | -1) => void, opts?: { yield?: boolean; enabled?: (e: any) => boolean }) {
   // can: is er een volgende/vorige pagina? Zo niet, dan veert de inhoud terug. go: wissel echt van pagina
+  // yield: eerst de onderdelen erin laten kiezen (opzij scrollen, dagen van een lijstje); dit vangt pas wat over blijft
+  const capture = !opts?.yield;
+  const enabled = useRef(opts?.enabled);
+  enabled.current = opts?.enabled;
   const { width } = useWindowDimensions();
   const x = useRef(new Animated.Value(0)).current;
   const cb = useRef({ can, go });
@@ -21,7 +25,12 @@ export function useSwipePages(can: (dir: 1 | -1) => boolean, go: (dir: 1 | -1) =
 
   const pan = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponderCapture: (_e, g) => Math.abs(g.dx) > 14 && Math.abs(g.dx) > Math.abs(g.dy) * 1.8,
+      ...(capture
+        ? { onMoveShouldSetPanResponderCapture: (_e: any, g: any) => Math.abs(g.dx) > 14 && Math.abs(g.dx) > Math.abs(g.dy) * 1.8 }
+        : {
+            onMoveShouldSetPanResponder: (e: any, g: any) =>
+              (enabled.current?.(e) ?? true) && Math.abs(g.dx) > 18 && Math.abs(g.dx) > Math.abs(g.dy) * 2 && cb.current.can(g.dx < 0 ? 1 : -1),
+          }),
       onPanResponderMove: (_e, g) => x.setValue(g.dx * 0.6),
       onPanResponderTerminationRequest: () => false,
       onPanResponderRelease: (_e, g) => {
