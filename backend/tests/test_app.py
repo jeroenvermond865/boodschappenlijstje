@@ -792,3 +792,69 @@ def test_jaarprijs_en_gratis_vragen_voor_standaard(monkeypatch):
         return e.value
     err = run(t())
     assert err.status_code == 403 and "gratis" in err.detail
+
+
+# --- Leren van gebruik ---
+def test_weekadvies_voor_beheer():
+    async def t():
+        await S.db.search_misses.insert_one({"term": "havermelk barista", "n": 7, "at": S.now_utc()})
+        await S.db.usage_daily.insert_many([{"day": S.now_utc().date().isoformat(), "area": "pantry", "n": 2},
+                                            {"day": S.now_utc().date().isoformat(), "area": "camps", "n": 300}])
+        msg = await S._weekly_insights()
+        fb = await S.db.feedback.find_one({"kind": "insight"})
+        return msg, fb
+    msg, fb = run(t())
+    assert '"havermelk barista" (7x)' in msg and "Voorraadkast (2x)" in msg
+    assert fb["user_name"] == "Slimme app (automatisch)" and fb["status"] == "new"
+
+
+def test_eigen_account_leert_mee_bij_zoeken():
+    S._mine_cache.clear()
+
+    async def t():
+        await S.db.bought.insert_one({"user_id": "u1", "product_id": "p3", "n": 4})
+        docs = [{"product_id": f"p{i}"} for i in range(1, 6)]
+        return await S._personal_first({"user_id": "u1", "favorite_products": ["p5"]}, docs)
+    out = [d["product_id"] for d in run(t())]
+    assert out[:2] == ["p3", "p5"] and sorted(out) == ["p1", "p2", "p3", "p4", "p5"]
+
+
+# --- Prijzen: gebruikte producten elke dag, de rest eens per week ---
+def test_gebruikte_producten_en_weekverdeling():
+    S._used_cache.update(at=0.0, ids=set())
+    days = {S._slice_today(f"id{i}") for i in range(200)}
+    assert days == {True, False}  # ongeveer een zevende is vandaag aan de beurt
+
+    async def t():
+        await S.db.camps.insert_one({"camp_id": "c1", "deleted_at": None, "general": [{"product_id": "a"}], "days": [{"extras": [{"product_id": "b"}]}]})
+        await S.db.dishes.insert_one({"dish_id": "d1", "deleted_at": None, "ingredients": [{"product_id": "c"}]})
+        await S.db.pantry.insert_one({"item_id": "p1", "product_id": "d"})
+        await S.db.users.insert_one({"user_id": "u1", "favorite_products": ["e"]})
+        await S.db.bought.insert_one({"user_id": "u1", "product_id": "f", "at": S.now_utc()})
+        return await S._used_product_ids()
+    assert run(t()) == {"a", "b", "c", "d", "e", "f"}
+
+
+def test_gebruikt_product_los_opzoeken():
+    S._used_cache.update(at=S.time.time(), ids={"pa"})
+
+    async def search(name):
+        return [{"ah_id": "99", "price": 1.25, "name": name, "aisle": "Zuivel"}, {"ah_id": "1", "price": 2.0}]
+
+    async def t():
+        await S.db.products.insert_many([{"product_id": "pa", "ah_id": "1", "name": "Melk", "is_global": True, "deleted_at": None, "aisle": "Zuivel"},
+                                         {"product_id": "pb", "ah_id": "2", "name": "Kaas", "is_global": True, "deleted_at": None}])
+        n = await S._refresh_used_by_search("Albert Heijn", "ah_id", search, set(), {})
+        return n, await S.db.products.find_one({"product_id": "pa"})
+    S.USED_SEARCH_MAX, old = 10, S.USED_SEARCH_MAX
+    orig_sleep = S.asyncio.sleep
+
+    async def fast(_s):
+        return None
+    S.asyncio.sleep = fast
+    try:
+        n, doc = run(t())
+    finally:
+        S.asyncio.sleep = orig_sleep
+        S.USED_SEARCH_MAX = old
+    assert n == 1 and doc["prices"]["Albert Heijn"] == 2.0

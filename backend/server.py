@@ -5045,6 +5045,13 @@ async def search_products(
         inc.update({f"subs.{_ikey(x)}": 1 for x in _split_list(sub)})
         asyncio.ensure_future(_interest_inc(user["user_id"], "producten", inc))
 
+    if offset == 0 and q.strip() and not docs:
+        # Niets gevonden: onthouden (zonder wie het was), dan kan de beheerder het product of een synoniem toevoegen
+        term = _norm_text(q)[:60]
+        if 3 <= len(term):
+            asyncio.ensure_future(db.search_misses.update_one({"term": term}, {"$inc": {"n": 1}, "$set": {"at": now_utc()}}, upsert=True))
+    if q.strip() and sort in ("", "relevance") and not user.get("no_personal"):
+        docs = await _personal_first(user, docs)
     offset = max(0, offset)
     limit = max(1, min(limit, 200))
     page = docs[offset:offset + limit]
@@ -5059,6 +5066,28 @@ async def search_products(
 
 
 AI_SEARCH_DAILY = 1500  # zoveel nieuwe zoekopdrachten per dag laten verbeteren; eerder gevraagde komen uit het geheugen
+_mine_cache: Dict[str, tuple] = {}
+
+
+async def _personal_first(user: dict, docs: list) -> list:
+    # Je eigen account leert mee: wat je vaak koopt of als favoriet hebt, staat bij zoeken bovenaan
+    # (alleen binnen de best passende resultaten, zodat het logisch blijft)
+    uid = user["user_id"]
+    hit = _mine_cache.get(uid)
+    if not hit or time.time() - hit[0] > 600:
+        mine = {b.get("product_id") async for b in db.bought.find({"user_id": uid, "n": {"$gte": 2}}, {"_id": 0, "product_id": 1}).limit(300)}
+        mine |= set(user.get("favorite_products") or [])
+        mine.discard(None)
+        if len(_mine_cache) > 20000:
+            _mine_cache.clear()
+        hit = _mine_cache[uid] = (time.time(), mine)
+    mine = hit[1]
+    if not mine:
+        return docs
+    top = docs[:30]
+    return [d for d in top if d.get("product_id") in mine] + [d for d in top if d.get("product_id") not in mine] + docs[30:]
+
+
 _ai_search_mem: Dict[str, list] = {}
 _ai_search_state = {"day": "", "n": 0}
 
@@ -11295,8 +11324,68 @@ async def _mark_assortment(seen: list, missing: list) -> None:
         logger.info("Niet meer in assortiment (voorlopig): %d producten", len(missing))
 
 
+# Prijzen ophalen zonder elke dag de hele winkel langs te gaan (zolang full_import uit staat):
+# wat gebruikers echt gebruiken elke dag, de rest van het assortiment verdeeld over de week (elk product één keer per week).
+PRICE_SLICES = 7
+USED_SEARCH_MAX = 800  # hoeveel gebruikte producten per winkel we per nacht los opzoeken
+_used_cache: dict = {"at": 0.0, "ids": set()}
+
+
+def _slice_today(key: str) -> bool:
+    return int(hashlib.sha1(str(key).encode()).hexdigest(), 16) % PRICE_SLICES == now_utc().weekday() % PRICE_SLICES
+
+
+async def _used_product_ids() -> set:
+    # In lijstjes, gerechten, voorraadkast, prijsalarmen, favorieten, en wat mensen de laatste 90 dagen kochten
+    if time.time() - _used_cache["at"] < 3600:
+        return _used_cache["ids"]
+    ids: set = set()
+    async for c in db.camps.find({"deleted_at": None}, {"_id": 0, "general": 1, "days.extras": 1}):
+        ids.update(e.get("product_id") for e in c.get("general") or [])
+        for d in c.get("days") or []:
+            ids.update(e.get("product_id") for e in d.get("extras") or [])
+    async for d in db.dishes.find({"deleted_at": None}, {"_id": 0, "ingredients.product_id": 1}):
+        ids.update(i.get("product_id") for i in d.get("ingredients") or [])
+    for coll in (db.pantry, db.price_alerts):
+        ids.update([x.get("product_id") async for x in coll.find({}, {"_id": 0, "product_id": 1})])
+    async for u in db.users.find({"favorite_products.0": {"$exists": True}}, {"_id": 0, "favorite_products": 1}):
+        ids.update(u.get("favorite_products") or [])
+    ids.update([x.get("product_id") async for x in db.bought.find({"at": {"$gt": now_utc() - timedelta(days=90)}}, {"_id": 0, "product_id": 1})])
+    ids.discard(None)
+    _used_cache.update(at=time.time(), ids=ids)
+    return ids
+
+
+async def _refresh_used_by_search(store: str, idf: str, search, done: set, mults: dict) -> int:
+    # Gebruikte producten die vandaag niet in het deel van de winkel zaten: los opzoeken op naam (rustig aan)
+    from pymongo import UpdateOne
+    used = await _used_product_ids()
+    todo = [p async for p in db.products.find({idf: {"$exists": True}, "deleted_at": None, "is_global": True, "product_id": {"$in": list(used)}},
+                                             {"_id": 0, "product_id": 1, idf: 1, "name": 1, "aisle": 1})
+            if str(p[idf]) not in done][:USED_SEARCH_MAX]
+    ops = []
+    for p in todo:
+        try:
+            hits = await search(p["name"])
+        except Exception as e:
+            logger.info("%s: %s opzoeken mislukt: %r", store, p["name"], e)
+            await asyncio.sleep(3)
+            continue
+        n = next((h for h in hits if str(h.get(idf)) == str(p[idf])), None)
+        if n and n.get("price"):
+            ops.append(UpdateOne({"product_id": p["product_id"]}, {"$set": _apply_refresh(p, store, n, mults)}))
+        await asyncio.sleep(1.5)
+    if ops:
+        await db.products.bulk_write(ops, ordered=False)
+    logger.info("%s: %d gebruikte producten los bijgewerkt (van %d)", store, len(ops), len(todo))
+    return len(ops)
+
+
 async def _refresh_dirk_prices(mults: dict) -> int:
     prods = await db.products.find({"dirk_id": {"$exists": True}, "deleted_at": None, "is_global": True}, {"_id": 0, "product_id": 1, "dirk_id": 1, "ah_id": 1, "jumbo_id": 1, "aisle": 1}).to_list(None)
+    if not source_on("full_import"):
+        used = await _used_product_ids()
+        prods = [p for p in prods if p["product_id"] in used or _slice_today(p["dirk_id"])]
     if not prods:
         return 0
     # dirk_id staat als tekst opgeslagen; Dirk wil getallen
@@ -11352,9 +11441,12 @@ async def _refresh_ah_prices(mults: dict) -> int:
     async with httpx.AsyncClient(timeout=60, headers=AH_HEADERS) as c:
         H = {"Authorization": f"Bearer {await _ah_token(c)}", "X-Application": "AHWEBSHOP"}
         cats = (await c.get("https://api.ah.nl/mobile-services/v1/product-shelves/categories", headers=H)).json() or []
+        full_round = source_on("full_import")
         for ci, cat in enumerate(cats):
             if ci < start_cat:
                 continue
+            if not full_round and ci % PRICE_SLICES != now_utc().weekday() % PRICE_SLICES:
+                continue  # dit deel van de winkel is een andere dag van de week aan de beurt
             page, pages = 0, 1
             while page < pages and page < 20:
                 try:
@@ -11397,8 +11489,10 @@ async def _refresh_ah_prices(mults: dict) -> int:
             await db.meta.update_one({"key": "price_refresh"}, {"$set": {"ah_cat": ci + 1}}, upsert=True)
             await asyncio.sleep(1.5)
     await db.meta.update_one({"key": "price_refresh"}, {"$set": {"ah_cat": 0}}, upsert=True)
+    if not source_on("full_import"):
+        await _refresh_used_by_search("Albert Heijn", "ah_id", _ah_search, seen, mults)
     # Alleen bij een volledige ronde weten we wat er niet meer is
-    full = start_cat == 0
+    full = start_cat == 0 and source_on("full_import")
     await _mark_assortment([prods[a]["product_id"] for a in seen if a in prods],
                            gone + ([p["product_id"] for a, p in prods.items() if a not in seen] if full and len(seen) >= 0.85 * len(prods) else []))
     logger.info("AH-prijzen: %d bijgewerkt, %d nieuw%s", updated, added, "" if full else " (hervat)")
@@ -11418,7 +11512,11 @@ async def _refresh_jumbo_prices(mults: dict) -> int:
     added, fails = 0, 0
     async with httpx.AsyncClient(timeout=30, headers=JUMBO_HEADERS) as c:
         _, total = await _jumbo_search_page(c, "*", 0)
+        full_round = source_on("full_import")
         while off < total:
+            if not full_round and (off // 24) % PRICE_SLICES != now_utc().weekday() % PRICE_SLICES:
+                off += 24  # deze pagina is een andere dag van de week aan de beurt
+                continue
             try:
                 page = (await _jumbo_search_page(c, "*", off))[0]
                 fails = 0
@@ -11452,8 +11550,10 @@ async def _refresh_jumbo_prices(mults: dict) -> int:
                 await db.meta.update_one({"key": "price_refresh"}, {"$set": {"jumbo_offset": off}}, upsert=True)
             await asyncio.sleep(2)
     await db.meta.update_one({"key": "price_refresh"}, {"$set": {"jumbo_offset": 0}}, upsert=True)
+    if not full_round:
+        await _refresh_used_by_search("Jumbo", "jumbo_id", _jumbo_search, done, mults)
     seen = [prods[j]["product_id"] for j in done if j in prods]
-    if start == 0 and len(done) >= 0.85 * len(prods):
+    if full_round and start == 0 and len(done) >= 0.85 * len(prods):
         await _mark_assortment(seen, [p["product_id"] for j, p in prods.items() if j not in done])
     else:
         await _mark_assortment(seen, [])
@@ -12160,6 +12260,46 @@ async def submit_feedback(data: FeedbackInput, user: dict = Depends(get_current_
         "created_at": now_utc(),
     })
     return {"ok": True}
+
+
+async def _weekly_insights() -> Optional[str]:
+    # Wat de app deze week leerde van hoe mensen hem gebruiken, als tips voor de beheerders (in Beheer -> Feedback)
+    since = now_utc() - timedelta(days=14)
+    lines = []
+    misses = await db.search_misses.find({"at": {"$gt": since}, "n": {"$gte": 3}}, {"_id": 0}).sort("n", -1).limit(6).to_list(None)
+    if misses:
+        lines.append("Gezocht maar niets gevonden: " + ", ".join(f'"{m["term"]}" ({m["n"]}x)' for m in misses)
+                     + ". Voeg het product toe of een zoekwoord dat erbij hoort.")
+    by_pid = _product_cache.get("by_pid") or {}
+    swaps = await db.learned_swaps.aggregate([{"$group": {"_id": {"from": "$from", "to": "$to"}, "n": {"$sum": 1}}},
+                                              {"$match": {"n": {"$gte": 3}}}, {"$sort": {"n": -1}}, {"$limit": 4}]).to_list(None)
+    sw = [(by_pid.get(x["_id"]["from"]), by_pid.get(x["_id"]["to"]), x["n"]) for x in swaps]
+    sw = [f'{a["name"]} -> {b["name"]} ({n}x)' for a, b, n in sw if a and b]
+    if sw:
+        lines.append("Vaak gewisseld (de app kiest dit nu zelf; klopt het?): " + "; ".join(sw) + ".")
+    day30 = (now_utc() - timedelta(days=30)).date().isoformat()
+    usage: Dict[str, int] = {}
+    async for u in db.usage_daily.find({"day": {"$gte": day30}}, {"_id": 0, "area": 1, "n": 1}):
+        usage[u["area"]] = usage.get(u["area"], 0) + int(u.get("n") or 0)
+    if usage:
+        low = sorted((n, a) for a, n in usage.items() if a in USAGE_AREAS)[:3]
+        if low:
+            lines.append("Weinig gebruikt de afgelopen 30 dagen: " + ", ".join(f"{USAGE_AREAS[a]} ({n}x)" for n, a in low)
+                         + ". Misschien beter zichtbaar maken, of uitleggen in Zo werkt de app.")
+    ended = await db.users.count_documents({"trial_ended_at": {"$gt": now_utc() - timedelta(days=30)}})
+    if ended:
+        paid = await db.users.count_documents({"trial_ended_at": {"$gt": now_utc() - timedelta(days=30)}, "billing.subscription_id": {"$exists": True}})
+        lines.append(f"Proefperiodes afgelopen in 30 dagen: {ended}, waarvan {paid} een abonnement namen.")
+    cost = await db.ai_stats.aggregate([{"$match": {"day": {"$gte": (now_utc() - timedelta(days=7)).date().isoformat()}}},
+                                        {"$group": {"_id": "$task", "cost": {"$sum": "$cost"}}}, {"$sort": {"cost": -1}}, {"$limit": 1}]).to_list(None)
+    if cost and cost[0]["cost"] >= 0.5:
+        lines.append(f"AI-kosten afgelopen week vooral bij \"{(AI_TASKS.get(cost[0]['_id']) or (cost[0]['_id'],))[0]}\": € {cost[0]['cost']:.2f}.")
+    if not lines:
+        return None
+    msg = "Wat de app deze week leerde van het gebruik:\n- " + "\n- ".join(lines)
+    await db.feedback.insert_one({"feedback_id": f"fb_{uuid.uuid4().hex[:12]}", "message": msg[:2000], "user_id": None,
+                                  "user_name": "Slimme app (automatisch)", "status": "new", "kind": "insight", "created_at": now_utc()})
+    return msg
 
 
 @api_router.get("/admin/feedback")
@@ -14515,6 +14655,13 @@ async def _daily_refresh_loop():
                 await _backup_mail()
         except Exception as e:
             logger.warning("Back-up mislukt: %r", e)
+        try:
+            doc = await db.meta.find_one({"key": "insights"}) or {}
+            if not doc.get("at") or ensure_aware(doc["at"]) < now_utc() - timedelta(days=7):
+                await db.meta.update_one({"key": "insights"}, {"$set": {"key": "insights", "at": now_utc()}}, upsert=True)
+                await _weekly_insights()
+        except Exception as e:
+            logger.warning("Weekadvies: %r", e)
         try:
             doc = await db.meta.find_one({"key": "inactive_check"}) or {}
             if not doc.get("at") or ensure_aware(doc["at"]) < now_utc() - timedelta(hours=22):
