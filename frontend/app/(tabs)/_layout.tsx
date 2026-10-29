@@ -3,6 +3,7 @@ import { Tabs } from "expo-router";
 import { NativeTabs } from "expo-router/unstable-native-tabs";
 
 import { Icon } from "@/src/components/ui";
+import { TabSwipe } from "@/src/SwipeNav";
 import { usesNativeTabs } from "@/src/navigation";
 import { useAppSettings } from "@/src/settings";
 import { fonts, useTheme } from "@/src/theme";
@@ -40,6 +41,8 @@ export default function TabsLayout() {
 
   return (
     <Tabs
+      // Opzij vegen per tabblad: alleen het scherm schuift, de onderbalk blijft staan
+      screenLayout={({ route, children }) => <TabSwipe name={route.name}>{children}</TabSwipe>}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.brandPrimary,

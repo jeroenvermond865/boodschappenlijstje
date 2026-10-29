@@ -1,7 +1,7 @@
 // Slimme hulp (Premium): vijf dingen die de AI voor je doet.
 // Menu uit één zin, koken met restjes, recept plakken of fotograferen, je lijst typen of inspreken, en bespaartips.
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Animated, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import Image from "@/src/components/SafeImage";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Icon } from "@/src/components/ui";
 import { api } from "@/src/api";
 import { goBack } from "@/src/nav";
+import { useSwipePages } from "@/src/useSwipePages";
 import { GOLD, PremiumLock, useFeature } from "@/src/premium";
 import { euro } from "@/src/search";
 import { useTerms } from "@/src/settings";
@@ -39,6 +40,9 @@ export default function SlimScreen() {
   const premium = useFeature("slimme_hulp");
   const params = useLocalSearchParams<{ tab?: Tab; camp?: string }>();
   const [tab, setTab] = useState<Tab>(TABS.some((t) => t.key === params.tab) ? (params.tab as Tab) : "menu");
+  // Opzij vegen naar het volgende of vorige onderdeel
+  const pos = TABS.findIndex((t) => t.key === tab);
+  const swipe = useSwipePages((dir) => pos + dir >= 0 && pos + dir < TABS.length, (dir) => setTab(TABS[pos + dir].key));
 
   return (
     <View style={styles.root}>
@@ -58,6 +62,7 @@ export default function SlimScreen() {
             </Pressable>
           ))}
         </ScrollView>
+        <Animated.View style={[{ gap: 14 }, swipe.style]} {...swipe.panHandlers}>
         {!premium ? (
           <PremiumLock feature="slimme_hulp" title="De slimme hulp" text="Laat de app een menu maken uit één zin, koken met wat je nog hebt, recepten overnemen en besparen." />
         ) : tab === "menu" ? (
@@ -71,6 +76,7 @@ export default function SlimScreen() {
         ) : (
           <TipsTab campId={params.camp} />
         )}
+        </Animated.View>
       </ScrollView>
     </View>
   );

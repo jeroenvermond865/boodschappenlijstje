@@ -3,9 +3,9 @@
 // - bij voorwaarden, privacy, cookies en herroepen naar het volgende stuk
 // - op andere schermen naar rechts vegen om terug te gaan (op de iPhone doet de app dat zelf al)
 // Onderdelen die zelf opzij bewegen (een rij om opzij te scrollen, de dagen van een lijstje) gaan voor.
-import type { ReactNode } from "react";
+import { useCallback, type ReactNode } from "react";
 import { Animated, Platform } from "react-native";
-import { router, useGlobalSearchParams, useSegments } from "expo-router";
+import { router, useFocusEffect, useGlobalSearchParams, useSegments } from "expo-router";
 
 import { useSwipePages } from "@/src/useSwipePages";
 
@@ -34,21 +34,49 @@ export function SwipeNav({ children }: { children: ReactNode }) {
   const segments = useSegments() as string[];
   const params = useGlobalSearchParams<{ doc?: string }>();
   const where = segments[0] === "(tabs)" ? "tabs" : segments[0] === "legal" ? "legal" : segments[0] === "login" || segments[0] === "welcome" ? "none" : "page";
-  const tab = Math.max(0, TAB_NAMES.indexOf(segments[1] ?? "index"));
   const legal = Math.max(0, LEGAL_ORDER.indexOf((params.doc ?? "voorwaarden") as any));
 
   const can = (dir: 1 | -1) => {
-    if (where === "tabs") return tab + dir >= 0 && tab + dir < TAB_PATHS.length;
+    if (where === "tabs") return false; // dat doet TabSwipe, zodat de onderbalk blijft staan
     if (where === "legal") return legal + dir >= 0 && legal + dir < LEGAL_ORDER.length;
     // Terug met naar rechts vegen; op de iPhone en Android heeft de app daar zelf al een veeggebaar voor
     return where === "page" && dir === -1 && Platform.OS === "web" && router.canGoBack();
   };
   const go = (dir: 1 | -1) => {
-    if (where === "tabs") router.navigate(TAB_PATHS[tab + dir] as any);
-    else if (where === "legal") router.setParams({ doc: LEGAL_ORDER[legal + dir] });
+    if (where === "legal") router.setParams({ doc: LEGAL_ORDER[legal + dir] });
     else router.back();
   };
   const swipe = useSwipePages(can, go, { yield: true, enabled: (e) => touch && !inSideScroller(e) });
+  return (
+    <Animated.View style={[{ flex: 1 }, swipe.style]} {...swipe.panHandlers}>
+      {children}
+    </Animated.View>
+  );
+}
+
+// Om elk tabblad heen (via de tabbalk): veeg naar het volgende of vorige tabblad. Het nieuwe tabblad schuift
+// binnen van de kant waar je heen veegt; de onderbalk zelf beweegt niet mee en kleurt het tabblad waar je bent.
+let pendingDir: 1 | -1 | 0 = 0;
+
+export function TabSwipe({ name, children }: { name: string; children: ReactNode }) {
+  const tab = Math.max(0, TAB_NAMES.indexOf(name));
+  const swipe = useSwipePages(
+    (dir) => tab + dir >= 0 && tab + dir < TAB_PATHS.length,
+    (dir) => {
+      pendingDir = dir;
+      router.navigate(TAB_PATHS[tab + dir] as any);
+    },
+    { yield: true, enabled: (e) => touch && !inSideScroller(e) },
+  );
+  useFocusEffect(
+    useCallback(() => {
+      if (pendingDir) {
+        swipe.slideIn(pendingDir);
+        pendingDir = 0;
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
+  );
   return (
     <Animated.View style={[{ flex: 1 }, swipe.style]} {...swipe.panHandlers}>
       {children}

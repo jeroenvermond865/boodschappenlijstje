@@ -124,8 +124,61 @@ export default function AppSettingsScreen() {
         <Text style={styles.hint}>De naam én de ondertitel bovenaan elk tabblad passen zich hierop aan.</Text>
 
         <Button label="Opslaan" onPress={() => save.mutate()} loading={save.isPending} testID="settings-save" />
+        <SourcesCard />
         <BackupCard />
       </KeyboardAwareScrollView>
+    </View>
+  );
+}
+
+type Sources = { recipe_content: boolean; image_proxy: boolean; full_import: boolean };
+const SOURCE_ROWS: { key: keyof Sources; title: string; sub: string }[] = [
+  { key: "recipe_content", title: "Recepten van de winkel volledig tonen", sub: "Hun bereiding, beschrijving, tips en foto's. Uit: alleen titel, ingrediënten en een link; de bereiding schrijft de app zelf." },
+  { key: "image_proxy", title: "Winkelfoto's via onze server", sub: "Uit: de browser laat productfoto's direct bij de winkel zien." },
+  { key: "full_import", title: "Hele assortiment ophalen", sub: "Alle producten via zoektermen, en nieuwe producten bij de dagelijkse prijsronde. Uit: alleen wat er al is en wat gebruikers zoeken." },
+];
+
+// Supermarktbronnen: alles staat uit tot een winkel toestemming geeft; dan zet je het hier weer aan
+function SourcesCard() {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const toast = useToast();
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["admin-sources"], queryFn: () => api<Sources>("/admin/sources") });
+  const save = useMutation({
+    mutationFn: (ch: Partial<Sources>) => api<Sources>("/admin/sources", { method: "PUT", body: ch }),
+    onSuccess: (r) => {
+      qc.setQueryData(["admin-sources"], r);
+      toast.show("Opgeslagen", "success");
+    },
+    onError: (e: any) => toast.show(e?.message ?? "Opslaan lukte niet", "error"),
+  });
+  return (
+    <View style={{ gap: 10, marginTop: 12 }}>
+      <Text style={styles.group}>Supermarktbronnen</Text>
+      <Text style={[styles.hint, { marginTop: 0 }]}>
+        Zolang er geen toestemming is, staat dit uit. Heeft een supermarkt ja gezegd, dan zet je het hier weer aan. Het geldt voor alle winkels tegelijk.
+      </Text>
+      {SOURCE_ROWS.map((row) => {
+        const on = !!q.data?.[row.key];
+        return (
+          <Pressable
+            key={row.key}
+            testID={`source-${row.key}`}
+            disabled={!q.data || save.isPending}
+            onPress={() => save.mutate({ [row.key]: !on })}
+            style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 6 }, pressed && { opacity: 0.7 }]}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 15, fontFamily: fonts.semibold, color: colors.onSurface }}>{row.title}</Text>
+              <Text style={[styles.hint, { marginTop: 2 }]}>{row.sub}</Text>
+            </View>
+            <View style={{ width: 46, height: 28, borderRadius: 14, padding: 3, backgroundColor: on ? colors.brandPrimary : colors.border, alignItems: on ? "flex-end" : "flex-start" }}>
+              <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: colors.surface }} />
+            </View>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
