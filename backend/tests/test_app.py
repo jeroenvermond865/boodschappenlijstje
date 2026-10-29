@@ -858,3 +858,42 @@ def test_gebruikt_product_los_opzoeken():
         S.asyncio.sleep = orig_sleep
         S.USED_SEARCH_MAX = old
     assert n == 1 and doc["prices"]["Albert Heijn"] == 2.0
+
+
+# --- Beveiliging ---
+def test_geen_beheerder_via_ongecontroleerd_adres():
+    async def t():
+        await S.db.users.insert_one({"user_id": "x1", "email": S.ADMIN_EMAIL.lower(), "role": "standaard", "email_verified": False})
+        await S.db.users.update_many({"email": {"$in": S.ADMIN_SEED_EMAILS}, "email_verified": True}, {"$set": {"role": "beheerder"}})
+        return (await S.db.users.find_one({"user_id": "x1"}))["role"]
+    assert run(t()) == "standaard"
+
+
+def test_foto_doorverwijzing_naar_ander_adres_geweigerd(monkeypatch):
+    S._sources["image_proxy"] = True
+
+    class Resp:
+        status_code = 302
+        headers = {"location": "http://169.254.169.254/latest/meta-data"}
+        url = S.httpx.URL("https://static.ah.nl/x.jpg")
+
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            assert "169.254" not in url  # nooit naar binnen
+            return Resp()
+    monkeypatch.setattr(S.httpx, "AsyncClient", Client)
+    S._img_cache.clear()
+    try:
+        with pytest.raises(HTTPException):
+            run(S.image_proxy("https://static.ah.nl/x.jpg"))
+    finally:
+        S._sources.update(S.SOURCE_DEFAULTS)

@@ -626,7 +626,9 @@ async def register(data: RegisterInput, request: Request):
             raise HTTPException(status_code=400, detail=SIGNUP_WAIT_MSG)
         raise HTTPException(status_code=400, detail="E-mailadres is al in gebruik")
     user_id = new_user_id()
-    is_admin = email in ADMIN_SEED_EMAILS
+    # Nooit automatisch beheerder bij registreren met wachtwoord: het e-mailadres is dan niet gecontroleerd.
+    # (Beheerder word je via een andere beheerder, of door met Google in te loggen op een beheeradres.)
+    is_admin = False
     doc = {
         "user_id": user_id,
         "email": email,
@@ -709,6 +711,7 @@ async def update_profile(data: ProfileUpdate, user: dict = Depends(get_current_u
         if clash:
             raise HTTPException(status_code=400, detail="Dit e-mailadres is al in gebruik")
         update["email"] = new_email
+        update["email_verified"] = False  # een nieuw adres is niet gecontroleerd (telt niet voor beheerrechten)
     if update:
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
     updated = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
@@ -765,6 +768,10 @@ async def reset_password(data: ResetPassword, request: Request):
         raise HTTPException(status_code=400, detail="Ongeldige of verlopen code")
     await db.users.update_one({"email": email}, {"$set": {"password_hash": hash_password(data.new_password)}})
     await db.password_resets.delete_many({"email": email})
+    # Nieuw wachtwoord: overal uitloggen (wie je oude wachtwoord had, is er dan ook uit)
+    u = await db.users.find_one({"email": email}, {"_id": 0, "user_id": 1})
+    if u:
+        await db.user_sessions.delete_many({"user_id": u["user_id"]})
     return {"ok": True}
 
 
@@ -894,7 +901,7 @@ async def auth_session(data: SessionInput, request: Request):
         user_id = existing["user_id"]
         await db.users.update_one(
             {"user_id": user_id},
-            {"$set": {"name": name or existing.get("name"), "picture": picture or existing.get("picture")}},
+            {"$set": {"name": name or existing.get("name"), "picture": picture or existing.get("picture"), "email_verified": True}},
         )
         user = await db.users.find_one({"user_id": user_id})
     else:
@@ -909,6 +916,7 @@ async def auth_session(data: SessionInput, request: Request):
             "password_hash": None,
             "auth_provider": "google",
             "role": "beheerder" if email in ADMIN_SEED_EMAILS else await default_role(),
+            "email_verified": True,  # door Google gecontroleerd
             "created_at": now_utc(),
             **_trial_fields(),
         }
@@ -10135,8 +10143,18 @@ async def image_proxy(u: str):
     hit = _img_cache.get(u)
     if hit is None:
         try:
-            async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers={"User-Agent": DIRK_HEADERS["User-Agent"], "Accept": "image/*"}) as c:
+            # Doorverwijzingen alleen volgen naar dezelfde toegestane winkels (anders kan iemand de server elders laten aankloppen)
+            async with httpx.AsyncClient(timeout=12, follow_redirects=False, headers={"User-Agent": DIRK_HEADERS["User-Agent"], "Accept": "image/*"}) as c:
                 r = await c.get(u)
+                for _ in range(3):
+                    loc = r.headers.get("location") if r.status_code in (301, 302, 303, 307, 308) else None
+                    if not loc:
+                        break
+                    nxt = str(r.url.join(loc))
+                    nh = (urlparse(nxt).hostname or "").lower()
+                    if not nxt.startswith("https://") or not any(nh == h or nh.endswith("." + h) for h in _IMG_HOSTS):
+                        raise HTTPException(status_code=404, detail="Foto niet gevonden")
+                    r = await c.get(nxt)
                 kind = r.headers.get("content-type", "").split(";")[0]
                 if r.status_code == 404 and host.endswith("dirk.nl"):
                     # Dirk geeft een foto een nieuwe naam als hij vernieuwd wordt: de nieuwe opvragen en onthouden
@@ -14408,7 +14426,7 @@ async def startup():
         await db.settings.update_one({"key": "roles_v2"}, {"$set": {"value": True, "at": now_utc()}}, upsert=True)
         logger.info("Rollen opgeschoond: %d gebruikers naar standaard, %d rollen weg", moved.modified_count, gone.deleted_count)
     await db.users.update_many({"role": {"$exists": False}}, {"$set": {"role": DEFAULT_ROLE}})
-    await db.users.update_many({"email": {"$in": ADMIN_SEED_EMAILS}}, {"$set": {"role": "beheerder"}})
+    await db.users.update_many({"email": {"$in": ADMIN_SEED_EMAILS}, "email_verified": True}, {"$set": {"role": "beheerder"}})
 
     # Eenmalig: alle bestaande gerechten naar de prullenbak; daarna geen standaardgerechten meer aanmaken
     if not await db.settings.find_one({"key": "dishes_cleared"}):
