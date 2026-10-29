@@ -504,14 +504,22 @@ async def _geen_mail(*a, **k):
 
 
 def _reg(email):
-    return S.RegisterInput(email=email, password="geheim1234", name="Test", accept_terms=True)
+    return S.RegisterInput(email=email, password="geheim!1234", name="Test", accept_terms=True)
+
+
+async def _bevestig(email):
+    # De code uit de mail (in de test: uit de database) invullen
+    rec = await S.db.email_codes.find_one({"email": email, "purpose": "register"})
+    return await S.verify_email(S.VerifyEmailInput(email=email, code=rec["code"]), _req())
 
 
 def test_aanvragen_uit_werkt_zoals_altijd(monkeypatch):
     monkeypatch.setattr(S, "send_email", _geen_mail)
     S._attempts.clear()
     res = run(S.register(_reg("nieuw@voorbeeld.nl"), _req()))
-    assert res.get("session_token") and not res.get("pending")
+    assert res.get("verify") and not res.get("session_token")  # eerst de code uit de mail
+    ok = run(_bevestig("nieuw@voorbeeld.nl"))
+    assert ok.get("session_token") and not ok.get("pending")
 
 
 def test_aanvraag_wacht_op_goedkeuring(monkeypatch):
@@ -521,9 +529,11 @@ def test_aanvraag_wacht_op_goedkeuring(monkeypatch):
     async def t():
         await S.db.settings.insert_one({"key": "app", "signup_approval": True})
         res = await S.register(_reg("nieuw@voorbeeld.nl"), _req())
+        assert res["verify"] and "session_token" not in res
+        res = await _bevestig("nieuw@voorbeeld.nl")
         assert res["pending"] and "session_token" not in res
         with pytest.raises(HTTPException) as e:
-            await S.login(S.LoginInput(identifier="nieuw@voorbeeld.nl", password="geheim1234"), _req())
+            await S.login(S.LoginInput(identifier="nieuw@voorbeeld.nl", password="geheim!1234"), _req())
         assert e.value.status_code == 403
         admin = {"user_id": "a1", "role": "beheerder"}
         await S.db.roles.insert_one({"name": "beheerder", "permissions": ["manage_users"]})
@@ -531,7 +541,7 @@ def test_aanvraag_wacht_op_goedkeuring(monkeypatch):
         assert lijst["enabled"] and len(lijst["requests"]) == 1
         assert (await S.admin_list_users(admin))["users"] == []
         await S.review_signup_request(lijst["requests"][0]["id"], "approve", admin)
-        return await S.login(S.LoginInput(identifier="nieuw@voorbeeld.nl", password="geheim1234"), _req())
+        return await S.login(S.LoginInput(identifier="nieuw@voorbeeld.nl", password="geheim!1234"), _req())
     assert run(t()).get("session_token")
 
 
@@ -559,7 +569,10 @@ def test_herroepen_bewaart_en_bevestigt(monkeypatch):
 
     monkeypatch.setattr(S, "send_email", fake_mail)
     req = type("R", (), {"headers": {}, "client": type("C", (), {"host": "1.2.3.4"})()})()
-    r = run(S.legal_withdraw(S.WithdrawInput(name="Test Persoon", email="Test@Voorbeeld.nl"), req, None))
+    run(S.legal_withdraw_code(S.WithdrawCodeInput(email="Test@Voorbeeld.nl"), req))  # eerst een code naar dat adres
+    code = run(S.db.email_codes.find_one({"email": "test@voorbeeld.nl", "purpose": "withdraw"}))["code"]
+    sent.clear()
+    r = run(S.legal_withdraw(S.WithdrawInput(name="Test Persoon", email="Test@Voorbeeld.nl", code=code), req, None))
     assert r["ok"]
     doc = run(S.db.withdrawals.find_one({"withdrawal_id": r["id"]}))
     assert doc["email"] == "test@voorbeeld.nl" and doc["expires_at"] > doc["created_at"]
@@ -897,3 +910,92 @@ def test_foto_doorverwijzing_naar_ander_adres_geweigerd(monkeypatch):
             run(S.image_proxy("https://static.ah.nl/x.jpg"))
     finally:
         S._sources.update(S.SOURCE_DEFAULTS)
+
+
+# --- E-mailcontrole en accountbeveiliging ---
+class _Req:
+    client = type("C", (), {"host": "1.2.3.4"})()
+    headers: dict = {}
+
+
+@pytest.fixture
+def mails(monkeypatch):
+    sent = []
+
+    async def fake(to, subject, html, allow_unsubscribe=True, attachments=None, raise_errors=False):
+        sent.append((to, subject, html))
+        return "id"
+    monkeypatch.setattr(S, "send_email", fake)
+    S._attempts.clear() if hasattr(S, "_attempts") else None
+    return sent
+
+
+def _code(sent):
+    import re as _re
+    return _re.search(r">(\d{6})<", sent[-1][2]).group(1)
+
+
+def test_registreren_vraagt_eerst_een_code(mails, monkeypatch):
+    async def no_approval():
+        return False
+    monkeypatch.setattr(S, "signup_approval_on", no_approval)
+
+    async def t():
+        r = await S.register(S.RegisterInput(email="nieuw@voorbeeld.nl", password="geheim!123", name="Nieuw", accept_terms=True), _Req())
+        assert r["verify"] and "session_token" not in r
+        with pytest.raises(HTTPException) as e:
+            await S.login(S.LoginInput(identifier="nieuw@voorbeeld.nl", password="geheim!123"), _Req())
+        assert e.value.status_code == 403 and "Bevestig" in e.value.detail
+        with pytest.raises(HTTPException):
+            await S.verify_email(S.VerifyEmailInput(email="nieuw@voorbeeld.nl", code="000000"), _Req())
+        ok = await S.verify_email(S.VerifyEmailInput(email="nieuw@voorbeeld.nl", code=_code(mails)), _Req())
+        assert ok["session_token"]
+        u = await S.db.users.find_one({"email": "nieuw@voorbeeld.nl"})
+        return u
+    u = run(t())
+    assert u["email_verified"] is True and u["role"] != "beheerder"
+
+
+def test_wachtwoord_moet_speciaal_teken_hebben(mails):
+    assert not S._password_ok("geheim123") and S._password_ok("geheim-12") and not S._password_ok("ab!")
+    with pytest.raises(HTTPException):
+        run(S.register(S.RegisterInput(email="a@b.nl", password="geheim123", name="A", accept_terms=True), _Req()))
+
+
+def test_ander_emailadres_met_wachtwoord_en_code(mails):
+    async def t():
+        u = {"user_id": "u5", "email": "oud@voorbeeld.nl", "password_hash": S.hash_password("goed!wachtwoord"), "auth_provider": "password"}
+        await S.db.users.insert_one(dict(u))
+        with pytest.raises(HTTPException):
+            await S.update_profile(S.ProfileUpdate(email="nieuw@voorbeeld.nl"), u)  # niet meer via het profiel
+        with pytest.raises(HTTPException):
+            await S.change_email_start(S.ChangeEmailInput(new_email="nieuw@voorbeeld.nl", password="fout"), u)
+        await S.change_email_start(S.ChangeEmailInput(new_email="nieuw@voorbeeld.nl", password="goed!wachtwoord"), u)
+        assert mails[-1][0] == "nieuw@voorbeeld.nl"
+        await S.change_email_confirm(S.ChangeEmailConfirm(code=_code(mails)), u)
+        return await S.db.users.find_one({"user_id": "u5"})
+    doc = run(t())
+    assert doc["email"] == "nieuw@voorbeeld.nl" and doc["email_verified"] is True
+    assert mails[-1][0] == "oud@voorbeeld.nl"  # het oude adres krijgt een seintje
+
+
+def test_herroepen_zonder_login_vraagt_een_code(mails):
+    with pytest.raises(HTTPException):
+        run(S.legal_withdraw(S.WithdrawInput(name="Piet", email="piet@voorbeeld.nl"), _Req(), None))
+
+
+def test_gmail_koppelen_alleen_met_link_van_beheer():
+    with pytest.raises(HTTPException) as e:
+        run(S.gmail_connect(""))
+    assert e.value.status_code == 403
+
+
+def test_emailadres_niet_voluit_in_logs():
+    assert S._mask("jeroen@gmail.com") == "j***@g***.com"
+    assert "jeroen" not in S._mask("jeroen@gmail.com")
+
+
+def test_csp_staat_alleen_eigen_scripts_toe():
+    S._csp_cache.clear()
+    v = S._csp()
+    assert "default-src 'self'" in v and "frame-ancestors 'none'" in v and "unsafe-eval" not in v

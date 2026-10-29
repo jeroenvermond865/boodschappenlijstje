@@ -42,15 +42,50 @@ export default function ProfileScreen() {
   const [confirmPw, setConfirmPw] = useState("");
   const [savingPw, setSavingPw] = useState(false);
 
+  // Een ander e-mailadres: eerst je wachtwoord, dan een code naar het nieuwe adres
+  const [mailStep, setMailStep] = useState<null | "password" | "code">(null);
+  const [mailPw, setMailPw] = useState("");
+  const [mailCode, setMailCode] = useState("");
+  const [mailBusy, setMailBusy] = useState(false);
+  const emailChanged = email.trim().toLowerCase() !== (user?.email ?? "").toLowerCase();
+  const mailStart = async () => {
+    setMailBusy(true);
+    try {
+      await api("/auth/change-email", { method: "POST", body: { new_email: email.trim(), password: mailPw } });
+      setMailStep("code");
+    } catch (e: any) {
+      toast.show(e?.message ?? "Dat lukte niet", "error");
+    } finally {
+      setMailBusy(false);
+    }
+  };
+  const mailConfirm = async () => {
+    setMailBusy(true);
+    try {
+      await api("/auth/change-email/confirm", { method: "POST", body: { code: mailCode.trim() } });
+      await refresh();
+      setMailStep(null);
+      setMailPw("");
+      setMailCode("");
+      toast.show("Je e-mailadres is gewijzigd", "success");
+    } catch (e: any) {
+      toast.show(e?.message ?? "Die code klopt niet", "error");
+    } finally {
+      setMailBusy(false);
+    }
+  };
+
   const saveProfile = async () => {
     setSavingProfile(true);
     try {
       await api("/auth/profile", {
         method: "PUT",
-        body: { name, username, email, phone, store: store === NO_STORE ? undefined : store, picture, email_opt_out: !emailOn, no_personal: !personalOn },
+        body: { name, username, email: user?.email, phone, store: store === NO_STORE ? undefined : store, picture, email_opt_out: !emailOn, no_personal: !personalOn },
       });
       await refresh();
       toast.show("Profiel opgeslagen", "success");
+      if (emailChanged) setMailStep(user?.has_password ? "password" : "code");
+      if (emailChanged && !user?.has_password) await mailStart();
     } catch (e: any) {
       toast.show(e?.message ?? "Opslaan mislukt", "error");
     } finally {
@@ -181,7 +216,7 @@ export default function ProfileScreen() {
           <PasswordField
             label="Nieuw wachtwoord"
             testID="profile-new-pw"
-            placeholder="Minstens 8 tekens"
+            placeholder="Minstens 8 tekens en een speciaal teken"
             value={newPw}
             onChangeText={setNewPw}
           />
@@ -238,6 +273,36 @@ export default function ProfileScreen() {
               <Text style={styles.dangerSolidText}>{deleting ? "Bezig…" : "Ja, verwijder mijn account"}</Text>
             </Pressable>
             <Button label="Annuleren" variant="ghost" onPress={() => setDeleteOpen(false)} testID="delete-account-cancel" />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!mailStep} transparent animationType="fade" onRequestClose={() => setMailStep(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.sectionTitle}>Ander e-mailadres</Text>
+            {mailStep === "password" ? (
+              <>
+                <Text style={styles.storeHint}>Vul je wachtwoord in. Daarna sturen we een code naar {email.trim()}.</Text>
+                <PasswordField label="Wachtwoord" testID="mail-pw" value={mailPw} onChangeText={setMailPw} />
+                <Button label="Code sturen" onPress={mailStart} loading={mailBusy} testID="mail-send-code" />
+              </>
+            ) : (
+              <>
+                <Text style={styles.storeHint}>Vul de code in die we naar {email.trim()} stuurden. Je oude adres krijgt een seintje.</Text>
+                <Field label="Code" testID="mail-code" value={mailCode} onChangeText={setMailCode} keyboardType="number-pad" />
+                <Button label="Bevestigen" onPress={mailConfirm} loading={mailBusy} testID="mail-confirm" />
+              </>
+            )}
+            <Button
+              label="Annuleren"
+              variant="ghost"
+              onPress={() => {
+                setMailStep(null);
+                setEmail(user?.email ?? "");
+              }}
+              testID="mail-cancel"
+            />
           </View>
         </View>
       </Modal>

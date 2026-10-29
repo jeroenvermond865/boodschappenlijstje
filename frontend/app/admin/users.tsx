@@ -145,7 +145,7 @@ export default function AdminUsersScreen() {
   });
 
   const submitPassword = () => {
-    if (pw.length < 8) return toast.show("Minstens 8 tekens", "error");
+    if (pw.length < 8 || !/[^A-Za-z0-9\s]/.test(pw)) return toast.show("Minstens 8 tekens en een speciaal teken", "error");
     if (pw !== pw2) return toast.show("De twee wachtwoorden zijn niet gelijk", "error");
     setPassword.mutate();
   };
@@ -313,7 +313,7 @@ export default function AdminUsersScreen() {
             <View style={styles.pwBlock}>
               <Text style={styles.pwTitle}>Wachtwoord instellen</Text>
               <Text style={styles.pwHint}>Handig als iemand z'n wachtwoord vergeten is.</Text>
-              <PasswordField label="Nieuw wachtwoord" testID="admin-user-pw" placeholder="Minstens 8 tekens" value={pw} onChangeText={setPw} />
+              <PasswordField label="Nieuw wachtwoord" testID="admin-user-pw" placeholder="Minstens 8 tekens en een speciaal teken" value={pw} onChangeText={setPw} />
               <PasswordField label="Herhaal wachtwoord" testID="admin-user-pw2" placeholder="Nogmaals hetzelfde" value={pw2} onChangeText={setPw2} />
               <Button label="Wachtwoord instellen" variant="secondary" onPress={submitPassword} loading={setPassword.isPending} testID="admin-user-set-pw" />
             </View>

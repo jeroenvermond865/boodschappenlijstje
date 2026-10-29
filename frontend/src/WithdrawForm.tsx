@@ -22,12 +22,22 @@ export function WithdrawForm() {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ id: string; email: string } | null>(null);
 
+  // Niet ingelogd met dit adres? Dan eerst een code per mail, zodat niemand namens een ander kan herroepen
+  const [code, setCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const needCode = !(user?.email && user.email.toLowerCase() === email.trim().toLowerCase());
   const send = async () => {
     setBusy(true);
     try {
+      if (needCode && !codeSent) {
+        await api("/legal/withdraw/code", { method: "POST", body: { email: email.trim() } });
+        setCodeSent(true);
+        toast.show(`We hebben een code gestuurd naar ${email.trim()}`, "success");
+        return;
+      }
       const r = await api<{ id: string }>("/legal/withdraw", {
         method: "POST",
-        body: { name, email, ordered_on: orderedOn, note },
+        body: { name, email, ordered_on: orderedOn, note, code: code.trim() },
       });
       setDone({ id: r.id, email: email.trim() });
     } catch (e: any) {
@@ -77,12 +87,15 @@ export function WithdrawForm() {
         style={{ minHeight: 70, textAlignVertical: "top" }}
       />
       <Text style={styles.small}>Dienst: Slim Boodschappenlijstje Premium. Je hoeft geen reden te geven.</Text>
+      {needCode && codeSent ? (
+        <Field label="Code uit de mail" testID="withdraw-code" value={code} onChangeText={setCode} keyboardType="number-pad" />
+      ) : null}
       <Button
-        label="Bevestig herroeping"
+        label={needCode && !codeSent ? "Stuur een code naar mijn e-mail" : "Bevestig herroeping"}
         icon="check"
         onPress={send}
         loading={busy}
-        disabled={name.trim().length < 2 || !email.includes("@")}
+        disabled={name.trim().length < 2 || !email.includes("@") || (needCode && codeSent && code.trim().length < 6)}
         testID="withdraw-confirm"
       />
       <Button label="Annuleren" variant="ghost" onPress={() => setOpen(false)} testID="withdraw-cancel" />

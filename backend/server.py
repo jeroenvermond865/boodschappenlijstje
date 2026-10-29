@@ -144,6 +144,20 @@ def new_token() -> str:
 # Beveiliging: wachtwoorden en het afremmen van bots die blijven proberen
 # ---------------------------------------------------------------------------
 MIN_PASSWORD = 8
+PASSWORD_RULE = "Wachtwoord moet minstens 8 tekens hebben, waarvan minstens één speciaal teken (zoals ! ? # @ of -)"
+
+
+def _password_ok(pw: str) -> bool:
+    return len(pw or "") >= MIN_PASSWORD and any(not ch.isalnum() and not ch.isspace() for ch in pw)
+
+
+def _mask(email: Optional[str]) -> str:
+    # E-mailadressen niet voluit in de logs (AVG): j***@g***.com
+    e = (email or "").strip()
+    if "@" not in e:
+        return "?"
+    name, dom = e.split("@", 1)
+    return f"{name[:1]}***@{dom[:1]}***{dom[dom.rfind('.'):] if '.' in dom else ''}"
 _attempts: Dict[str, list] = {}
 
 
@@ -190,6 +204,9 @@ def limit(key: str, max_hits: int, window: int) -> None:
     add_attempt(key)
 
 
+SESSION_DAYS = 90  # zolang je de app gebruikt, schuift dit op; 90 dagen niet gebruikt = opnieuw inloggen
+
+
 async def create_session(user_id: str) -> str:
     await _mark_seen(user_id)
     token = new_token()
@@ -198,7 +215,7 @@ async def create_session(user_id: str) -> str:
             "session_token": token,
             "user_id": user_id,
             "created_at": now_utc(),
-            "expires_at": now_utc() + timedelta(days=7),
+            "expires_at": now_utc() + timedelta(days=SESSION_DAYS),
         }
     )
     return token
@@ -391,7 +408,7 @@ async def send_email(to: str, subject: str, html: str, allow_unsubscribe: bool =
         return None
     if allow_unsubscribe:
         if await is_opted_out(to):
-            logger.info("E-mail overgeslagen (afgemeld): %s", to)
+            logger.info("E-mail overgeslagen (afgemeld): %s", _mask(to))
             return None
         token = await _unsub_token(to)
         base = (FRONTEND_URL or "").rstrip("/")
@@ -446,6 +463,9 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         raise HTTPException(status_code=401, detail="Sessie ongeldig")
     if ensure_aware(session["expires_at"]) < now_utc():
         raise HTTPException(status_code=401, detail="Sessie verlopen")
+    if ensure_aware(session["expires_at"]) < now_utc() + timedelta(days=SESSION_DAYS - 1):
+        # Gebruik je de app, dan blijf je ingelogd (hooguit één keer per dag bijwerken)
+        await db.user_sessions.update_one({"session_token": token}, {"$set": {"expires_at": now_utc() + timedelta(days=SESSION_DAYS)}})
     user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
     if not user or user.get("deleted_at") or user.get("approval") == "pending":
         raise HTTPException(status_code=401, detail="Gebruiker niet gevonden")
@@ -610,11 +630,44 @@ class CampUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 # Auth routes
 # ---------------------------------------------------------------------------
+EMAIL_CODE_MINUTES = 30
+
+
+async def _send_email_code(email: str, purpose: str, extra: Optional[dict] = None) -> None:
+    # Een code van 6 cijfers per mail: om je e-mailadres te bevestigen (registreren, ander adres, herroepen)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    await db.email_codes.delete_many({"email": email, "purpose": purpose})
+    await db.email_codes.insert_one({"email": email, "purpose": purpose, "code": code, "attempts": 0,
+                                     "expires_at": now_utc() + timedelta(minutes=EMAIL_CODE_MINUTES), **(extra or {})})
+    why = {"register": "je account te bevestigen", "change": "je nieuwe e-mailadres te bevestigen", "withdraw": "je herroeping te versturen"}[purpose]
+    await send_email(email, "Je code voor Slim Boodschappenlijstje",
+                     f'<p>Gebruik deze code om {why}:</p>'
+                     f'<p style="font-size:30px;font-weight:700;letter-spacing:6px;color:#2E5E38">{code}</p>'
+                     f'<p>De code is {EMAIL_CODE_MINUTES} minuten geldig. Heb je dit niet aangevraagd? Dan kun je deze mail negeren.</p>',
+                     allow_unsubscribe=False)
+
+
+async def _check_email_code(email: str, purpose: str, code: str) -> dict:
+    rec = await db.email_codes.find_one({"email": email, "purpose": purpose})
+    if not rec or ensure_aware(rec["expires_at"]) < now_utc() or rec.get("attempts", 0) >= 5:
+        raise HTTPException(status_code=400, detail="Deze code is verlopen. Vraag een nieuwe aan.")
+    if not secrets.compare_digest(str(rec["code"]), (code or "").strip()):
+        await db.email_codes.update_one({"_id": rec["_id"]}, {"$inc": {"attempts": 1}})
+        raise HTTPException(status_code=400, detail="Die code klopt niet")
+    await db.email_codes.delete_one({"_id": rec["_id"]})
+    return rec
+
+
+def _unverified(user: dict) -> bool:
+    # Alleen nieuwe accounts met een wachtwoord hebben dit veld op False; oudere accounts tellen als bevestigd
+    return user.get("email_verified") is False and user.get("auth_provider") == "password"
+
+
 @api_router.post("/auth/register")
 async def register(data: RegisterInput, request: Request):
     limit(f"register:{client_ip(request)}", 10, 3600)
-    if len(data.password) < MIN_PASSWORD:
-        raise HTTPException(status_code=400, detail=f"Wachtwoord moet minstens {MIN_PASSWORD} tekens zijn")
+    if not _password_ok(data.password):
+        raise HTTPException(status_code=400, detail=PASSWORD_RULE)
     if not data.accept_terms:
         raise HTTPException(status_code=400, detail="Ga eerst akkoord met de voorwaarden en de privacyverklaring")
     email = data.email.lower().strip()
@@ -644,15 +697,51 @@ async def register(data: RegisterInput, request: Request):
         "terms_accepted_at": now_utc(),
         **_trial_fields(),
     }
+    # Eerst je e-mailadres bevestigen met een code; daarna pas inloggen en uitnodigingen aannemen
+    doc["email_verified"] = False
     if not is_admin and await signup_approval_on():
         doc["approval"] = "pending"
-        await db.users.insert_one(doc)
-        await _notify_signup_request(doc)
-        return {"pending": True, "message": SIGNUP_PENDING_MSG}
     await db.users.insert_one(doc)
-    await accept_invitations(doc)
-    token = await create_session(user_id)
-    return {"session_token": token, "user": public_user(doc)}
+    await _send_email_code(email, "register")
+    return {"verify": True, "email": email, "message": f"We hebben een code gestuurd naar {email}. Vul die in om je account te bevestigen."}
+
+
+class VerifyEmailInput(BaseModel):
+    email: EmailStr
+    code: str
+
+
+@api_router.post("/auth/verify-email")
+async def verify_email(data: VerifyEmailInput, request: Request):
+    limit(f"verify-ip:{client_ip(request)}", 30, 900)
+    email = data.email.lower().strip()
+    await _check_email_code(email, "register", data.code)
+    user = await db.users.find_one({"email": email, "deleted_at": None})
+    if not user:
+        raise HTTPException(status_code=400, detail="Account niet gevonden")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"email_verified": True}})
+    user = {**user, "email_verified": True}
+    if user.get("approval") == "pending":
+        await _notify_signup_request(user)
+        return {"pending": True, "message": SIGNUP_PENDING_MSG}
+    await accept_invitations(user)
+    token = await create_session(user["user_id"])
+    return {"session_token": token, "user": public_user(user)}
+
+
+class ResendInput(BaseModel):
+    email: EmailStr
+
+
+@api_router.post("/auth/verify-email/resend")
+async def verify_email_resend(data: ResendInput, request: Request):
+    email = data.email.lower().strip()
+    limit(f"verify-resend-ip:{client_ip(request)}", 10, 3600)
+    limit(f"verify-resend:{email}", 3, 3600)
+    user = await db.users.find_one({"email": email, "deleted_at": None})
+    if user and _unverified(user):
+        await _send_email_code(email, "register")
+    return {"ok": True}  # altijd hetzelfde antwoord: niet verklappen of een adres bestaat
 
 
 @api_router.post("/auth/login")
@@ -667,6 +756,13 @@ async def login(data: LoginInput, request: Request):
         add_attempt(acc_key)
         raise HTTPException(status_code=401, detail="Onjuiste inloggegevens")
     _attempts.pop(acc_key, None)
+    if _unverified(user):
+        try:
+            limit(f"verify-resend:{user['email']}", 3, 3600)
+            await _send_email_code(user["email"], "register")
+        except HTTPException:
+            pass
+        raise HTTPException(status_code=403, detail="Bevestig eerst je e-mailadres. We hebben je een code gestuurd.")
     if user.get("approval") == "pending":
         raise HTTPException(status_code=403, detail=SIGNUP_WAIT_MSG)
     token = await create_session(user["user_id"])
@@ -705,28 +801,67 @@ async def update_profile(data: ProfileUpdate, user: dict = Depends(get_current_u
             if clash:
                 raise HTTPException(status_code=400, detail="Deze gebruikersnaam is al in gebruik")
         update["username"] = uname
-    if data.email is not None:
-        new_email = data.email.lower().strip()
-        clash = await db.users.find_one({"email": new_email, "user_id": {"$ne": user["user_id"]}})
-        if clash:
-            raise HTTPException(status_code=400, detail="Dit e-mailadres is al in gebruik")
-        update["email"] = new_email
-        update["email_verified"] = False  # een nieuw adres is niet gecontroleerd (telt niet voor beheerrechten)
+    if data.email is not None and data.email.lower().strip() != (user.get("email") or ""):
+        # Een ander adres kan alleen met je wachtwoord en een code (POST /auth/change-email)
+        raise HTTPException(status_code=400, detail="Een ander e-mailadres bevestig je met je wachtwoord en een code")
     if update:
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
     updated = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
     return {"user": public_user(updated)}
 
 
+class ChangeEmailInput(BaseModel):
+    new_email: EmailStr
+    password: str = ""
+
+
+class ChangeEmailConfirm(BaseModel):
+    code: str
+
+
+@api_router.post("/auth/change-email")
+async def change_email_start(data: ChangeEmailInput, user: dict = Depends(get_current_user)):
+    limit(f"change-email:{user['user_id']}", 5, 3600)
+    new_email = data.new_email.lower().strip()
+    if user.get("password_hash") and not verify_password(data.password or "", user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Je wachtwoord klopt niet")
+    if await db.users.find_one({"email": new_email, "user_id": {"$ne": user["user_id"]}}):
+        raise HTTPException(status_code=400, detail="Dit e-mailadres is al in gebruik")
+    await _send_email_code(new_email, "change", {"user_id": user["user_id"], "old_email": user.get("email")})
+    return {"ok": True, "message": f"We hebben een code gestuurd naar {new_email}."}
+
+
+@api_router.post("/auth/change-email/confirm")
+async def change_email_confirm(data: ChangeEmailConfirm, user: dict = Depends(get_current_user)):
+    rec = await db.email_codes.find_one({"purpose": "change", "user_id": user["user_id"]})
+    if not rec:
+        raise HTTPException(status_code=400, detail="Deze code is verlopen. Vraag een nieuwe aan.")
+    await _check_email_code(rec["email"], "change", data.code)
+    if await db.users.find_one({"email": rec["email"], "user_id": {"$ne": user["user_id"]}}):
+        raise HTTPException(status_code=400, detail="Dit e-mailadres is al in gebruik")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"email": rec["email"], "email_verified": True}})
+    old = rec.get("old_email")
+    if old and old != rec["email"]:
+        # Het oude adres krijgt een seintje, zodat je het merkt als iemand anders dit deed
+        await send_email(old, "Je e-mailadres is gewijzigd",
+                         "<p>Het e-mailadres van je Slim Boodschappenlijstje-account is zojuist gewijzigd.</p>"
+                         "<p>Was jij dit niet? Neem dan meteen contact op door op deze mail te antwoorden.</p>", allow_unsubscribe=False)
+    updated = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return {"user": public_user(updated)}
+
+
 @api_router.post("/auth/change-password")
-async def change_password(data: ChangePassword, user: dict = Depends(get_current_user)):
-    if len(data.new_password) < MIN_PASSWORD:
-        raise HTTPException(status_code=400, detail=f"Wachtwoord moet minstens {MIN_PASSWORD} tekens zijn")
+async def change_password(data: ChangePassword, user: dict = Depends(get_current_user), authorization: Optional[str] = Header(None)):
+    if not _password_ok(data.new_password):
+        raise HTTPException(status_code=400, detail=PASSWORD_RULE)
     if user.get("password_hash"):
         if not data.current_password or not verify_password(data.current_password, user["password_hash"]):
             limit(f"pw-check:{user['user_id']}", 8, 900)
             raise HTTPException(status_code=400, detail="Huidig wachtwoord is onjuist")
     await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"password_hash": hash_password(data.new_password)}})
+    # Op andere apparaten uitloggen; dit apparaat blijft ingelogd
+    current = (authorization or "").split(" ", 1)[-1].strip()
+    await db.user_sessions.delete_many({"user_id": user["user_id"], "session_token": {"$ne": current}})
     return {"ok": True}
 
 
@@ -756,8 +891,8 @@ async def forgot_password(data: ForgotPassword, request: Request):
 @api_router.post("/auth/reset-password")
 async def reset_password(data: ResetPassword, request: Request):
     limit(f"reset-ip:{client_ip(request)}", 20, 900)
-    if len(data.new_password) < MIN_PASSWORD:
-        raise HTTPException(status_code=400, detail=f"Wachtwoord moet minstens {MIN_PASSWORD} tekens zijn")
+    if not _password_ok(data.new_password):
+        raise HTTPException(status_code=400, detail=PASSWORD_RULE)
     email = data.email.lower().strip()
     rec = await db.password_resets.find_one({"email": email})
     if not rec or ensure_aware(rec["expires_at"]) < now_utc() or rec.get("attempts", 0) >= 5:
@@ -766,7 +901,8 @@ async def reset_password(data: ResetPassword, request: Request):
         # Na 5 foute pogingen vervalt de code, zodat hij niet te raden is
         await db.password_resets.update_one({"_id": rec["_id"]}, {"$inc": {"attempts": 1}})
         raise HTTPException(status_code=400, detail="Ongeldige of verlopen code")
-    await db.users.update_one({"email": email}, {"$set": {"password_hash": hash_password(data.new_password)}})
+    # De code kwam per mail: daarmee is het adres ook bevestigd
+    await db.users.update_one({"email": email}, {"$set": {"password_hash": hash_password(data.new_password), "email_verified": True}})
     await db.password_resets.delete_many({"email": email})
     # Nieuw wachtwoord: overal uitloggen (wie je oude wachtwoord had, is er dan ook uit)
     u = await db.users.find_one({"email": email}, {"_id": 0, "user_id": 1})
@@ -787,9 +923,21 @@ def allowed_redirect(url: str) -> bool:
     return url.startswith(("frontend://", "exp://"))
 
 
+@api_router.post("/admin/gmail/link")
+async def admin_gmail_link(user: dict = Depends(get_current_user)):
+    # Een eenmalige link (10 minuten geldig) om Gmail als afzender te koppelen; alleen voor beheerders
+    await require_perm(user, "manage_settings")
+    key = secrets.token_urlsafe(24)
+    await db.gmail_links.insert_one({"key": key, "by": user["user_id"], "expires_at": now_utc() + timedelta(minutes=10)})
+    return {"url": f"/api/email/gmail/connect?key={key}"}
+
+
 @api_router.get("/email/gmail/connect")
-async def gmail_connect():
-    # Eenmalig: koppel het Gmail-account van de beheerder als afzender
+async def gmail_connect(key: str = ""):
+    # Eenmalig: koppel het Gmail-account van de beheerder als afzender (alleen met een link uit Beheer)
+    link = await db.gmail_links.find_one_and_delete({"key": key}) if key else None
+    if not link or ensure_aware(link["expires_at"]) < now_utc():
+        raise HTTPException(status_code=403, detail="Open deze link vanuit Beheer -> App aanpassen -> Gmail koppelen")
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=503, detail="Google is niet ingesteld")
     state = secrets.token_urlsafe(24)
@@ -899,9 +1047,13 @@ async def auth_session(data: SessionInput, request: Request):
         raise HTTPException(status_code=403, detail=SIGNUP_WAIT_MSG)
     if existing:
         user_id = existing["user_id"]
+        if _unverified(existing):
+            # Iemand anders kan dit account met jouw adres hebben aangemaakt: zijn wachtwoord en sessies vervallen
+            await db.user_sessions.delete_many({"user_id": user_id})
         await db.users.update_one(
             {"user_id": user_id},
-            {"$set": {"name": name or existing.get("name"), "picture": picture or existing.get("picture"), "email_verified": True}},
+            {"$set": {"name": name or existing.get("name"), "picture": picture or existing.get("picture"), "email_verified": True},
+             **({"$unset": {"password_hash": ""}} if _unverified(existing) else {})},
         )
         user = await db.users.find_one({"user_id": user_id})
     else:
@@ -4335,8 +4487,8 @@ class AdminSetPassword(BaseModel):
 @api_router.post("/admin/users/{target_id}/set-password")
 async def admin_set_password(target_id: str, data: AdminSetPassword, user: dict = Depends(get_current_user)):
     await require_perm(user, "manage_users")
-    if len(data.new_password) < MIN_PASSWORD:
-        raise HTTPException(status_code=400, detail=f"Wachtwoord moet minstens {MIN_PASSWORD} tekens zijn")
+    if not _password_ok(data.new_password):
+        raise HTTPException(status_code=400, detail=PASSWORD_RULE)
     target = await db.users.find_one({"user_id": target_id})
     if not target:
         raise HTTPException(status_code=404, detail="Gebruiker niet gevonden")
@@ -12194,6 +12346,7 @@ async def reject_store_request(req_id: str, user: dict = Depends(get_current_use
 class WithdrawInput(BaseModel):
     name: str
     email: str
+    code: str = ""  # code uit de mail; niet nodig als je ingelogd bent met hetzelfde adres
     what: str = "Slim Boodschappenlijstje Premium"
     ordered_on: Optional[str] = None
     note: Optional[str] = None
@@ -12203,6 +12356,20 @@ def _mail_box(title: str, body: str) -> str:
     return ('<table role="presentation" width="100%"><tr><td style="padding:24px;font-family:Arial,sans-serif;color:#1C1B1A">'
             f'<h2 style="color:#2E5E38;margin:0 0 12px">{title}</h2>{body}'
             '<p style="font-size:12px;color:#888">Verstuurd door Slim Boodschappenlijstje.</p></td></tr></table>')
+
+
+class WithdrawCodeInput(BaseModel):
+    email: EmailStr
+
+
+@api_router.post("/legal/withdraw/code")
+async def legal_withdraw_code(data: WithdrawCodeInput, request: Request):
+    # Zonder in te loggen herroepen: eerst bewijzen dat het e-mailadres van jou is
+    limit(f"withdraw-code-ip:{client_ip(request)}", 5, 3600)
+    mail = data.email.lower().strip()
+    limit(f"withdraw-code:{mail}", 3, 3600)
+    await _send_email_code(mail, "withdraw")
+    return {"ok": True}
 
 
 @api_router.post("/legal/withdraw")
@@ -12219,6 +12386,8 @@ async def legal_withdraw(data: WithdrawInput, request: Request, authorization: O
         raise HTTPException(status_code=400, detail="Vul je naam in")
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", mail):
         raise HTTPException(status_code=400, detail="Vul een geldig e-mailadres in")
+    if not (user and (user.get("email") or "").lower() == mail):
+        await _check_email_code(mail, "withdraw", data.code)
     doc = {
         "withdrawal_id": f"wd_{uuid.uuid4().hex[:12]}",
         "name": name, "email": mail,
@@ -14048,11 +14217,34 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
+    # Alleen de eigen website (de app op de telefoon stuurt geen Origin mee en werkt dus gewoon)
+    allow_origins=sorted({o for o in [(FRONTEND_URL or "").rstrip("/"), "https://slimboodschappenlijstje.nl", "https://www.slimboodschappenlijstje.nl"] if o}),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # js-bundel en icoon-lettertype sneller binnen
+
+
+_csp_cache: dict = {}
+
+
+def _csp() -> str:
+    # Alleen scripts van de eigen site, plus de kleine inline-scripts uit index.html (met hun vingerafdruk)
+    if "v" not in _csp_cache:
+        hashes = []
+        try:
+            idx = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
+            with open(idx, encoding="utf-8") as f:
+                for body in re.findall(r"<script>(.*?)</script>", f.read(), re.S):
+                    hashes.append("'sha256-" + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode() + "'")
+        except Exception:
+            pass
+        _csp_cache["v"] = "; ".join([
+            "default-src 'self'", "script-src 'self' " + " ".join(hashes), "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' https: data: blob:", "font-src 'self' data:", "connect-src 'self'", "media-src 'self' blob:",
+            "worker-src 'self'", "object-src 'none'", "base-uri 'self'", "frame-ancestors 'none'",
+            "form-action 'self' https://accounts.google.com"])
+    return _csp_cache["v"]
 
 
 @app.middleware("http")
@@ -14062,7 +14254,9 @@ async def security_headers(request, call_next):
     h.setdefault("X-Content-Type-Options", "nosniff")
     h.setdefault("X-Frame-Options", "DENY")
     h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    h.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")  # camera voor de barcodescanner
+    if (h.get("content-type") or "").startswith("text/html"):
+        h.setdefault("Content-Security-Policy", _csp())
     if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
         h.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response

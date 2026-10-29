@@ -21,7 +21,10 @@ export default function LoginScreen() {
   const styles = useStyles();
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { login, register, loginWithGoogle, notice, setNotice } = useAuth();
+  const { login, register, verifyEmail, loginWithGoogle, notice, setNotice } = useAuth();
+  // Na registreren (of inloggen met een nog niet bevestigd adres): de code uit de mail invullen
+  const [verifyFor, setVerifyFor] = useState<string | null>(null);
+  const [code, setCode] = useState("");
   const toast = useToast();
 
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -60,12 +63,17 @@ export default function LoginScreen() {
       if (mode === "login") {
         await login(email.trim(), password);
       } else {
-        await register(name.trim(), email.trim(), password, agree);
+        const r = await register(name.trim(), email.trim(), password, agree);
         setMode("login");
         setPassword("");
+        if (r && r.verify) setVerifyFor(r.email ?? email.trim().toLowerCase());
       }
     } catch (e: any) {
-      toast.show(e?.message ?? "Inloggen mislukt", "error");
+      const msg: string = e?.message ?? "Inloggen mislukt";
+      if (msg.startsWith("Bevestig eerst") && email.includes("@")) {
+        setVerifyFor(email.trim().toLowerCase());
+        setNotice(msg);
+      } else toast.show(msg, "error");
     } finally {
       setBusy(false);
     }
@@ -135,7 +143,44 @@ export default function LoginScreen() {
             </Pressable>
           </View>
 
-          <View style={styles.form}>
+          {verifyFor ? (
+            <View style={styles.form} testID="verify-form">
+              <Text style={styles.approvalHint}>Vul de code van 6 cijfers in die we naar {verifyFor} stuurden.</Text>
+              <Field label="Code" testID="input-code" placeholder="123456" value={code} onChangeText={setCode} keyboardType="number-pad" autoComplete="one-time-code" />
+              <Button
+                label="Bevestigen"
+                loading={busy}
+                testID="verify-button"
+                onPress={async () => {
+                  setBusy(true);
+                  try {
+                    await verifyEmail(verifyFor, code.trim());
+                    setVerifyFor(null);
+                    setCode("");
+                  } catch (e: any) {
+                    toast.show(e?.message ?? "Bevestigen mislukt", "error");
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              />
+              <Pressable
+                testID="verify-resend"
+                hitSlop={6}
+                style={styles.forgotWrap}
+                onPress={async () => {
+                  await api("/auth/verify-email/resend", { method: "POST", body: { email: verifyFor } }).catch(() => null);
+                  toast.show("Als het adres bij ons bekend is, is er een nieuwe code onderweg", "success");
+                }}
+              >
+                <Text style={styles.forgotText}>Nieuwe code sturen</Text>
+              </Pressable>
+              <Pressable testID="verify-back" hitSlop={6} style={styles.forgotWrap} onPress={() => setVerifyFor(null)}>
+                <Text style={styles.forgotText}>Terug naar inloggen</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          <View style={[styles.form, verifyFor ? { display: "none" } : null]}>
             {mode === "register" ? (
               <Field
                 label="Naam"
@@ -159,7 +204,7 @@ export default function LoginScreen() {
             <Field
               label="Wachtwoord"
               testID="input-password"
-              placeholder={mode === "register" ? "Minstens 8 tekens" : "••••••••"}
+              placeholder={mode === "register" ? "Minstens 8 tekens en een speciaal teken" : "••••••••"}
               value={password}
               onChangeText={setPassword}
               secureTextEntry
@@ -279,7 +324,7 @@ function ForgotPasswordModal({ visible, onClose }: { visible: boolean; onClose: 
         ) : (
           <View style={{ gap: 14 }}>
             <Field label="Code uit e-mail" testID="forgot-code" placeholder="6-cijferige code" value={code} onChangeText={setCode} keyboardType="number-pad" />
-            <Field label="Nieuw wachtwoord" testID="forgot-newpw" placeholder="Minstens 8 tekens" value={pw} onChangeText={setPw} secureTextEntry />
+            <Field label="Nieuw wachtwoord" testID="forgot-newpw" placeholder="Minstens 8 tekens en een speciaal teken" value={pw} onChangeText={setPw} secureTextEntry />
             <Button label="Wachtwoord instellen" onPress={doReset} loading={busy} testID="forgot-reset" />
           </View>
         )}

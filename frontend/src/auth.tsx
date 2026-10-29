@@ -43,7 +43,8 @@ type AuthContextType = {
   permissions: string[];
   has: (perm: string) => boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string, acceptTerms: boolean) => Promise<void>;
+  register: (name: string, email: string, password: string, acceptTerms: boolean) => Promise<{ verify?: boolean; email?: string } | void>;
+  verifyEmail: (email: string, code: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -51,7 +52,7 @@ type AuthContextType = {
   notice: string | null;
   setNotice: (n: string | null) => void;
 };
-type AuthResult = { session_token?: string; pending?: boolean; message?: string };
+type AuthResult = { session_token?: string; pending?: boolean; message?: string; verify?: boolean; email?: string };
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
@@ -183,6 +184,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         method: "POST",
         body: { name, email, password, accept_terms: acceptTerms },
       });
+      // Eerst je e-mailadres bevestigen met de code uit de mail
+      if (res.verify) {
+        setNotice(res.message ?? "We hebben je een code gestuurd.");
+        return { verify: true, email: res.email ?? email };
+      }
+      if (res.pending || !res.session_token) {
+        setNotice(res.message ?? "Je aanvraag is ontvangen.");
+        return;
+      }
+      await persist(res.session_token);
+    },
+    [persist],
+  );
+
+  const verifyEmail = useCallback(
+    async (email: string, code: string) => {
+      const res = await api<AuthResult>("/auth/verify-email", { method: "POST", body: { email, code } });
       if (res.pending || !res.session_token) {
         setNotice(res.message ?? "Je aanvraag is ontvangen.");
         return;
@@ -244,7 +262,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ status, user, permissions, has, login, register, loginWithGoogle, logout, refresh: loadMe, notice, setNotice }}
+      value={{ status, user, permissions, has, login, register, verifyEmail, loginWithGoogle, logout, refresh: loadMe, notice, setNotice }}
     >
       {children}
     </AuthContext.Provider>

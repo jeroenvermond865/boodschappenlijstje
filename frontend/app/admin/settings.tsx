@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Linking, Platform, Pressable, Text, View } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button, Field, Icon } from "@/src/components/ui";
 import { ImageUploadField } from "@/src/components/ImageUploadField";
-import { api, apiBlob } from "@/src/api";
+import { api, apiBlob, mediaUrl } from "@/src/api";
 import { singularOf } from "@/src/settings";
 import { goBack } from "@/src/nav";
 import { useToast } from "@/src/toast";
@@ -243,6 +243,23 @@ function BackupCard() {
             : "Nog geen back-up gemaakt."}
         </Text>
       ) : null}
+      <Button
+        label="Gmail (opnieuw) koppelen als afzender"
+        icon="google"
+        variant="secondary"
+        testID="gmail-connect"
+        onPress={async () => {
+          // Een eenmalige link van 10 minuten, alleen voor beheerders
+          try {
+            const r = await api<{ url: string }>("/admin/gmail/link", { method: "POST", body: {} });
+            const url = mediaUrl(r.url) ?? r.url;
+            if (Platform.OS === "web" && typeof window !== "undefined") window.location.href = url;
+            else await Linking.openURL(url);
+          } catch (e: any) {
+            toast.show(e?.message ?? "Koppelen lukt nu niet", "error");
+          }
+        }}
+      />
       <Button label="Nu een back-up mailen" icon="email-outline" variant="secondary" onPress={() => mail.mutate()} loading={mail.isPending} testID="backup-mail" />
       <Button label="Back-up downloaden" sub="met prijsgeschiedenis" icon="download" variant="secondary" onPress={download} loading={busy} testID="backup-download" />
     </View>
