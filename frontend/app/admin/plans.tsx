@@ -1,4 +1,4 @@
-// Beheer: welke functie hoort bij Standaard, Premium of Ultra, wat het kost, hoeveel AI-vragen per dag,
+// Beheer: welke functie hoort bij Standaard, Premium of Ultra, wat het kost, hoeveel AI-vragen per maand,
 // en welk AI-model elke taak gebruikt. Wat je hier kiest, geldt meteen voor alle gebruikers.
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
@@ -113,7 +113,7 @@ export default function AdminPlansScreen() {
             <Text style={styles.small}>Dit laat de app zien bij Abonnementen. Betalen kan nog niet in de app; verenigingen krijgen Premium gratis.</Text>
           </View>
 
-          <Text style={styles.section}>Slimme hulp: vragen per dag</Text>
+          <Text style={styles.section}>Slimme hulp: vragen per maand</Text>
           <View style={styles.card}>
             <View style={{ flexDirection: "row", gap: 10 }}>
               {LEVELS.map((k) => (

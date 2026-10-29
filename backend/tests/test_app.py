@@ -223,6 +223,31 @@ def test_mail_naar_info_krijgt_bcc_naar_beheer(monkeypatch):
     assert verstuurd == [("Info@slimboodschappenlijstje.nl", "beheer@slimboodschappenlijstje.nl"), ("klant@example.com", None)]
 
 
+# --- Slimme hulp: grens per maand ---
+def test_slimme_hulp_telt_per_maand(monkeypatch):
+    async def mag(user, key):
+        return None
+    monkeypatch.setattr(S, "require_feature", mag)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    S._plans_conf.clear()
+    u = {"user_id": "u1", "premium": True, "plan": "premium"}
+
+    async def t():
+        month = S.now_utc().date().isoformat()[:8]
+        # Eerder deze maand al 99 vragen, verspreid over dagen; vorige maand telt niet mee
+        await S.db.ai_usage.insert_many([{"user_id": "u1", "day": month + "01", "n": 60}, {"user_id": "u1", "day": "2000-01-15", "n": 500}])
+        if S.now_utc().day != 1:
+            await S.db.ai_usage.insert_one({"user_id": "u1", "day": month + "02", "n": 39})
+        else:
+            await S.db.ai_usage.update_one({"day": month + "01"}, {"$inc": {"n": 39}})
+        await S._ai_ready(u)  # de 100e mag nog
+        with pytest.raises(HTTPException) as e:
+            await S._ai_ready(u)
+        return e.value
+    err = run(t())
+    assert err.status_code == 429 and "deze maand" in err.detail
+
+
 # --- Bronnen van supermarkten ---
 def test_recept_van_winkel_zonder_tekst_en_foto():
     S._sources.update(S.SOURCE_DEFAULTS)

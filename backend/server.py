@@ -12425,7 +12425,7 @@ PLAN_FEATURES = {
 }
 PLAN_DEFAULTS = {
     "features": {k: v[1] for k, v in PLAN_FEATURES.items()},
-    "ai_limit": {"standaard": 0, "premium": 10, "ultra": 60},  # AI-vragen aan de slimme hulp per persoon per dag
+    "ai_limit": {"standaard": 0, "premium": 100, "ultra": 300},  # AI-vragen aan de slimme hulp per persoon per maand
     "price": {"premium": 2.99, "ultra": 4.99},  # euro per maand, wat de app laat zien
 }
 _plans_conf: dict = {}
@@ -12435,7 +12435,7 @@ def _plans() -> dict:
     c = _plans_conf or {}
     return {
         "features": {**PLAN_DEFAULTS["features"], **{k: v for k, v in (c.get("features") or {}).items() if k in PLAN_FEATURES and v in PLAN_LEVELS}},
-        "ai_limit": {**PLAN_DEFAULTS["ai_limit"], **(c.get("ai_limit") or {})},
+        "ai_limit": {**PLAN_DEFAULTS["ai_limit"], **(c.get("ai_month") or {})},  # "ai_month": per maand (het oude "ai_limit" was per dag)
         "price": {**PLAN_DEFAULTS["price"], **(c.get("price") or {})},
     }
 
@@ -12492,7 +12492,7 @@ async def admin_set_plans(data: PlansInput, user: dict = Depends(get_current_use
     if data.features is not None:
         upd["features"] = {k: v for k, v in data.features.items() if k in PLAN_FEATURES and v in PLAN_LEVELS}
     if data.ai_limit is not None:
-        upd["ai_limit"] = {k: max(0, min(500, int(v))) for k, v in data.ai_limit.items() if k in PLAN_LEVELS}
+        upd["ai_month"] = {k: max(0, min(5000, int(v))) for k, v in data.ai_limit.items() if k in PLAN_LEVELS}
     if data.price is not None:
         upd["price"] = {k: round(max(0.0, min(100.0, float(v))), 2) for k, v in data.price.items() if k in ("premium", "ultra")}
     if upd:
@@ -12868,21 +12868,25 @@ async def today_add(data: TodayAdd, user: dict = Depends(get_current_user)):
 
 
 # --- Slimme hulp (Premium): menu uit één zin, restjes koken, recept plakken of fotograferen, lijst typen of inspreken, bespaartips ---
-AI_DAILY_LIMIT = 60  # reserve; het echte aantal per abonnement staat bij Beheer -> Abonnementen
+AI_MONTH_LIMIT = 300  # reserve; het echte aantal per abonnement per maand staat bij Beheer -> Abonnementen
 AI_IMAGE_MAX = 4_500_000  # bytes; groter kan de AI niet lezen
 
 
 async def _ai_ready(user: dict) -> None:
-    # Premium, een AI-sleutel, en niet eindeloos veel vragen per dag (elke vraag kost geld)
+    # Premium, een AI-sleutel, en niet eindeloos veel vragen per maand (elke vraag kost geld)
     await require_feature(user, "slimme_hulp")
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(status_code=503, detail="De slimme hulp is nog niet beschikbaar. Probeer het later nog eens.")
     day = now_utc().date().isoformat()
-    doc = await db.ai_usage.find_one_and_update({"user_id": user["user_id"], "day": day}, {"$inc": {"n": 1}}, upsert=True, return_document=True)
-    limit = int(_plans()["ai_limit"].get(user_plan(user), AI_DAILY_LIMIT))
-    if (doc or {}).get("n", 0) > limit:
+    await db.ai_usage.update_one({"user_id": user["user_id"], "day": day}, {"$inc": {"n": 1}}, upsert=True)
+    # Per maand tellen: op een drukke dag kun je meer doen, zolang het over de maand binnen de grens blijft
+    used = 0
+    async for d in db.ai_usage.find({"user_id": user["user_id"], "day": {"$gte": day[:8] + "01"}}, {"_id": 0, "n": 1}):
+        used += int(d.get("n") or 0)
+    limit = int(_plans()["ai_limit"].get(user_plan(user), AI_MONTH_LIMIT))
+    if used > limit:
         more = " Met Ultra kun je meer vragen." if user_plan(user) == "premium" and _plans()["ai_limit"].get("ultra", 0) > limit else ""
-        raise HTTPException(status_code=429, detail=f"Je hebt vandaag al {limit} keer iets aan de slimme hulp gevraagd. Morgen kan het weer.{more}")
+        raise HTTPException(status_code=429, detail=f"Je hebt deze maand al {limit} keer iets aan de slimme hulp gevraagd. Volgende maand kan het weer.{more}")
 
 
 async def _ai_json(content, schema: dict, user: Optional[dict] = None, task: str = "hulp", max_tokens: int = 4000, effort: str = "low") -> dict:

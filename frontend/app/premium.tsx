@@ -147,7 +147,7 @@ export default function PremiumScreen() {
                 {extra.map((f) => (
                   <Text key={f.key} style={styles.planLine}>• {f.title}</Text>
                 ))}
-                {l.ai_limit ? <Text style={styles.planLine}>• {l.ai_limit} vragen per dag aan de slimme hulp</Text> : null}
+                {l.ai_limit ? <Text style={styles.planLine}>• {l.ai_limit} vragen per maand aan de slimme hulp</Text> : null}
                 {canBuy && l.key !== "standaard" && l.price && !(bill?.active && bill.plan === l.key) ? (
                   <Button
                     label={bill?.active ? `Overstappen naar ${l.label}` : `Neem ${l.label}`}
