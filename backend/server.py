@@ -14226,12 +14226,14 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)  # js-bundel en icoon-lett
 
 
 _csp_cache: dict = {}
+SW_JS = 'if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("/sw.js"))'
 
 
 def _csp() -> str:
     # Alleen scripts van de eigen site, plus de kleine inline-scripts uit index.html (met hun vingerafdruk)
     if "v" not in _csp_cache:
-        hashes = []
+        # Het script dat de service worker aanzet, voegen we zelf toe bij het serveren van de pagina
+        hashes = ["'sha256-" + base64.b64encode(hashlib.sha256(SW_JS.encode()).digest()).decode() + "'"]
         try:
             idx = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
             with open(idx, encoding="utf-8") as f:
@@ -14241,7 +14243,7 @@ def _csp() -> str:
             pass
         _csp_cache["v"] = "; ".join([
             "default-src 'self'", "script-src 'self' " + " ".join(hashes), "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' https: data: blob:", "font-src 'self' data:", "connect-src 'self'", "media-src 'self' blob:",
+            "img-src 'self' https: data: blob:", "font-src 'self' data: https://cdn.jsdelivr.net", "connect-src 'self'", "media-src 'self' blob:",
             "worker-src 'self'", "object-src 'none'", "base-uri 'self'", "frame-ancestors 'none'",
             "form-action 'self' https://accounts.google.com"])
     return _csp_cache["v"]
@@ -14964,7 +14966,7 @@ def _index_html() -> str:
     html = (WEB_DIR / "index.html").read_text()
     links = "".join(f'<link rel="preload" href="/{f.relative_to(WEB_DIR).as_posix()}" as="font" type="font/ttf" crossorigin>'
                     for f in WEB_DIR.glob("assets/**/MaterialDesignIcons*.ttf"))
-    sw = '<script>if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("/sw.js"))</script>'
+    sw = f"<script>{SW_JS}</script>"
     # Zolang de app laadt (bijv. na "Vernieuwen") een rustig laadscherm in de stijl van de app in plaats van een wit scherm;
     # React vervangt het vanzelf zodra de app er is
     splash = ('<div id="root"><div style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;'
